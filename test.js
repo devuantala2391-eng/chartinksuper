@@ -7,6 +7,7 @@ const {
   calculatePercentChangeFactory,
   calculateSuperTrendFactory,
   calculateBollingerBandsFactory,
+  calculateWeeklyVolumeFactory,
   pipe
 } = require('./mapper');
 
@@ -69,7 +70,9 @@ const resultPiped = pipe(
   calculateRSIFactory('weekly', 14, 'rsi_weekly'),
   calculatePercentChangeFactory('weekly', 1, 'pctchg_weekly'),
   calculateSuperTrendFactory('weekly', 10, 3, 'supertrend_weekly'),
-  calculateBollingerBandsFactory('weekly', 20, 2, 'bb_upper_weekly', 'bb_lower_weekly')
+  calculateBollingerBandsFactory('weekly', 20, 2, 'bb_upper_weekly', 'bb_lower_weekly'),
+  // Weekly volume
+  calculateWeeklyVolumeFactory('volume_weekly')
 );
 
 fs.writeFileSync(outputPathPiped, JSON.stringify({ data: resultPiped }, null, 2), 'utf8');

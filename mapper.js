@@ -870,6 +870,50 @@ function calculateBollingerBandsFactory(timeframe, period, multiplier, outputKey
 }
 
 /**
+ * Calculates weekly volume for each daily candle.
+ * For each day, it sums the volume from Monday (or start of week) to current day.
+ * @param {Array} candles - Array of candle objects.
+ * @param {string} [outputKey='volume_weekly'] - The key to store the weekly volume.
+ * @returns {Array} New array of candles with weekly volume added.
+ */
+function calculateWeeklyVolume(candles, outputKey = 'volume_weekly') {
+  if (!Array.isArray(candles) || candles.length === 0) return [];
+  
+  return candles.map((candle, idx) => {
+    const currentDate = new Date(Number(candle.date));
+    const currentYear = currentDate.getUTCFullYear();
+    const currentWeek = getISOWeek(currentDate);
+    
+    // Sum volume from start of week to current day
+    let weeklyVolume = 0;
+    
+    // Look backwards to find start of week
+    for (let i = idx; i >= 0; i--) {
+      const prevCandle = candles[i];
+      const prevDate = new Date(Number(prevCandle.date));
+      const prevYear = prevDate.getUTCFullYear();
+      const prevWeek = getISOWeek(prevDate);
+      
+      // If we've gone past the current week, stop
+      if (prevYear !== currentYear || prevWeek !== currentWeek) {
+        break;
+      }
+      
+      weeklyVolume += Number(prevCandle.volume);
+    }
+    
+    return {
+      ...candle,
+      [outputKey]: round2(weeklyVolume)
+    };
+  });
+}
+
+function calculateWeeklyVolumeFactory(outputKey = 'volume_weekly') {
+  return (candles) => calculateWeeklyVolume(candles, outputKey);
+}
+
+/**
  * Pipeable function: applies a sequence of functions to the data.
  * @param {Array} data - The initial array of candles.
  * @param  {...function} fns - Functions to apply in sequence.
@@ -892,6 +936,8 @@ module.exports = {
   calculateSuperTrendFactory,
   calculateBollingerBands,
   calculateBollingerBandsFactory,
+  calculateWeeklyVolume,
+  calculateWeeklyVolumeFactory,
   pipe,
   aggregateCandles,
 }; 

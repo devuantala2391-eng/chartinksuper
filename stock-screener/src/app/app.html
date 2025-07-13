@@ -1,0 +1,124 @@
+<div class="container">
+  <header class="header">
+    <h1>📈 Stock Screener</h1>
+    <p class="subtitle">Scan stocks using simple conditions</p>
+  </header>
+
+  <div class="filter-section">
+    <div class="section-header">
+      <h2>🔍 MAGIC FILTERS</h2>
+      <div class="query-display" *ngIf="queryString">
+        <span class="query-label">Query:</span>
+        <code>{{ queryString }}</code>
+      </div>
+    </div>
+    
+    <div class="help-text">
+      <p>💡 <strong>Tip:</strong> Use "Days ago" field to compare with historical values. For example:</p>
+      <ul>
+        <li>Enter "0" to use current value</li>
+        <li>Enter "1" for yesterday's value</li>
+        <li>Enter "5" for value from 5 days ago</li>
+      </ul>
+    </div>
+
+    <div class="conditions-container">
+      <div class="condition-row" *ngFor="let condition of conditions; let i = index">
+        <div class="logical-operator" *ngIf="i > 0">
+          <select [(ngModel)]="condition.logicalOperator" class="operator-select">
+            <option value="and">AND</option>
+            <option value="or">OR</option>
+          </select>
+        </div>
+
+        <div class="condition-inputs">
+          <input 
+            type="number" 
+            [(ngModel)]="condition.daysAgo" 
+            placeholder="0"
+            class="days-ago-input"
+            min="0"
+            title="Enter 0 for current value, or number of days ago"
+          />
+
+          <select [(ngModel)]="condition.field" class="field-select">
+            <option *ngFor="let field of fields" [value]="field.value">
+              {{ field.label }}
+            </option>
+          </select>
+
+          <select [(ngModel)]="condition.operator" class="operator-select">
+            <option *ngFor="let op of operators" [value]="op.value">
+              {{ op.label }}
+            </option>
+          </select>
+
+          <input 
+            type="text" 
+            [(ngModel)]="condition.value" 
+            placeholder="Enter value"
+            class="value-input"
+          />
+
+          <button 
+            class="remove-btn" 
+            (click)="removeCondition(condition.id)"
+            *ngIf="conditions.length > 1"
+          >
+            ❌
+          </button>
+        </div>
+      </div>
+
+      <button class="add-condition-btn" (click)="addCondition()">
+        ➕ Add Condition
+      </button>
+    </div>
+
+    <div class="action-buttons">
+      <button class="btn btn-primary" (click)="runScan()" [disabled]="loading">
+        🔍 {{ loading ? 'Scanning...' : 'Run Scan' }}
+      </button>
+      <button class="btn btn-secondary" (click)="generateQuery()">
+        📝 Generate Query
+      </button>
+      <button class="btn btn-secondary" (click)="copyScan()" *ngIf="queryString">
+        📋 Copy Query
+      </button>
+      <button class="btn btn-danger" (click)="clearResults()" *ngIf="results">
+        🗑️ Clear Results
+      </button>
+    </div>
+  </div>
+
+  <div class="error-message" *ngIf="error">
+    ⚠️ {{ error }}
+  </div>
+
+  <div class="results-section" *ngIf="results">
+    <div class="results-header">
+      <h2>📊 Results</h2>
+      <span class="match-count">Total Matches: {{ results.totalMatches }}</span>
+    </div>
+
+    <div class="results-container">
+      <div class="date-group" *ngFor="let date of getGroupedDates()">
+        <h3 class="date-header">📅 {{ date }}</h3>
+        <div class="stock-grid">
+          <div class="stock-card" *ngFor="let match of groupedResults.get(date)">
+            <div class="stock-symbol">{{ match.stock }}</div>
+            <div class="stock-details">
+              <span class="close-price">₹{{ match.close }}</span>
+              <span class="day">{{ match.day }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="loading-spinner" *ngIf="loading">
+    <div class="spinner"></div>
+    <p>Scanning stocks...</p>
+  </div>
+</div>

@@ -35,6 +35,9 @@ const INDICATOR_MAPPINGS = {
   'low': 'low',
   'volume': 'volume',
   
+  // Volume fields
+  'weekly volume': 'volume_weekly',
+  
   // Percent change
   'daily percent change': 'pctchg_daily',
   'weekly percent change': 'pctchg_weekly',
@@ -46,6 +49,19 @@ const INDICATOR_MAPPINGS = {
   'yesterday\'s close': 'prev_close',
   'previous close': 'prev_close',
   'yesterdays close': 'prev_close',
+};
+
+// Additional field mappings for simplified names
+const SIMPLE_FIELD_MAPPINGS = {
+  'rsi': 'rsi_daily',
+  'sma': 'sma_daily',
+  'ema': 'ema_daily',
+  'upper bollinger band': 'bb_upper_daily',
+  'lower bollinger band': 'bb_lower_daily',
+  'supertrend': 'supertrend_daily',
+  'percent change': 'pctchg_daily',
+  'pct change': 'pctchg_daily',
+  '% change': 'pctchg_daily',
 };
 
 const OPERATORS = {
@@ -126,11 +142,13 @@ function parseCondition(conditionStr) {
 }
 
 function parseField(fieldStr) {
+  // Check if it's a number
   const numValue = parseFloat(fieldStr);
-  if (!isNaN(numValue)) {
+  if (!isNaN(numValue) && !fieldStr.includes(' ')) {
     return { type: 'value', value: numValue };
   }
   
+  // Check if it's a percentage (e.g., "5%")
   if (fieldStr.endsWith('%')) {
     const percentValue = parseFloat(fieldStr.slice(0, -1));
     if (!isNaN(percentValue)) {
@@ -138,12 +156,51 @@ function parseField(fieldStr) {
     }
   }
   
+  // Check for time-based patterns (e.g., "1 day ago volume", "3 days ago rsi")
+  const timePattern = /^(\d+)\s+days?\s+ago\s+(.+)$/;
+  const match = fieldStr.match(timePattern);
+  
+  if (match) {
+    const daysAgo = parseInt(match[1]);
+    const fieldName = match[2];
+    
+    // Try to find the field in indicator mappings
+    let field = null;
+    
+    // Check full indicator mappings first
+    for (const [pattern, key] of Object.entries(INDICATOR_MAPPINGS)) {
+      if (fieldName.includes(pattern)) {
+        field = key;
+        break;
+      }
+    }
+    
+    // If not found, check simple field mappings
+    if (!field) {
+      field = SIMPLE_FIELD_MAPPINGS[fieldName] || fieldName;
+    }
+    
+    return { 
+      type: 'field', 
+      field: field,
+      daysAgo: daysAgo
+    };
+  }
+  
+  // Try to find a matching indicator
   for (const [pattern, key] of Object.entries(INDICATOR_MAPPINGS)) {
     if (fieldStr.includes(pattern)) {
       return { type: 'field', field: key };
     }
   }
   
+  // Check simple field mappings
+  const simpleField = SIMPLE_FIELD_MAPPINGS[fieldStr];
+  if (simpleField) {
+    return { type: 'field', field: simpleField };
+  }
+  
+  // If no match found, treat as field name directly
   return { type: 'field', field: fieldStr };
 }
 
@@ -174,7 +231,8 @@ function parseQuery(query) {
   };
 }
 
-function getFieldValue(candle, prevCandle, field) {
+function getFieldValue(candle, prevCandle, field, candles, currentIndex) {
+  // Handle special case for previous close
   if (field === 'prev_close' && prevCandle) {
     return parseFloat(prevCandle.close);
   }
@@ -187,10 +245,32 @@ function getFieldValue(candle, prevCandle, field) {
   return parseFloat(value);
 }
 
-function evaluateCondition(condition, candle, prevCandle) {
+function getHistoricalFieldValue(candles, currentIndex, field, daysAgo) {
+  const targetIndex = currentIndex - daysAgo;
+  
+  if (targetIndex < 0 || targetIndex >= candles.length) {
+    return null;
+  }
+  
+  const targetCandle = candles[targetIndex];
+  const value = targetCandle[field];
+  
+  if (value === null || value === undefined) {
+    return null;
+  }
+  
+  return parseFloat(value);
+}
+
+function evaluateCondition(condition, candle, prevCandle, candles, currentIndex) {
+  // Get left value
   let leftValue;
   if (condition.left.type === 'field') {
-    leftValue = getFieldValue(candle, prevCandle, condition.left.field);
+    if (condition.left.daysAgo) {
+      leftValue = getHistoricalFieldValue(candles, currentIndex, condition.left.field, condition.left.daysAgo);
+    } else {
+      leftValue = getFieldValue(candle, prevCandle, condition.left.field, candles, currentIndex);
+    }
     if (leftValue === null) return false;
   } else if (condition.left.type === 'value') {
     leftValue = condition.left.value;
@@ -198,9 +278,14 @@ function evaluateCondition(condition, candle, prevCandle) {
     leftValue = condition.left.value;
   }
   
+  // Get right value
   let rightValue;
   if (condition.right.type === 'field') {
-    rightValue = getFieldValue(candle, prevCandle, condition.right.field);
+    if (condition.right.daysAgo) {
+      rightValue = getHistoricalFieldValue(candles, currentIndex, condition.right.field, condition.right.daysAgo);
+    } else {
+      rightValue = getFieldValue(candle, prevCandle, condition.right.field, candles, currentIndex);
+    }
     if (rightValue === null) return false;
   } else if (condition.right.type === 'value') {
     rightValue = condition.right.value;
@@ -208,18 +293,21 @@ function evaluateCondition(condition, candle, prevCandle) {
     rightValue = condition.right.value;
   }
   
+  // Apply the comparison
   return condition.compareFn(leftValue, rightValue);
 }
 
-function evaluateAllConditions(parsedQuery, candle, prevCandle) {
+function evaluateAllConditions(parsedQuery, candle, prevCandle, candles, currentIndex) {
   const { conditions, logicalOperators } = parsedQuery;
   
   if (conditions.length === 0) return false;
   
-  let result = evaluateCondition(conditions[0], candle, prevCandle);
+  // Evaluate first condition
+  let result = evaluateCondition(conditions[0], candle, prevCandle, candles, currentIndex);
   
+  // Apply logical operators for remaining conditions
   for (let i = 1; i < conditions.length; i++) {
-    const conditionResult = evaluateCondition(conditions[i], candle, prevCandle);
+    const conditionResult = evaluateCondition(conditions[i], candle, prevCandle, candles, currentIndex);
     const operator = logicalOperators[i - 1];
     
     if (operator === 'AND') {
@@ -230,37 +318,6 @@ function evaluateAllConditions(parsedQuery, candle, prevCandle) {
   }
   
   return result;
-}
-
-function getDataAvailabilityIndex(candles, parsedQuery) {
-  const requiredFields = new Set();
-  
-  for (const condition of parsedQuery.conditions) {
-    if (condition.left.type === 'field' && condition.left.field !== 'prev_close') {
-      requiredFields.add(condition.left.field);
-    }
-    if (condition.right.type === 'field' && condition.right.field !== 'prev_close') {
-      requiredFields.add(condition.right.field);
-    }
-  }
-  
-  for (let i = 0; i < candles.length; i++) {
-    const candle = candles[i];
-    let allAvailable = true;
-    
-    for (const field of requiredFields) {
-      if (candle[field] === null || candle[field] === undefined) {
-        allAvailable = false;
-        break;
-      }
-    }
-    
-    if (allAvailable) {
-      return i;
-    }
-  }
-  
-  return candles.length;
 }
 
 function findMatchingCandles(candles, parsedQuery, stockSymbol = 'UNKNOWN') {
@@ -275,7 +332,7 @@ function findMatchingCandles(candles, parsedQuery, stockSymbol = 'UNKNOWN') {
     if (!candle.close) continue;
     
     try {
-      if (evaluateAllConditions(parsedQuery, candle, prevCandle)) {
+      if (evaluateAllConditions(parsedQuery, candle, prevCandle, candles, i)) {
         matches.push({
           date: candle.date,
           day: candle.day,
@@ -291,6 +348,49 @@ function findMatchingCandles(candles, parsedQuery, stockSymbol = 'UNKNOWN') {
   }
   
   return matches;
+}
+
+function getDataAvailabilityIndex(candles, parsedQuery) {
+  const requiredFields = new Set();
+  let maxDaysAgo = 0;
+  
+  for (const condition of parsedQuery.conditions) {
+    if (condition.left.type === 'field') {
+      if (condition.left.field !== 'prev_close') {
+        requiredFields.add(condition.left.field);
+      }
+      if (condition.left.daysAgo) {
+        maxDaysAgo = Math.max(maxDaysAgo, condition.left.daysAgo);
+      }
+    }
+    if (condition.right.type === 'field') {
+      if (condition.right.field !== 'prev_close') {
+        requiredFields.add(condition.right.field);
+      }
+      if (condition.right.daysAgo) {
+        maxDaysAgo = Math.max(maxDaysAgo, condition.right.daysAgo);
+      }
+    }
+  }
+  
+  // Find first index where all fields have non-null values
+  for (let i = maxDaysAgo; i < candles.length; i++) {
+    const candle = candles[i];
+    let allAvailable = true;
+    
+    for (const field of requiredFields) {
+      if (candle[field] === null || candle[field] === undefined) {
+        allAvailable = false;
+        break;
+      }
+    }
+    
+    if (allAvailable) {
+      return i;
+    }
+  }
+  
+  return candles.length; // No valid data found
 }
 
 const getQueryExamples = () => ({
@@ -312,8 +412,16 @@ const getQueryExamples = () => ({
       description: "Find stocks with 5% daily gain and high volume"
     },
     {
-      query: "weekly supertrend < close and daily ema > daily sma",
-      description: "Find stocks in weekly uptrend with daily EMA above SMA"
+      query: "1 day ago volume > 100000 and volume > 200000",
+      description: "Find stocks where volume increased from yesterday"
+    },
+    {
+      query: "3 days ago rsi < 30 and rsi > 50",
+      description: "Find stocks that recovered from oversold in 3 days"
+    },
+    {
+      query: "5 days ago close < 100 and close > 110",
+      description: "Find stocks that gained 10% in 5 days"
     }
   ],
   availableIndicators: {
@@ -333,7 +441,8 @@ const getQueryExamples = () => ({
       "weekly ema (ema_weekly)",
       "weekly rsi (rsi_weekly)",
       "weekly supertrend (supertrend_weekly)",
-      "weekly percent change (pctchg_weekly)"
+      "weekly percent change (pctchg_weekly)",
+      "weekly volume (volume_weekly)"
     ],
     price: [
       "close",
@@ -343,6 +452,10 @@ const getQueryExamples = () => ({
       "volume",
       "current close",
       "yesterday's close"
+    ],
+    timeBased: [
+      "n days ago <indicator>",
+      "Examples: '1 day ago volume', '3 days ago rsi', '5 days ago close'"
     ]
   },
   operators: [">", "<", ">=", "<=", "=", "==", "!="],

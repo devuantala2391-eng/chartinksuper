@@ -9,7 +9,10 @@
       "Bash(powershell:*)",
       "Bash(curl:*)",
       "Bash(del queryParser.js conditionEvaluator.js testQuery.js)",
-      "Bash(mv:*)"
+      "Bash(mv:*)",
+      "Bash(npx @angular/cli@latest new:*)",
+      "Bash(npm install:*)",
+      "Bash(npm start)"
     ],
     "deny": []
   }
