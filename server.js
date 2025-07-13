@@ -254,12 +254,31 @@ app.get('/query/examples', (req, res) => {
   res.json(getQueryExamples());
 });
 
-// Refresh DB endpoint - fetches data for all symbols and saves to db folder
+// Refresh DB endpoint with progress streaming
 app.post('/refreshdb', async (req, res) => {
   try {
     const { totalResults = 2000 } = req.body;
     
     console.log(`Starting database refresh for ${STOCK_SYMBOLS.length} symbols with ${totalResults} results each...`);
+    
+    // Set up SSE headers for streaming progress
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*'
+    });
+    
+    // Send initial progress
+    res.write(`data: ${JSON.stringify({
+      status: 'starting',
+      total: STOCK_SYMBOLS.length,
+      processed: 0,
+      successful: 0,
+      failed: 0,
+      percentage: 0,
+      message: 'Initializing database refresh...'
+    })}\n\n`);
     
     // Ensure the db directory exists
     const dbPath = path.join(__dirname, 'db');
@@ -272,6 +291,31 @@ app.post('/refreshdb', async (req, res) => {
     let successful = 0;
     let failed = 0;
     const errors = [];
+    const startTime = Date.now();
+    
+    // Function to send progress updates
+    const sendProgress = (extraData = {}) => {
+      const percentage = Math.round((processed / STOCK_SYMBOLS.length) * 100);
+      const elapsedTime = Date.now() - startTime;
+      const avgTimePerSymbol = processed > 0 ? elapsedTime / processed : 0;
+      const remainingSymbols = STOCK_SYMBOLS.length - processed;
+      const estimatedTimeRemaining = avgTimePerSymbol * remainingSymbols;
+      
+      const progressData = {
+        status: 'processing',
+        total: STOCK_SYMBOLS.length,
+        processed,
+        successful,
+        failed,
+        percentage,
+        estimatedTimeRemaining: Math.round(estimatedTimeRemaining / 1000), // in seconds
+        currentSymbol: extraData.currentSymbol || null,
+        message: `Processing ${processed}/${STOCK_SYMBOLS.length} symbols (${percentage}%)`,
+        ...extraData
+      };
+      
+      res.write(`data: ${JSON.stringify(progressData)}\n\n`);
+    };
     
     // Process in batches to avoid overwhelming the API
     const batchSize = 10; // Process 10 symbols at a time
@@ -282,7 +326,8 @@ app.post('/refreshdb', async (req, res) => {
     }
     
     // Process each batch
-    for (const batch of batches) {
+    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+      const batch = batches[batchIndex];
       const batchPromises = batch.map(async (symbol) => {
         try {
           const queryString = "select high, low, open, close, volume, Upper Bollinger band(  20 ,  2 ) as 'ubb', Lower Bollinger band(  20 ,  2 ) as 'lbb', Sma(  Close ,  20 ) as 'sma'";
@@ -369,32 +414,121 @@ app.post('/refreshdb', async (req, res) => {
         
         processed++;
         
-        // Send progress update every 50 symbols
-        if (processed % 50 === 0) {
-          console.log(`Progress: ${processed}/${STOCK_SYMBOLS.length} (${successful} successful, ${failed} failed)`);
-        }
+        // Send progress update for each symbol
+        sendProgress({ currentSymbol: symbol });
       });
       
       // Wait for batch to complete
       await Promise.all(batchPromises);
       
+      // Send batch completion update
+      sendProgress({ 
+        batchCompleted: batchIndex + 1,
+        totalBatches: batches.length,
+        message: `Completed batch ${batchIndex + 1}/${batches.length}`
+      });
+      
       // Add a small delay between batches to avoid rate limiting
-      if (batches.indexOf(batch) < batches.length - 1) {
+      if (batchIndex < batches.length - 1) {
         await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second delay
       }
     }
     
     console.log(`Database refresh completed! Processed: ${processed}, Successful: ${successful}, Failed: ${failed}`);
     
-    res.json({
-      success: true,
-      totalSymbols: STOCK_SYMBOLS.length,
+    // Send final completion message
+    res.write(`data: ${JSON.stringify({
+      status: 'completed',
+      total: STOCK_SYMBOLS.length,
       processed,
       successful,
       failed,
+      percentage: 100,
       errors: errors.length > 0 ? errors : undefined,
       message: `Database refresh completed. ${successful} symbols updated successfully.`
+    })}\n\n`);
+    
+    // Close the SSE connection
+    res.end();
+    
+  } catch (error) {
+    console.error('Database refresh error:', error);
+    
+    // Send error message if headers not sent
+    if (!res.headersSent) {
+      res.status(500).json({ 
+        error: 'Internal server error', 
+        details: error.message 
+      });
+    } else {
+      res.write(`data: ${JSON.stringify({
+        status: 'error',
+        error: error.message,
+        message: 'Database refresh failed'
+      })}\n\n`);
+      res.end();
+    }
+  }
+});
+
+// Global refresh state
+let globalRefreshState = {
+  isRunning: false,
+  cancelToken: null,
+  progress: null
+};
+
+// Simple refresh DB endpoint
+app.post('/refreshdb-simple', async (req, res) => {
+  try {
+    const { totalResults = 2000 } = req.body;
+    
+    // Cancel any existing refresh
+    if (globalRefreshState.isRunning && globalRefreshState.cancelToken) {
+      globalRefreshState.cancelToken.cancel = true;
+      console.log('Cancelling previous refresh...');
+      
+      // Wait a moment for cancellation to take effect
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    
+    // Delete existing db folder
+    const dbPath = path.join(__dirname, 'db');
+    if (fs.existsSync(dbPath)) {
+      console.log('Deleting existing db folder...');
+      fs.rmSync(dbPath, { recursive: true, force: true });
+    }
+    
+    // Create fresh db folder
+    fs.mkdirSync(dbPath, { recursive: true });
+    
+    // Reset progress
+    globalRefreshState = {
+      isRunning: true,
+      cancelToken: { cancel: false },
+      progress: {
+        status: 'processing',
+        total: STOCK_SYMBOLS.length,
+        processed: 0,
+        successful: 0,
+        failed: 0,
+        percentage: 0,
+        errors: [],
+        startTime: Date.now(),
+        currentSymbol: null
+      }
+    };
+    
+    console.log(`Starting fresh database refresh for ${STOCK_SYMBOLS.length} symbols with ${totalResults} results each...`);
+    
+    // Return immediate response
+    res.json({
+      message: 'Database refresh started. Check progress at /refreshdb-progress',
+      total: STOCK_SYMBOLS.length
     });
+    
+    // Process in background
+    processSimpleRefreshInBackground(totalResults);
     
   } catch (error) {
     console.error('Database refresh error:', error);
@@ -404,6 +538,166 @@ app.post('/refreshdb', async (req, res) => {
     });
   }
 });
+
+// Single endpoint to check refresh progress
+app.get('/refreshdb-progress', (req, res) => {
+  if (!globalRefreshState.progress) {
+    return res.json({
+      status: 'idle',
+      message: 'No refresh in progress'
+    });
+  }
+  
+  const progress = globalRefreshState.progress;
+  const elapsedTime = Date.now() - progress.startTime;
+  const avgTimePerSymbol = progress.processed > 0 ? elapsedTime / progress.processed : 0;
+  const remainingSymbols = progress.total - progress.processed;
+  const estimatedTimeRemaining = avgTimePerSymbol * remainingSymbols;
+  
+  res.json({
+    ...progress,
+    estimatedTimeRemaining: Math.round(estimatedTimeRemaining / 1000), // in seconds
+    elapsedTime: Math.round(elapsedTime / 1000) // in seconds
+  });
+});
+
+// Simplified background processing function
+async function processSimpleRefreshInBackground(totalResults) {
+  const cancelToken = globalRefreshState.cancelToken;
+  const progress = globalRefreshState.progress;
+  
+  try {
+    const dbPath = path.join(__dirname, 'db');
+    
+    // Process in batches
+    const batchSize = 10;
+    const batches = [];
+    
+    for (let i = 0; i < STOCK_SYMBOLS.length; i += batchSize) {
+      batches.push(STOCK_SYMBOLS.slice(i, i + batchSize));
+    }
+    
+    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+      // Check for cancellation
+      if (cancelToken.cancel) {
+        console.log('Refresh cancelled by user');
+        progress.status = 'cancelled';
+        progress.message = 'Refresh cancelled by user';
+        globalRefreshState.isRunning = false;
+        return;
+      }
+      
+      const batch = batches[batchIndex];
+      const batchPromises = batch.map(async (symbol) => {
+        try {
+          const queryString = "select high, low, open, close, volume, Upper Bollinger band(  20 ,  2 ) as 'ubb', Lower Bollinger band(  20 ,  2 ) as 'lbb', Sma(  Close ,  20 ) as 'sma'";
+          const data = qs.stringify({
+            query: queryString,
+            use_live: 1,
+            limit: 1,
+            size: totalResults,
+            widget_id: -1,
+            end_time: -1,
+            timeframe: "Daily",
+            symbol: symbol,
+            scan_link: "scanlink:b6b0c6620714e44ab63d271d0ddbd498"
+          });
+          
+          const response = await axios.post('https://chartink.com/oapi', data, {
+            headers: {
+              'accept': 'application/json, text/plain, */*',
+              'accept-language': 'en-GB,en-US;q=0.9,en;q=0.8,la;q=0.7',
+              'content-type': 'application/x-www-form-urlencoded',
+              'cookie': '_ga=GA1.2.827081830.1738516382; _gid=GA1.2.158232909.1738612317; XSRF-TOKEN=eyJpdiI6IjVrL2dLek8rSVE4aGFTWWllazd6cHc9PSIsInZhbHVlIjoiQmVUcmlLb0Z2dk9uYVlPeUpJL3d1OTQ0MTdvcUpWZGt6V2tEaHpEeUJidGJVOENDeFpYbnJiaVgxV3NielhMbjBGUzlTVmNuektCaHhTb0V3MFVnS1VUbWZRVCtEYXFxYlhrYzZ4eWpnY2RuZjltSlJJd1NaUkE4dlFTbVA5aDkiLCJtYWMiOiJkYzM1YzY2YTIwOTM5NTQzODNjMzNkMDZiNWMwY2NkNzc5MDQ5OTFmOGJlMTgwMzJmYjM1NDdmNTFjNzAyOGY2IiwidGFnIjoiIn0%3D; ci_session=eyJpdiI6InVrKzF5dXE4b2lzazMxU2lQWkJMN0E9PSIsInZhbHVlIjoiTzdMOHNsZDFJZ1dYd0JxT2EyQ0NVZGIvNUZUdmJsOHFtSXZuc002bnBrck5RSmVpS1NIRTZUUTZjWU9NVTNOcmM0SmtOSnF5UVI0cGVlU2VrNGJCM3Y2NkhKdTBvdWJlVEZzS3k2VDdtNGRDbzJqemo5M3gzbVFWaXEzQWFkbjAiLCJtYWMiOiI2YjYzMzI5N2UwOTZmYTM3OTNlNWMwNzk1NmFjY2E4MTdlMzQxNGVjYzIxMDUxOWE1ODkyYTg1MTM1NTU2NjJjIiwidGFnIjoiIn0%3D',
+              'dnt': '1',
+              'origin': 'https://chartink.com',
+              'priority': 'u=1, i',
+              'referer': 'https://chartink.com/screener/copy-double-volume-563',
+              'sec-ch-ua': '"Not A(Brand";v="8", "Chromium";v="132", "Google Chrome";v="132"',
+              'sec-ch-ua-mobile': '?0',
+              'sec-ch-ua-platform': '"Windows"',
+              'sec-fetch-dest': 'empty',
+              'sec-fetch-mode': 'cors',
+              'sec-fetch-site': 'same-origin',
+              'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
+              'x-xsrf-token': 'eyJpdiI6IjVrL2dLek8rSVE4aGFTWWllazd6cHc9PSIsInZhbHVlIjoiQmVUcmlLb0Z2dk9uYVlPeUpJL3d1OTQ0MTdvcUpWZGt6V2tEaHpEeUJidGJVOENDeFpYbnJiaVgxV3NielhMbjBGUzlTVmNuektCaHhTb0V3MFVnS1VUbWZRVCtEYXFxYlhrYzZ4eWpnY2RuZjltSlJJd1NaUkE4dlFTbVA5aDkiLCJtYWMiOiJkYzM1YzY2YTIwOTM5NTQzODNjMzNkMDZiNWMwY2NkNzc5MDQ5OTFmOGJlMTgwMzJmYjM1NDdmNTFjNzAyOGY2IiwidGFnIjoiIn0=',
+            },
+            timeout: 30000
+          });
+          
+          // Map the data
+          const groupData = response?.data?.groupData?.[0]?.results;
+          const metaData = response?.data?.metaData?.[0]?.tradeTimes;
+          let mappedData = [];
+          
+          if (groupData && metaData) {
+            const highs = groupData[0]?.high || [];
+            const lows = groupData[1]?.low || [];
+            const opens = groupData[2]?.open || [];
+            const closes = groupData[3]?.close || [];
+            const volumes = groupData[4]?.volume || [];
+            const ubbs = groupData[5]?.ubb || [];
+            const lbbs = groupData[6]?.lbb || [];
+            const sma20s = groupData[7]?.sma || [];
+            
+            highs.forEach((element, idx) => {
+              if(idx < metaData.length){
+                mappedData.push({
+                  open: opens[idx] !== undefined && opens[idx] !== null ? String(opens[idx]) : '',
+                  low: lows[idx] !== undefined && lows[idx] !== null ? String(lows[idx]) : '',
+                  high: highs[idx] !== undefined && highs[idx] !== null ? String(highs[idx]) : '',
+                  close: closes[idx] !== undefined && closes[idx] !== null ? String(closes[idx]) : '',
+                  volume: volumes[idx] !== undefined && volumes[idx] !== null ? String(volumes[idx]) : null,
+                  date: metaData[idx] !== undefined && metaData[idx] !== null ? String(getNextDayTimestamp(metaData[idx])) : '',
+                  day: metaData[idx] !== undefined && metaData[idx] !== null ? getDayOfWeekName(getNextDayTimestamp(metaData[idx])) : '',
+                  ubb: ubbs[idx] !== undefined && ubbs[idx] !== null ? String(ubbs[idx]) : '',
+                  lbb: lbbs[idx] !== undefined && lbbs[idx] !== null ? String(lbbs[idx]) : '',
+                  sma20: sma20s[idx] !== undefined && sma20s[idx] !== null ? String(sma20s[idx]) : ''
+                });
+              }
+            });
+          }
+          
+          // Save to file
+          const fileName = `${symbol}.json`;
+          const filePath = path.join(dbPath, fileName);
+          fs.writeFileSync(filePath, JSON.stringify({ data: mappedData }, null, 2), 'utf8');
+          
+          progress.successful++;
+          console.log(`✓ ${symbol} - ${mappedData.length} records saved`);
+          
+        } catch (error) {
+          progress.failed++;
+          progress.errors.push({ symbol, error: error.message });
+          console.error(`✗ ${symbol} - Error: ${error.message}`);
+        }
+        
+        progress.processed++;
+        progress.percentage = Math.round((progress.processed / progress.total) * 100);
+        progress.currentSymbol = symbol;
+      });
+      
+      // Wait for batch to complete
+      await Promise.all(batchPromises);
+      
+      // Add delay between batches
+      if (batchIndex < batches.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+    
+    progress.status = 'completed';
+    progress.message = `Database refresh completed. ${progress.successful} symbols updated successfully.`;
+    globalRefreshState.isRunning = false;
+    console.log(`Database refresh completed! Processed: ${progress.processed}, Successful: ${progress.successful}, Failed: ${progress.failed}`);
+    
+  } catch (error) {
+    progress.status = 'error';
+    progress.error = error.message;
+    globalRefreshState.isRunning = false;
+    console.error('Database refresh error:', error);
+  }
+}
 
 // Start server
 app.listen(port, () => {
