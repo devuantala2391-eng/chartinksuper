@@ -68,6 +68,15 @@ function getISOWeek(date) {
 }
 
 /**
+ * Rounds a number to 2 decimal places
+ * @param {number} value - The value to round
+ * @returns {number} The rounded value
+ */
+function round2(value) {
+  return Math.round(value * 100) / 100;
+}
+
+/**
  * Pure function: Calculates the SMA for the given candle data and timeframe.
  * If timeframe is 'daily', computes a simple SMA over daily candles.
  * If timeframe is 'weekly', computes a rolling weekly SMA over daily candles.
@@ -121,7 +130,7 @@ function calculateSMA(candles, timeframe, period, outputKey = 'sma') {
         closes[closes.length - 1] = Number(candle.close);
       }
       const sma = closes.reduce((a, b) => a + b, 0) / period;
-      return { ...candle, [outputKey]: sma };
+      return { ...candle, [outputKey]: round2(sma) };
     });
   }
 
@@ -133,7 +142,7 @@ function calculateSMA(candles, timeframe, period, outputKey = 'sma') {
       }
       const sum = arr.slice(idx - period + 1, idx + 1).reduce((acc, c) => acc + Number(c.close), 0);
       const sma = sum / period;
-      return { ...candle, [outputKey]: sma };
+      return { ...candle, [outputKey]: round2(sma) };
     });
   }
 
@@ -144,7 +153,7 @@ function calculateSMA(candles, timeframe, period, outputKey = 'sma') {
     }
     const sum = arr.slice(idx - period + 1, idx + 1).reduce((acc, c) => acc + Number(c.close), 0);
     const sma = sum / period;
-    return { ...candle, [outputKey]: sma };
+    return { ...candle, [outputKey]: round2(sma) };
   });
 }
 
@@ -184,11 +193,11 @@ function calculateEMA(candles, timeframe, period, outputKey = 'ema') {
       if (idx === period - 1) {
         const sma = arr.slice(0, period).reduce((acc, c) => acc + Number(c.close), 0) / period;
         emaPrev = sma;
-        return { ...candle, [outputKey]: sma };
+        return { ...candle, [outputKey]: round2(sma) };
       }
       const ema = (close - emaPrev) * k + emaPrev;
       emaPrev = ema;
-      return { ...candle, [outputKey]: ema };
+      return { ...candle, [outputKey]: round2(ema) };
     });
     
     // Map weekly results back to daily candles
@@ -205,7 +214,8 @@ function calculateEMA(candles, timeframe, period, outputKey = 'ema') {
         const wcWeekKey = getWeekKey(wc.date);
         return wcWeekKey === weekKey;
       });
-      return { ...candle, [outputKey]: weeklyCandle ? weeklyCandle[outputKey] : null };
+      const value = weeklyCandle ? weeklyCandle[outputKey] : null;
+      return { ...candle, [outputKey]: value };
     });
   }
 
@@ -222,11 +232,11 @@ function calculateEMA(candles, timeframe, period, outputKey = 'ema') {
       if (idx === period - 1) {
         const sma = arr.slice(0, period).reduce((acc, c) => acc + Number(c.close), 0) / period;
         emaPrev = sma;
-        return { ...candle, [outputKey]: sma };
+        return { ...candle, [outputKey]: round2(sma) };
       }
       const ema = (close - emaPrev) * k + emaPrev;
       emaPrev = ema;
-      return { ...candle, [outputKey]: ema };
+      return { ...candle, [outputKey]: round2(ema) };
     });
   }
 
@@ -242,11 +252,11 @@ function calculateEMA(candles, timeframe, period, outputKey = 'ema') {
     if (idx === period - 1) {
       const sma = arr.slice(0, period).reduce((acc, c) => acc + Number(c.close), 0) / period;
       emaPrev = sma;
-      return { ...candle, [outputKey]: sma };
+      return { ...candle, [outputKey]: round2(sma) };
     }
     const ema = (close - emaPrev) * k + emaPrev;
     emaPrev = ema;
-    return { ...candle, [outputKey]: ema };
+    return { ...candle, [outputKey]: round2(ema) };
   });
 }
 
@@ -290,7 +300,7 @@ function calculateRSI(candles, timeframe, period, outputKey = 'rsi') {
       }
       const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
       const rsi = avgLoss === 0 ? 100 : 100 - 100 / (1 + rs);
-      return { ...candle, [outputKey]: rsi };
+      return { ...candle, [outputKey]: round2(rsi) };
     });
     
     // Map weekly results back to daily candles
@@ -307,7 +317,8 @@ function calculateRSI(candles, timeframe, period, outputKey = 'rsi') {
         const wcWeekKey = getWeekKey(wc.date);
         return wcWeekKey === weekKey;
       });
-      return { ...candle, [outputKey]: weeklyCandle ? weeklyCandle[outputKey] : null };
+      const value = weeklyCandle ? weeklyCandle[outputKey] : null;
+      return { ...candle, [outputKey]: value };
     });
   }
 
@@ -335,7 +346,7 @@ function calculateRSI(candles, timeframe, period, outputKey = 'rsi') {
       }
       const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
       const rsi = avgLoss === 0 ? 100 : 100 - 100 / (1 + rs);
-      return { ...candle, [outputKey]: rsi };
+      return { ...candle, [outputKey]: round2(rsi) };
     });
   }
 
@@ -362,7 +373,7 @@ function calculateRSI(candles, timeframe, period, outputKey = 'rsi') {
     }
     const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
     const rsi = avgLoss === 0 ? 100 : 100 - 100 / (1 + rs);
-    return { ...candle, [outputKey]: rsi };
+    return { ...candle, [outputKey]: round2(rsi) };
   });
 }
 
@@ -391,7 +402,7 @@ function calculatePercentChange(candles, timeframe, period, outputKey = '%change
       const prevClose = Number(arr[idx - period].close);
       const currClose = Number(candle.close);
       const pct = ((currClose - prevClose) / prevClose) * 100;
-      return { ...candle, [outputKey]: pct };
+      return { ...candle, [outputKey]: round2(pct) };
     });
     
     // Map weekly results back to daily candles
@@ -408,7 +419,8 @@ function calculatePercentChange(candles, timeframe, period, outputKey = '%change
         const wcWeekKey = getWeekKey(wc.date);
         return wcWeekKey === weekKey;
       });
-      return { ...candle, [outputKey]: weeklyCandle ? weeklyCandle[outputKey] : null };
+      const value = weeklyCandle ? weeklyCandle[outputKey] : null;
+      return { ...candle, [outputKey]: value };
     });
   }
 
@@ -421,7 +433,7 @@ function calculatePercentChange(candles, timeframe, period, outputKey = '%change
       const prevClose = Number(arr[idx - period].close);
       const currClose = Number(candle.close);
       const pct = ((currClose - prevClose) / prevClose) * 100;
-      return { ...candle, [outputKey]: pct };
+      return { ...candle, [outputKey]: round2(pct) };
     });
   }
 
@@ -433,7 +445,7 @@ function calculatePercentChange(candles, timeframe, period, outputKey = '%change
     const prevClose = Number(arr[idx - period].close);
     const currClose = Number(candle.close);
     const pct = ((currClose - prevClose) / prevClose) * 100;
-    return { ...candle, [outputKey]: pct };
+    return { ...candle, [outputKey]: round2(pct) };
   });
 }
 
@@ -484,35 +496,96 @@ function calculateSuperTrend(candles, timeframe, period, multiplier, outputKey =
       }
     }
     
-    // SuperTrend calculation
+    // SuperTrend calculation with proper formula
+    let finalUpperBand = [];
+    let finalLowerBand = [];
     let supertrend = [];
-    let inUptrend = true;
-    const weeklyResults = weeklyCandles.map((candle, idx) => {
+    let trend = [];
+    
+    for (let idx = 0; idx < weeklyCandles.length; idx++) {
+      if (idx < period) {
+        finalUpperBand.push(null);
+        finalLowerBand.push(null);
+        supertrend.push(null);
+        trend.push(null);
+        continue;
+      }
+      
+      const candle = weeklyCandles[idx];
       const atr = atrArr[idx];
       const hl2 = (Number(candle.high) + Number(candle.low)) / 2;
-      const upperBand = hl2 + multiplier * atr;
-      const lowerBand = hl2 - multiplier * atr;
-      let st;
-      if (idx === 0) {
-        st = upperBand;
-        inUptrend = true;
+      const basicUpperBand = hl2 + multiplier * atr;
+      const basicLowerBand = hl2 - multiplier * atr;
+      
+      // Calculate final bands
+      let currentFinalUpperBand, currentFinalLowerBand;
+      
+      if (idx === period) {
+        currentFinalUpperBand = basicUpperBand;
+        currentFinalLowerBand = basicLowerBand;
       } else {
-        const prev = supertrend[idx - 1];
-        if (candle.close > prev.st) {
-          st = Math.max(lowerBand, prev.st);
-          inUptrend = true;
-        } else if (candle.close < prev.st) {
-          st = Math.min(upperBand, prev.st);
-          inUptrend = false;
+        const prevClose = Number(weeklyCandles[idx - 1].close);
+        const prevFinalUpperBand = finalUpperBand[idx - 1];
+        const prevFinalLowerBand = finalLowerBand[idx - 1];
+        
+        currentFinalUpperBand = (basicUpperBand < prevFinalUpperBand || prevClose > prevFinalUpperBand) 
+          ? basicUpperBand 
+          : prevFinalUpperBand;
+          
+        currentFinalLowerBand = (basicLowerBand > prevFinalLowerBand || prevClose < prevFinalLowerBand)
+          ? basicLowerBand
+          : prevFinalLowerBand;
+      }
+      
+      finalUpperBand.push(currentFinalUpperBand);
+      finalLowerBand.push(currentFinalLowerBand);
+      
+      // Determine trend and supertrend
+      const close = Number(candle.close);
+      let currentTrend, currentST;
+      
+      if (idx === period) {
+        if (close <= currentFinalUpperBand) {
+          currentTrend = 'down';
+          currentST = currentFinalUpperBand;
         } else {
-          st = prev.st;
+          currentTrend = 'up';
+          currentST = currentFinalLowerBand;
+        }
+      } else {
+        const prevTrend = trend[idx - 1];
+        
+        if (prevTrend === 'up') {
+          if (close <= currentFinalLowerBand) {
+            currentTrend = 'down';
+            currentST = currentFinalUpperBand;
+          } else {
+            currentTrend = 'up';
+            currentST = currentFinalLowerBand;
+          }
+        } else {
+          if (close >= currentFinalUpperBand) {
+            currentTrend = 'up';
+            currentST = currentFinalLowerBand;
+          } else {
+            currentTrend = 'down';
+            currentST = currentFinalUpperBand;
+          }
         }
       }
-      supertrend.push({ st, inUptrend });
+      
+      trend.push(currentTrend);
+      supertrend.push(currentST);
+    }
+    
+    const weeklyResults = weeklyCandles.map((candle, idx) => {
+      // Round the supertrend value to 2 decimal places
+      const stValue = supertrend[idx] ? round2(supertrend[idx]) : null;
+      
       return {
         ...candle,
-        [outputKey]: idx < period ? null : st,
-        [`${outputKey}_trend`]: idx < period ? null : (inUptrend ? 'up' : 'down'),
+        [outputKey]: stValue,
+        [`${outputKey}_trend`]: trend[idx],
       };
     });
     
@@ -581,21 +654,24 @@ function calculateSuperTrend(candles, timeframe, period, multiplier, outputKey =
         inUptrend = true;
       } else {
         const prev = supertrend[i - 1];
-        if (curr.close > prev.st) {
+        const close = Number(curr.close);
+        if (close > prev.st) {
           st = Math.max(lowerBand, prev.st);
           inUptrend = true;
-        } else if (curr.close < prev.st) {
+        } else if (close < prev.st) {
           st = Math.min(upperBand, prev.st);
           inUptrend = false;
         } else {
+          // When close equals SuperTrend, maintain previous trend
           st = prev.st;
+          inUptrend = prev.inUptrend;
         }
       }
       supertrend.push({ st, inUptrend });
     }
     return tfCandles.map((candle, idx) => ({
       ...candle,
-      [outputKey]: idx < period ? null : supertrend[idx].st,
+      [outputKey]: idx < period ? null : round2(supertrend[idx].st),
       [`${outputKey}_trend`]: idx < period ? null : supertrend[idx].inUptrend ? 'up' : 'down',
     }));
   }
@@ -656,7 +732,7 @@ function calculateSuperTrend(candles, timeframe, period, multiplier, outputKey =
   }
   return candles.map((candle, idx) => ({
     ...candle,
-    [outputKey]: idx < period ? null : supertrend[idx].st,
+    [outputKey]: idx < period ? null : round2(supertrend[idx].st),
     [`${outputKey}_trend`]: idx < period ? null : supertrend[idx].inUptrend ? 'up' : 'down',
   }));
 }
