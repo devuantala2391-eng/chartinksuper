@@ -742,6 +742,134 @@ function calculateSuperTrendFactory(timeframe, period, multiplier, outputKey = '
 }
 
 /**
+ * Calculates Bollinger Bands for the given candle data and timeframe.
+ * @param {Array} candles
+ * @param {'daily'|'weekly'|'monthly'} timeframe
+ * @param {number} period - Number of periods for moving average (typically 20)
+ * @param {number} multiplier - Standard deviation multiplier (typically 2)
+ * @param {string} [outputKeyUpper='bb_upper'] - The key for upper band
+ * @param {string} [outputKeyLower='bb_lower'] - The key for lower band
+ * @returns {Array}
+ */
+function calculateBollingerBands(candles, timeframe, period, multiplier, outputKeyUpper = 'bb_upper', outputKeyLower = 'bb_lower') {
+  if (!Array.isArray(candles)) return [];
+
+  if (timeframe === 'weekly') {
+    // Aggregate to weekly candles first
+    const weeklyCandles = aggregateCandles(candles, 'weekly');
+    const weeklyResults = weeklyCandles.map((candle, idx, arr) => {
+      if (idx < period - 1) {
+        return { 
+          ...candle, 
+          [outputKeyUpper]: null,
+          [outputKeyLower]: null 
+        };
+      }
+      
+      const closes = arr.slice(idx - period + 1, idx + 1).map(c => Number(c.close));
+      const sma = closes.reduce((sum, close) => sum + close, 0) / period;
+      
+      // Calculate standard deviation
+      const squaredDiffs = closes.map(close => Math.pow(close - sma, 2));
+      const variance = squaredDiffs.reduce((sum, diff) => sum + diff, 0) / period;
+      const stdDev = Math.sqrt(variance);
+      
+      const upperBand = sma + (multiplier * stdDev);
+      const lowerBand = sma - (multiplier * stdDev);
+      
+      return { 
+        ...candle, 
+        [outputKeyUpper]: round2(upperBand),
+        [outputKeyLower]: round2(lowerBand)
+      };
+    });
+    
+    // Map weekly results back to daily candles
+    function getWeekKey(date) {
+      const d = new Date(Number(date));
+      const year = d.getUTCFullYear();
+      const week = getISOWeek(d);
+      return `${year}-W${week}`;
+    }
+    
+    return candles.map((candle) => {
+      const weekKey = getWeekKey(candle.date);
+      const weeklyCandle = weeklyResults.find(wc => {
+        const wcWeekKey = getWeekKey(wc.date);
+        return wcWeekKey === weekKey;
+      });
+      return { 
+        ...candle, 
+        [outputKeyUpper]: weeklyCandle ? weeklyCandle[outputKeyUpper] : null,
+        [outputKeyLower]: weeklyCandle ? weeklyCandle[outputKeyLower] : null
+      };
+    });
+  }
+
+  if (timeframe === 'monthly') {
+    const tfCandles = aggregateCandles(candles, 'monthly');
+    return tfCandles.map((candle, idx, arr) => {
+      if (idx < period - 1) {
+        return { 
+          ...candle, 
+          [outputKeyUpper]: null,
+          [outputKeyLower]: null 
+        };
+      }
+      
+      const closes = arr.slice(idx - period + 1, idx + 1).map(c => Number(c.close));
+      const sma = closes.reduce((sum, close) => sum + close, 0) / period;
+      
+      // Calculate standard deviation
+      const squaredDiffs = closes.map(close => Math.pow(close - sma, 2));
+      const variance = squaredDiffs.reduce((sum, diff) => sum + diff, 0) / period;
+      const stdDev = Math.sqrt(variance);
+      
+      const upperBand = sma + (multiplier * stdDev);
+      const lowerBand = sma - (multiplier * stdDev);
+      
+      return { 
+        ...candle, 
+        [outputKeyUpper]: round2(upperBand),
+        [outputKeyLower]: round2(lowerBand)
+      };
+    });
+  }
+
+  // Default: simple Bollinger Bands on daily candles
+  return candles.map((candle, idx, arr) => {
+    if (idx < period - 1) {
+      return { 
+        ...candle, 
+        [outputKeyUpper]: null,
+        [outputKeyLower]: null 
+      };
+    }
+    
+    const closes = arr.slice(idx - period + 1, idx + 1).map(c => Number(c.close));
+    const sma = closes.reduce((sum, close) => sum + close, 0) / period;
+    
+    // Calculate standard deviation
+    const squaredDiffs = closes.map(close => Math.pow(close - sma, 2));
+    const variance = squaredDiffs.reduce((sum, diff) => sum + diff, 0) / period;
+    const stdDev = Math.sqrt(variance);
+    
+    const upperBand = sma + (multiplier * stdDev);
+    const lowerBand = sma - (multiplier * stdDev);
+    
+    return { 
+      ...candle, 
+      [outputKeyUpper]: round2(upperBand),
+      [outputKeyLower]: round2(lowerBand)
+    };
+  });
+}
+
+function calculateBollingerBandsFactory(timeframe, period, multiplier, outputKeyUpper = 'bb_upper', outputKeyLower = 'bb_lower') {
+  return (candles) => calculateBollingerBands(candles, timeframe, period, multiplier, outputKeyUpper, outputKeyLower);
+}
+
+/**
  * Pipeable function: applies a sequence of functions to the data.
  * @param {Array} data - The initial array of candles.
  * @param  {...function} fns - Functions to apply in sequence.
@@ -762,6 +890,8 @@ module.exports = {
   calculatePercentChangeFactory,
   calculateSuperTrend,
   calculateSuperTrendFactory,
+  calculateBollingerBands,
+  calculateBollingerBandsFactory,
   pipe,
   aggregateCandles,
 }; 

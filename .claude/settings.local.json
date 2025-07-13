@@ -5,7 +5,8 @@
       "Bash(cp:*)",
       "Bash(git checkout:*)",
       "Bash(ls:*)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(powershell:*)"
     ],
     "deny": []
   }
