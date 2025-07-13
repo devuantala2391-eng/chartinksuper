@@ -6,7 +6,10 @@
       "Bash(git checkout:*)",
       "Bash(ls:*)",
       "Bash(rm:*)",
-      "Bash(powershell:*)"
+      "Bash(powershell:*)",
+      "Bash(curl:*)",
+      "Bash(del queryParser.js conditionEvaluator.js testQuery.js)",
+      "Bash(mv:*)"
     ],
     "deny": []
   }

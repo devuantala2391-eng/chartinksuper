@@ -4,6 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const cors = require('cors');
 const qs = require('qs');
+const { parseQuery, findMatchingCandles, getQueryExamples } = require('./services/queryService');
+
 const app = express();
 app.use(cors());
 app.use(express.json())
@@ -33,6 +35,23 @@ function getDayOfWeekName(timestamp) {
   return DayOfWeek[date.getUTCDay()];
 }
 
+function getNextDayTimestamp(dateString) {
+  try {
+    if (typeof dateString !== 'number') {
+      const parsed = Number(dateString);
+      if (isNaN(parsed)) return null;
+      return parsed + 19800000;
+    }
+    return dateString + 19800000;
+  } catch (err) {
+    console.error("Error in getNextDayTimestamp:", err);
+    return null;
+  }
+}
+
+// ENDPOINTS START HERE
+
+// Chartink API endpoint
 app.post('/chartink-api', async (req, res) => {
   try {
     const { payload } = req.body;
@@ -129,34 +148,112 @@ app.post('/chartink-api', async (req, res) => {
   }
 });
 
+// Query endpoint for searching stocks based on conditions
+app.post('/query', async (req, res) => {
+  try {
+    const { query, stocks } = req.body;
+    
+    if (!query) {
+      return res.status(400).json({ error: 'Query is required' });
+    }
+    
+    // Parse the query
+    let parsedQuery;
+    try {
+      parsedQuery = parseQuery(query);
+    } catch (error) {
+      return res.status(400).json({ 
+        error: 'Invalid query format', 
+        details: error.message,
+        hint: 'Example: "daily upper bollinger band > daily close and weekly rsi > 60"'
+      });
+    }
+    
+    // If no stocks specified, get all available stocks from mapperStorage
+    let stockList = stocks;
+    if (!stockList || stockList.length === 0) {
+      const mapperStorageDir = path.join(__dirname, 'mapperStorage');
+      if (fs.existsSync(mapperStorageDir)) {
+        const files = fs.readdirSync(mapperStorageDir);
+        stockList = files
+          .filter(file => file.endsWith('_piped.json'))
+          .map(file => file.replace('_piped.json', ''));
+      }
+    }
+    
+    if (!stockList || stockList.length === 0) {
+      return res.status(400).json({ 
+        error: 'No stocks available for analysis',
+        hint: 'Run test.js to generate mapped data first'
+      });
+    }
+    
+    const allMatches = [];
+    const errors = [];
+    
+    // Process each stock
+    for (const stock of stockList) {
+      try {
+        const mappedFilePath = path.join(__dirname, 'mapperStorage', `${stock}_piped.json`);
+        
+        if (!fs.existsSync(mappedFilePath)) {
+          errors.push({ stock, error: 'Mapped data not found' });
+          continue;
+        }
+        
+        const mappedData = JSON.parse(fs.readFileSync(mappedFilePath, 'utf8'));
+        const candles = mappedData.data;
+        
+        if (!candles || candles.length === 0) {
+          errors.push({ stock, error: 'No candle data available' });
+          continue;
+        }
+        
+        // Find matching candles - the function handles data availability internally
+        const matches = findMatchingCandles(candles, parsedQuery, stock);
+        
+        allMatches.push(...matches);
+        
+      } catch (error) {
+        errors.push({ stock, error: error.message });
+      }
+    }
+    
+    // Sort matches by date (most recent first)
+    allMatches.sort((a, b) => parseInt(b.date) - parseInt(a.date));
+    
+    res.json({
+      success: true,
+      query: query,
+      parsedQuery: {
+        conditions: parsedQuery.conditions.map(c => ({
+          left: c.left,
+          operator: c.operator,
+          right: c.right
+        })),
+        logicalOperators: parsedQuery.logicalOperators
+      },
+      totalMatches: allMatches.length,
+      matches: allMatches,
+      errors: errors.length > 0 ? errors : undefined,
+      processedStocks: stockList.length
+    });
+    
+  } catch (error) {
+    console.error('Query endpoint error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error', 
+      details: error.message 
+    });
+  }
+});
+
+// Query examples endpoint
+app.get('/query/examples', (req, res) => {
+  res.json(getQueryExamples());
+});
+
+// Start server
 app.listen(port, () => {
   console.log(`Server is running on http://localhost:${port}`);
 });
-
-function getNextDayTimestamp(dateString) {
-  try {
-    if (typeof dateString !== 'number') {
-      const parsed = Number(dateString);
-      if (isNaN(parsed)) return null;
-      return parsed + 19800000;
-    }
-    return dateString + 19800000;
-  } catch (err) {
-    console.error("Error in getNextDayTimestamp:", err);
-    return null;
-  }
-}
-
-function convertDateToUtc(dateString) {
-  try {
-    if (!dateString || typeof dateString !== 'string') return null;
-    const [day, month, year] = dateString.split('-').map(Number);
-    if (!day || !month || !year) return null;
-    const dateObj = new Date(Date.UTC(year, month - 1, day));
-    const outerTimestamp = dateObj.getTime();
-    return outerTimestamp;
-  } catch (err) {
-    console.error("Error in convertDateToUtc:", err);
-    return null;
-  }
-}
