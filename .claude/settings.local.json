@@ -12,7 +12,12 @@
       "Bash(mv:*)",
       "Bash(npx @angular/cli@latest new:*)",
       "Bash(npm install:*)",
-      "Bash(npm start)"
+      "Bash(npm start)",
+      "Bash(fc:*)",
+      "Bash(npm run build:*)",
+      "Bash(npm run ng lint)",
+      "Bash(python:*)",
+      "Bash(taskkill:*)"
     ],
     "deny": []
   }

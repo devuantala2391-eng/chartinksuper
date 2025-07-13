@@ -26,6 +26,8 @@ const INDICATOR_MAPPINGS = {
   // SuperTrend
   'daily supertrend': 'supertrend_daily',
   'weekly supertrend': 'supertrend_weekly',
+  'daily super trend': 'supertrend_daily',
+  'weekly super trend': 'supertrend_weekly',
   
   // Price fields
   'daily close': 'close',
@@ -37,6 +39,7 @@ const INDICATOR_MAPPINGS = {
   
   // Volume fields
   'weekly volume': 'volume_weekly',
+  'week volume': 'volume_weekly',
   
   // Percent change
   'daily percent change': 'pctchg_daily',
@@ -59,10 +62,12 @@ const SIMPLE_FIELD_MAPPINGS = {
   'upper bollinger band': 'bb_upper_daily',
   'lower bollinger band': 'bb_lower_daily',
   'supertrend': 'supertrend_daily',
+  'super trend': 'supertrend_daily',
   'percent change': 'pctchg_daily',
   'pct change': 'pctchg_daily',
   '% change': 'pctchg_daily',
 };
+
 
 const OPERATORS = {
   '>': (a, b) => a > b,
@@ -156,34 +161,148 @@ function parseField(fieldStr) {
     }
   }
   
-  // Check for time-based patterns (e.g., "1 day ago volume", "3 days ago rsi")
-  const timePattern = /^(\d+)\s+days?\s+ago\s+(.+)$/;
-  const match = fieldStr.match(timePattern);
+  // Check for field expressions with multipliers (e.g., "1 week ago volume * 1.2")
+  const exprPattern = /^(.+?)\s*([*\/])\s*([\d.]+)$/;
+  const exprMatch = fieldStr.match(exprPattern);
+  
+  if (exprMatch) {
+    const fieldPart = exprMatch[1].trim();
+    const operator = exprMatch[2];
+    const multiplier = parseFloat(exprMatch[3]);
+    
+    // Parse the field part recursively
+    const parsedField = parseField(fieldPart);
+    
+    return {
+      type: 'expression',
+      field: parsedField,
+      operator: operator,
+      multiplier: multiplier
+    };
+  }
+  
+  // Check for time-based patterns (e.g., "1 day ago volume", "3 days ago rsi", "1 week ago high", "1 month ago close")
+  const dayPattern = /^(\d+)\s+days?\s+ago\s+(.+)$/;
+  const weekPattern = /^(\d+)\s+weeks?\s+ago\s+(.+)$/;
+  const monthPattern = /^(\d+)\s+months?\s+ago\s+(.+)$/;
+  
+  let match = fieldStr.match(dayPattern);
+  let timeUnit = 'day';
+  
+  if (!match) {
+    match = fieldStr.match(weekPattern);
+    if (match) {
+      timeUnit = 'week';
+    }
+  }
+  
+  if (!match) {
+    match = fieldStr.match(monthPattern);
+    if (match) {
+      timeUnit = 'month';
+    }
+  }
   
   if (match) {
-    const daysAgo = parseInt(match[1]);
+    const unitsAgo = parseInt(match[1]);
     const fieldName = match[2];
     
-    // Try to find the field in indicator mappings
+    // For week-based and month-based queries, check if we need to use aggregation
     let field = null;
+    let useWeeklyAggregation = false;
+    let useMonthlyAggregation = false;
+    const priceFields = ['open', 'high', 'low', 'close', 'volume'];
     
-    // Check full indicator mappings first
-    for (const [pattern, key] of Object.entries(INDICATOR_MAPPINGS)) {
-      if (fieldName.includes(pattern)) {
-        field = key;
-        break;
+    if (timeUnit === 'week') {
+      // Check if it's a price field that needs aggregation
+      if (priceFields.includes(fieldName)) {
+        field = fieldName;
+        useWeeklyAggregation = true;
+      } else {
+        // For indicators, try to find the weekly version
+        const weeklyMapping = {
+          'rsi': 'rsi_weekly',
+          'sma': 'sma_weekly',
+          'ema': 'ema_weekly',
+          'supertrend': 'supertrend_weekly',
+          'super trend': 'supertrend_weekly',
+          'upper bollinger band': 'bb_upper_weekly',
+          'lower bollinger band': 'bb_lower_weekly',
+          'percent change': 'pctchg_weekly',
+          'pct change': 'pctchg_weekly',
+          '% change': 'pctchg_weekly',
+          'weekly volume': 'volume_weekly',
+          'week volume': 'volume_weekly'
+        };
+        
+        field = weeklyMapping[fieldName];
+        if (!field) {
+          // Try full indicator mappings
+          for (const [pattern, key] of Object.entries(INDICATOR_MAPPINGS)) {
+            if (fieldName.includes(pattern)) {
+              // Check if there's a weekly version
+              const weeklyKey = key.replace('_daily', '_weekly');
+              if (key.includes('_daily')) {
+                field = weeklyKey;
+              } else {
+                field = key;
+              }
+              break;
+            }
+          }
+        }
+      }
+    } else if (timeUnit === 'month') {
+      // For month-based queries
+      if (priceFields.includes(fieldName)) {
+        field = fieldName;
+        useMonthlyAggregation = true;
+      } else {
+        // For indicators, we'll use the daily value from N months ago
+        for (const [pattern, key] of Object.entries(INDICATOR_MAPPINGS)) {
+          if (fieldName.includes(pattern)) {
+            field = key;
+            break;
+          }
+        }
+        
+        if (!field) {
+          field = SIMPLE_FIELD_MAPPINGS[fieldName] || fieldName;
+        }
+      }
+    } else {
+      // For day-based queries, use normal field resolution
+      for (const [pattern, key] of Object.entries(INDICATOR_MAPPINGS)) {
+        if (fieldName.includes(pattern)) {
+          field = key;
+          break;
+        }
+      }
+      
+      if (!field) {
+        field = SIMPLE_FIELD_MAPPINGS[fieldName] || fieldName;
       }
     }
     
-    // If not found, check simple field mappings
     if (!field) {
-      field = SIMPLE_FIELD_MAPPINGS[fieldName] || fieldName;
+      field = fieldName; // fallback to original field name
+    }
+    
+    let daysAgo = unitsAgo;
+    if (timeUnit === 'week') {
+      daysAgo = unitsAgo * 7;
+    } else if (timeUnit === 'month') {
+      daysAgo = unitsAgo * 30; // Approximate month as 30 days
     }
     
     return { 
       type: 'field', 
       field: field,
-      daysAgo: daysAgo
+      timeUnit: timeUnit,
+      unitsAgo: unitsAgo,
+      daysAgo: daysAgo,
+      useWeeklyAggregation: useWeeklyAggregation,
+      useMonthlyAggregation: useMonthlyAggregation
     };
   }
   
@@ -262,36 +381,176 @@ function getHistoricalFieldValue(candles, currentIndex, field, daysAgo) {
   return parseFloat(value);
 }
 
-function evaluateCondition(condition, candle, prevCandle, candles, currentIndex) {
-  // Get left value
-  let leftValue;
-  if (condition.left.type === 'field') {
-    if (condition.left.daysAgo) {
-      leftValue = getHistoricalFieldValue(candles, currentIndex, condition.left.field, condition.left.daysAgo);
-    } else {
-      leftValue = getFieldValue(candle, prevCandle, condition.left.field, candles, currentIndex);
-    }
-    if (leftValue === null) return false;
-  } else if (condition.left.type === 'value') {
-    leftValue = condition.left.value;
-  } else if (condition.left.type === 'percentage') {
-    leftValue = condition.left.value;
+function getWeeklyAggregatedValue(candles, currentIndex, field, weeksAgo) {
+  const currentDate = new Date(Number(candles[currentIndex].date));
+  const currentWeek = getISOWeek(currentDate);
+  const currentYear = currentDate.getUTCFullYear();
+  
+  // Calculate target week and year
+  let targetWeek = currentWeek - weeksAgo;
+  let targetYear = currentYear;
+  
+  // Handle year boundary
+  if (targetWeek <= 0) {
+    targetYear--;
+    // Get the number of weeks in the previous year
+    const lastDayOfPrevYear = new Date(Date.UTC(targetYear, 11, 31));
+    const lastWeekOfPrevYear = getISOWeek(lastDayOfPrevYear);
+    targetWeek = lastWeekOfPrevYear + targetWeek;
   }
   
-  // Get right value
-  let rightValue;
-  if (condition.right.type === 'field') {
-    if (condition.right.daysAgo) {
-      rightValue = getHistoricalFieldValue(candles, currentIndex, condition.right.field, condition.right.daysAgo);
-    } else {
-      rightValue = getFieldValue(candle, prevCandle, condition.right.field, candles, currentIndex);
+  // Find candles for the target week
+  const weekCandles = [];
+  for (let i = 0; i <= currentIndex; i++) {
+    const candle = candles[i];
+    const candleDate = new Date(Number(candle.date));
+    const candleWeek = getISOWeek(candleDate);
+    const candleYear = candleDate.getUTCFullYear();
+    
+    if (candleYear === targetYear && candleWeek === targetWeek) {
+      weekCandles.push(candle);
     }
-    if (rightValue === null) return false;
-  } else if (condition.right.type === 'value') {
-    rightValue = condition.right.value;
-  } else if (condition.right.type === 'percentage') {
-    rightValue = condition.right.value;
   }
+  
+  if (weekCandles.length === 0) {
+    return null;
+  }
+  
+  // Aggregate based on field type
+  switch (field) {
+    case 'high':
+      return Math.max(...weekCandles.map(c => parseFloat(c.high)));
+    case 'low':
+      return Math.min(...weekCandles.map(c => parseFloat(c.low)));
+    case 'open':
+      return parseFloat(weekCandles[0].open); // First candle's open
+    case 'close':
+      return parseFloat(weekCandles[weekCandles.length - 1].close); // Last candle's close
+    case 'volume':
+      return weekCandles.reduce((sum, c) => sum + parseFloat(c.volume), 0);
+    default:
+      // For other fields, return the last value of the week
+      return parseFloat(weekCandles[weekCandles.length - 1][field]);
+  }
+}
+
+function getISOWeek(date) {
+  const tmp = new Date(date.valueOf());
+  const dayNum = (date.getUTCDay() + 6) % 7;
+  tmp.setUTCDate(tmp.getUTCDate() - dayNum + 3);
+  const firstThursday = tmp.valueOf();
+  tmp.setUTCMonth(0, 1);
+  if (tmp.getUTCDay() !== 4) {
+    tmp.setUTCMonth(0, 1 + ((4 - tmp.getUTCDay()) + 7) % 7);
+  }
+  return 1 + Math.ceil((firstThursday - tmp) / 604800000);
+}
+
+function getMonthlyAggregatedValue(candles, currentIndex, field, monthsAgo) {
+  const currentDate = new Date(Number(candles[currentIndex].date));
+  const currentMonth = currentDate.getUTCMonth();
+  const currentYear = currentDate.getUTCFullYear();
+  
+  // Calculate target month and year
+  let targetMonth = currentMonth - monthsAgo;
+  let targetYear = currentYear;
+  
+  // Handle year boundaries
+  while (targetMonth < 0) {
+    targetMonth += 12;
+    targetYear--;
+  }
+  
+  // Find candles for the target month
+  const monthCandles = [];
+  for (let i = 0; i <= currentIndex; i++) {
+    const candle = candles[i];
+    const candleDate = new Date(Number(candle.date));
+    const candleMonth = candleDate.getUTCMonth();
+    const candleYear = candleDate.getUTCFullYear();
+    
+    if (candleYear === targetYear && candleMonth === targetMonth) {
+      monthCandles.push(candle);
+    }
+  }
+  
+  if (monthCandles.length === 0) {
+    return null;
+  }
+  
+  // Aggregate based on field type
+  switch (field) {
+    case 'high':
+      return Math.max(...monthCandles.map(c => parseFloat(c.high)));
+    case 'low':
+      return Math.min(...monthCandles.map(c => parseFloat(c.low)));
+    case 'open':
+      return parseFloat(monthCandles[0].open); // First candle's open
+    case 'close':
+      return parseFloat(monthCandles[monthCandles.length - 1].close); // Last candle's close
+    case 'volume':
+      return monthCandles.reduce((sum, c) => sum + parseFloat(c.volume), 0);
+    default:
+      // For other fields, return the last value of the month
+      return parseFloat(monthCandles[monthCandles.length - 1][field]);
+  }
+}
+
+function evaluateExpression(expr, candle, prevCandle, candles, currentIndex) {
+  if (expr.type === 'expression') {
+    // Get the base field value
+    const baseValue = evaluateExpression(expr.field, candle, prevCandle, candles, currentIndex);
+    if (baseValue === null) return null;
+    
+    // Apply the operator
+    if (expr.operator === '*') {
+      return baseValue * expr.multiplier;
+    } else if (expr.operator === '/') {
+      return baseValue / expr.multiplier;
+    }
+  } else if (expr.type === 'field') {
+    if (expr.timeUnit === 'week' && expr.unitsAgo > 0) {
+      // For week-based queries
+      if (expr.useWeeklyAggregation) {
+        // Aggregate price fields over the week
+        return getWeeklyAggregatedValue(candles, currentIndex, expr.field, expr.unitsAgo);
+      } else {
+        // Use weekly indicator values from N weeks ago
+        return getHistoricalFieldValue(candles, currentIndex, expr.field, expr.daysAgo);
+      }
+    } else if (expr.timeUnit === 'month' && expr.unitsAgo > 0) {
+      // For month-based queries
+      if (expr.useMonthlyAggregation) {
+        // Aggregate price fields over the month
+        return getMonthlyAggregatedValue(candles, currentIndex, expr.field, expr.unitsAgo);
+      } else {
+        // Use indicator values from N months ago (approximated as 30 days)
+        return getHistoricalFieldValue(candles, currentIndex, expr.field, expr.daysAgo);
+      }
+    } else if (expr.daysAgo) {
+      // For day-based historical queries
+      return getHistoricalFieldValue(candles, currentIndex, expr.field, expr.daysAgo);
+    } else {
+      // Current value
+      return getFieldValue(candle, prevCandle, expr.field, candles, currentIndex);
+    }
+  } else if (expr.type === 'value') {
+    return expr.value;
+  } else if (expr.type === 'percentage') {
+    return expr.value;
+  }
+  
+  return null;
+}
+
+function evaluateCondition(condition, candle, prevCandle, candles, currentIndex) {
+  // Get left value
+  const leftValue = evaluateExpression(condition.left, candle, prevCandle, candles, currentIndex);
+  if (leftValue === null) return false;
+  
+  // Get right value
+  const rightValue = evaluateExpression(condition.right, candle, prevCandle, candles, currentIndex);
+  if (rightValue === null) return false;
   
   // Apply the comparison
   return condition.compareFn(leftValue, rightValue);
@@ -354,23 +613,22 @@ function getDataAvailabilityIndex(candles, parsedQuery) {
   const requiredFields = new Set();
   let maxDaysAgo = 0;
   
+  function extractFieldInfo(expr) {
+    if (expr.type === 'expression' && expr.field) {
+      extractFieldInfo(expr.field);
+    } else if (expr.type === 'field') {
+      if (expr.field !== 'prev_close') {
+        requiredFields.add(expr.field);
+      }
+      if (expr.daysAgo) {
+        maxDaysAgo = Math.max(maxDaysAgo, expr.daysAgo);
+      }
+    }
+  }
+  
   for (const condition of parsedQuery.conditions) {
-    if (condition.left.type === 'field') {
-      if (condition.left.field !== 'prev_close') {
-        requiredFields.add(condition.left.field);
-      }
-      if (condition.left.daysAgo) {
-        maxDaysAgo = Math.max(maxDaysAgo, condition.left.daysAgo);
-      }
-    }
-    if (condition.right.type === 'field') {
-      if (condition.right.field !== 'prev_close') {
-        requiredFields.add(condition.right.field);
-      }
-      if (condition.right.daysAgo) {
-        maxDaysAgo = Math.max(maxDaysAgo, condition.right.daysAgo);
-      }
-    }
+    extractFieldInfo(condition.left);
+    extractFieldInfo(condition.right);
   }
   
   // Find first index where all fields have non-null values
@@ -422,6 +680,34 @@ const getQueryExamples = () => ({
     {
       query: "5 days ago close < 100 and close > 110",
       description: "Find stocks that gained 10% in 5 days"
+    },
+    {
+      query: "1 day ago volume > 1 week ago volume * 1.2",
+      description: "Find stocks where yesterday's volume was 20% higher than a week ago"
+    },
+    {
+      query: "1 day ago supertrend > weekly supertrend",
+      description: "Find stocks where yesterday's supertrend is above weekly supertrend"
+    },
+    {
+      query: "close > sma * 1.05 and rsi < 70",
+      description: "Find stocks trading 5% above SMA with RSI below 70"
+    },
+    {
+      query: "1 week ago high < close",
+      description: "Find stocks that closed above last week's high"
+    },
+    {
+      query: "volume * 1.5 > 1 week ago volume",
+      description: "Find stocks where today's volume is 50% higher than last week's total"
+    },
+    {
+      query: "1 month ago low > close",
+      description: "Find stocks trading below last month's low"
+    },
+    {
+      query: "2 * 1 month ago volume < volume",
+      description: "Find stocks where current volume is double the monthly volume from a month ago"
     }
   ],
   availableIndicators: {
@@ -454,8 +740,9 @@ const getQueryExamples = () => ({
       "yesterday's close"
     ],
     timeBased: [
-      "n days ago <indicator>",
-      "Examples: '1 day ago volume', '3 days ago rsi', '5 days ago close'"
+      "n days/weeks/months ago <indicator>",
+      "Examples: '1 day ago volume', '3 days ago rsi', '1 week ago high', '1 month ago close'",
+      "For week/month ago with price fields (high/low/close/volume), values are aggregated over the entire period"
     ]
   },
   operators: [">", "<", ">=", "<=", "=", "==", "!="],

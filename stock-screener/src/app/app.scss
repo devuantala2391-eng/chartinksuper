@@ -80,6 +80,37 @@
       margin-bottom: 4px;
     }
   }
+  
+  .preset-buttons {
+    margin-top: 12px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+    
+    span {
+      font-weight: 500;
+      color: #2c5aa0;
+    }
+    
+    .preset-btn {
+      background: #fff;
+      border: 1px solid #b8e0f0;
+      color: #2c5aa0;
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.2s;
+      
+      &:hover {
+        background: #2c5aa0;
+        color: white;
+        transform: translateY(-1px);
+        box-shadow: 0 2px 8px rgba(44, 90, 160, 0.2);
+      }
+    }
+  }
 }
 
 .conditions-container {
@@ -106,9 +137,16 @@
     display: flex;
     gap: 10px;
     align-items: center;
+    flex-wrap: wrap;
+    
+    @media (max-width: 768px) {
+      gap: 8px;
+    }
     
     .field-select,
-    .operator-select {
+    .operator-select,
+    .value-type-select,
+    .time-unit-select {
       flex: 1;
       padding: 10px;
       border: 2px solid #e0e0e0;
@@ -120,6 +158,16 @@
         outline: none;
         border-color: #5a4fcf;
       }
+    }
+    
+    .value-type-select {
+      flex: 0.4;
+    }
+    
+    .time-unit-select {
+      flex: 0 0 auto;
+      width: 120px;
+      font-size: 13px;
     }
     
     .value-input {
@@ -136,12 +184,12 @@
     }
     
     .days-ago-input {
-      flex: 0.3;
+      flex: 0 0 auto;
       padding: 10px;
       border: 2px solid #e0e0e0;
       border-radius: 6px;
       font-size: 14px;
-      width: 100px;
+      width: 70px;
       
       &:focus {
         outline: none;
@@ -163,6 +211,69 @@
       
       &:hover {
         transform: scale(1.1);
+      }
+    }
+    
+    .left-field-group,
+    .value-group {
+      display: flex;
+      gap: 5px;
+      align-items: center;
+      flex: 1;
+      
+      &.field-value {
+        flex: 1.5;
+      }
+    }
+    
+    .hint {
+      color: #888;
+      font-size: 12px;
+      white-space: nowrap;
+      user-select: none;
+    }
+    
+    .multiplier-input {
+      flex: 0.3;
+      padding: 10px;
+      border: 2px solid #e0e0e0;
+      border-radius: 6px;
+      font-size: 14px;
+      width: 80px;
+      
+      &:focus {
+        outline: none;
+        border-color: #5a4fcf;
+      }
+    }
+    
+    @media (max-width: 1200px) {
+      .left-field-group,
+      .value-group {
+        flex: 1 1 auto;
+        min-width: 200px;
+      }
+    }
+    
+    @media (max-width: 768px) {
+      flex-direction: column;
+      align-items: stretch;
+      
+      .left-field-group,
+      .value-group,
+      .field-select,
+      .operator-select,
+      .value-type-select {
+        width: 100%;
+        flex: none;
+      }
+      
+      .days-ago-input {
+        width: 80px;
+      }
+      
+      .multiplier-input {
+        width: 80px;
       }
     }
   }

@@ -14,12 +14,25 @@
     </div>
     
     <div class="help-text">
-      <p>💡 <strong>Tip:</strong> Use "Days ago" field to compare with historical values. For example:</p>
+      <p>💡 <strong>Tips:</strong></p>
       <ul>
-        <li>Enter "0" to use current value</li>
-        <li>Enter "1" for yesterday's value</li>
-        <li>Enter "5" for value from 5 days ago</li>
+        <li><strong>Days ago:</strong> Enter "0" for current value, "1" for yesterday, etc.</li>
+        <li><strong>Value Type:</strong> Choose "Number" for fixed values or "Field" to compare with another indicator</li>
+        <li><strong>Field comparisons:</strong> Compare indicators like "1 day ago volume > 1 week ago volume * 1.2"</li>
+        <li><strong>Multiplier:</strong> Use 1.2 for 120%, 0.9 for 90%, etc.</li>
       </ul>
+      <div class="preset-buttons">
+        <span>Try presets:</span>
+        <button class="preset-btn" (click)="loadPreset('volume-surge')" title="Find stocks where yesterday's volume was 20% higher than a week ago">
+          📊 Volume Surge
+        </button>
+        <button class="preset-btn" (click)="loadPreset('price-breakout')" title="Find stocks trading 5% above SMA">
+          📈 Price Breakout
+        </button>
+        <button class="preset-btn" (click)="loadPreset('trend-reversal')" title="Find stocks where daily supertrend crossed above weekly">
+          🔄 Trend Reversal
+        </button>
+      </div>
     </div>
 
     <div class="conditions-container">
@@ -32,20 +45,40 @@
         </div>
 
         <div class="condition-inputs">
-          <input 
-            type="number" 
-            [(ngModel)]="condition.daysAgo" 
-            placeholder="0"
-            class="days-ago-input"
-            min="0"
-            title="Enter 0 for current value, or number of days ago"
-          />
+          <div class="left-field-group">
+            <input 
+              type="number" 
+              [(ngModel)]="condition.leftMultiplier" 
+              placeholder="1"
+              class="multiplier-input"
+              min="0"
+              step="0.1"
+              title="Multiplier (1 = 100%, 1.2 = 120%)"
+            />
+            
+            <span class="hint">×</span>
+            
+            <input 
+              type="number" 
+              [(ngModel)]="condition.daysAgo" 
+              placeholder="0"
+              class="days-ago-input"
+              min="0"
+              title="How many periods ago (0 = current)"
+            />
+            
+            <select [(ngModel)]="condition.timeUnit" class="time-unit-select" title="Time unit">
+              <option value="day">day(s) ago</option>
+              <option value="week">week(s) ago</option>
+              <option value="month">month(s) ago</option>
+            </select>
 
-          <select [(ngModel)]="condition.field" class="field-select">
-            <option *ngFor="let field of fields" [value]="field.value">
-              {{ field.label }}
-            </option>
-          </select>
+            <select [(ngModel)]="condition.field" class="field-select">
+              <option *ngFor="let field of fields" [value]="field.value">
+                {{ field.label }}
+              </option>
+            </select>
+          </div>
 
           <select [(ngModel)]="condition.operator" class="operator-select">
             <option *ngFor="let op of operators" [value]="op.value">
@@ -53,17 +86,63 @@
             </option>
           </select>
 
-          <input 
-            type="text" 
-            [(ngModel)]="condition.value" 
-            placeholder="Enter value"
-            class="value-input"
-          />
+          <select [(ngModel)]="condition.valueType" class="value-type-select" title="Choose between fixed number or field comparison">
+            <option value="number">Number</option>
+            <option value="field">Field</option>
+          </select>
+
+          <!-- Number input -->
+          <div class="value-group number-value" *ngIf="condition.valueType === 'number'">
+            <input 
+              type="text" 
+              [(ngModel)]="condition.value" 
+              placeholder="Enter value"
+              class="value-input"
+              title="Enter a numeric value"
+            />
+          </div>
+
+          <!-- Field comparison inputs -->
+          <div class="value-group field-value" *ngIf="condition.valueType === 'field'">
+            <input 
+              type="number" 
+              [(ngModel)]="condition.multiplier" 
+              placeholder="1"
+              class="multiplier-input"
+              min="0"
+              step="0.1"
+              title="Multiplier (1 = 100%, 1.2 = 120%)"
+            />
+            
+            <span class="hint">×</span>
+            
+            <input 
+              type="number" 
+              [(ngModel)]="condition.valueDaysAgo" 
+              placeholder="0"
+              class="days-ago-input"
+              min="0"
+              title="How many periods ago (0 = current)"
+            />
+            
+            <select [(ngModel)]="condition.valueTimeUnit" class="time-unit-select" title="Time unit">
+              <option value="day">day(s) ago</option>
+              <option value="week">week(s) ago</option>
+              <option value="month">month(s) ago</option>
+            </select>
+            
+            <select [(ngModel)]="condition.valueField" class="field-select">
+              <option *ngFor="let field of fields" [value]="field.value">
+                {{ field.label }}
+              </option>
+            </select>
+          </div>
 
           <button 
             class="remove-btn" 
             (click)="removeCondition(condition.id)"
             *ngIf="conditions.length > 1"
+            title="Remove this condition"
           >
             ❌
           </button>

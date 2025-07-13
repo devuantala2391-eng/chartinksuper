@@ -10,6 +10,13 @@ interface Condition {
   value: string;
   logicalOperator: 'and' | 'or';
   daysAgo?: number;
+  timeUnit: 'day' | 'week' | 'month';
+  leftMultiplier?: number;
+  valueType: 'number' | 'field';
+  valueField?: string;
+  valueDaysAgo?: number;
+  valueTimeUnit?: 'day' | 'week' | 'month';
+  multiplier?: number;
 }
 
 interface QueryResult {
@@ -70,7 +77,7 @@ export class App {
   ];
 
   conditions: Condition[] = [
-    { id: 1, field: 'daily rsi', operator: '>', value: '60', logicalOperator: 'and', daysAgo: 0 }
+    { id: 1, field: 'daily rsi', operator: '>', value: '60', logicalOperator: 'and', daysAgo: 0, timeUnit: 'day', leftMultiplier: 1, valueType: 'number' }
   ];
   
   queryString = '';
@@ -91,7 +98,14 @@ export class App {
       operator: '>',
       value: '',
       logicalOperator: 'and',
-      daysAgo: 0
+      daysAgo: 0,
+      timeUnit: 'day',
+      leftMultiplier: 1,
+      valueType: 'number',
+      valueField: 'daily rsi',
+      valueDaysAgo: 0,
+      valueTimeUnit: 'day',
+      multiplier: 1
     });
   }
 
@@ -101,11 +115,32 @@ export class App {
 
   buildQuery(): string {
     return this.conditions.map((condition, index) => {
+      // Build left side
       let field = condition.field;
       if (condition.daysAgo !== null && condition.daysAgo !== undefined && condition.daysAgo > 0) {
-        field = `${condition.daysAgo} ${condition.daysAgo === 1 ? 'day' : 'days'} ago ${condition.field}`;
+        let unit = condition.timeUnit;
+        const plural = condition.daysAgo === 1 ? unit : unit + 's';
+        field = `${condition.daysAgo} ${plural} ago ${condition.field}`;
       }
-      const conditionStr = `${field} ${condition.operator} ${condition.value}`;
+      if (condition.leftMultiplier && condition.leftMultiplier !== 1) {
+        field = `${field} * ${condition.leftMultiplier}`;
+      }
+      
+      // Build right side
+      let value = condition.value;
+      if (condition.valueType === 'field' && condition.valueField) {
+        value = condition.valueField;
+        if (condition.valueDaysAgo && condition.valueDaysAgo > 0) {
+          let unit = condition.valueTimeUnit;
+          const plural = condition.valueDaysAgo === 1 ? unit : unit + 's';
+          value = `${condition.valueDaysAgo} ${plural} ago ${value}`;
+        }
+        if (condition.multiplier && condition.multiplier !== 1) {
+          value = `${value} * ${condition.multiplier}`;
+        }
+      }
+      
+      const conditionStr = `${field} ${condition.operator} ${value}`;
       if (index === 0) {
         return conditionStr;
       }
@@ -174,5 +209,66 @@ export class App {
   copyScan() {
     navigator.clipboard.writeText(this.queryString);
     alert('Query copied to clipboard!');
+  }
+
+  loadPreset(preset: string) {
+    this.conditions = [];
+    this.nextId = 1;
+    
+    switch(preset) {
+      case 'volume-surge':
+        this.conditions.push({
+          id: this.nextId++,
+          field: 'volume',
+          operator: '>',
+          value: '',
+          logicalOperator: 'and',
+          daysAgo: 1,
+          timeUnit: 'day',
+          leftMultiplier: 1,
+          valueType: 'field',
+          valueField: 'volume',
+          valueDaysAgo: 1,
+          valueTimeUnit: 'week',
+          multiplier: 1.2
+        });
+        break;
+      case 'price-breakout':
+        this.conditions.push({
+          id: this.nextId++,
+          field: 'close',
+          operator: '>',
+          value: '',
+          logicalOperator: 'and',
+          daysAgo: 0,
+          timeUnit: 'day',
+          leftMultiplier: 1,
+          valueType: 'field',
+          valueField: 'sma',
+          valueDaysAgo: 0,
+          valueTimeUnit: 'day',
+          multiplier: 1.05
+        });
+        break;
+      case 'trend-reversal':
+        this.conditions.push({
+          id: this.nextId++,
+          field: 'super trend',
+          operator: '>',
+          value: '',
+          logicalOperator: 'and',
+          daysAgo: 1,
+          timeUnit: 'day',
+          leftMultiplier: 1,
+          valueType: 'field',
+          valueField: 'weekly super trend',
+          valueDaysAgo: 0,
+          valueTimeUnit: 'day',
+          multiplier: 1
+        });
+        break;
+    }
+    
+    this.generateQuery();
   }
 }
