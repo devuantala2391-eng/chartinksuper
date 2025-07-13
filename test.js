@@ -21,6 +21,37 @@ if (!fs.existsSync(outputDir)) {
 const jsonData = JSON.parse(fs.readFileSync(inputPath, 'utf8'));
 const candles = jsonData.data;
 
+// Debug: Test weekly calculations on last few candles
+console.log('=== DEBUG: Last 5 candles ===');
+const last5Candles = candles.slice(-5);
+last5Candles.forEach((candle, idx) => {
+  console.log(`${idx + 1}. ${candle.day} ${new Date(Number(candle.date)).toISOString().split('T')[0]} - Close: ${candle.close}`);
+});
+
+// Test weekly calculations individually
+console.log('\n=== DEBUG: Weekly calculations ===');
+const weeklySMA = calculateSMAFactory('weekly', 10, 'sma_weekly')(candles);
+const weeklyEMA = calculateEMAFactory('weekly', 10, 'ema_weekly')(candles);
+const weeklyRSI = calculateRSIFactory('weekly', 14, 'rsi_weekly')(candles);
+const weeklyPctChg = calculatePercentChangeFactory('weekly', 1, 'pctchg_weekly')(candles);
+const weeklySuperTrend = calculateSuperTrendFactory('weekly', 10, 3, 'supertrend_weekly')(candles);
+
+const lastCandle = candles[candles.length - 1];
+const lastWeeklySMA = weeklySMA[weeklySMA.length - 1];
+const lastWeeklyEMA = weeklyEMA[weeklyEMA.length - 1];
+const lastWeeklyRSI = weeklyRSI[weeklyRSI.length - 1];
+const lastWeeklyPctChg = weeklyPctChg[weeklyPctChg.length - 1];
+const lastWeeklySuperTrend = weeklySuperTrend[weeklySuperTrend.length - 1];
+
+console.log('Last candle date:', new Date(Number(lastCandle.date)).toISOString().split('T')[0]);
+console.log('Last candle close:', lastCandle.close);
+console.log('Weekly SMA:', lastWeeklySMA.sma_weekly);
+console.log('Weekly EMA:', lastWeeklyEMA.ema_weekly);
+console.log('Weekly RSI:', lastWeeklyRSI.rsi_weekly);
+console.log('Weekly %Change:', lastWeeklyPctChg.pctchg_weekly);
+console.log('Weekly SuperTrend:', lastWeeklySuperTrend.supertrend_weekly);
+console.log('Weekly SuperTrend Trend:', lastWeeklySuperTrend.supertrend_weekly_trend);
+
 // Pipe all indicators in both daily and weekly timeframes
 const resultPiped = pipe(
   candles,
@@ -39,4 +70,4 @@ const resultPiped = pipe(
 );
 
 fs.writeFileSync(outputPathPiped, JSON.stringify({ data: resultPiped }, null, 2), 'utf8');
-console.log('Piped all indicators (daily & weekly) complete. Output saved to', outputPathPiped); 
+console.log('Piped all indicators (daily & weekly) complete. Output saved to', outputPathPiped);
