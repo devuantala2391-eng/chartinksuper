@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const cors = require('cors');
 const qs = require('qs');
-const { parseQuery, findMatchingCandles, getQueryExamples } = require('./services/queryService');
+const { parseQuery, findMatchingCandles, getQueryExamples, extractIndicatorsFromQuery, processStocksWithIndicators } = require('./services/queryService');
 const { STOCK_SYMBOLS } = require('./stockSymbols.constants');
 
 const app = express();
@@ -149,79 +149,303 @@ app.post('/chartink-api', async (req, res) => {
   }
 });
 
+// Global progress state for the current query
+let currentProgress = {
+  isRunning: false,
+  phase: 'idle',
+  message: '',
+  processed: 0,
+  total: 2200, // Total stocks to process
+  matches: 0,
+  percentage: 0,
+  startTime: null
+};
+
+// Query abortion mechanism
+let currentQueryAbortController = null;
+let isQueryAborted = false;
+
+// Function to clear mapperStorage directory
+function clearMapperStorage() {
+  try {
+    const mapperStorageDir = path.join(__dirname, 'mapperStorage');
+    if (fs.existsSync(mapperStorageDir)) {
+      const files = fs.readdirSync(mapperStorageDir);
+      files.forEach(file => {
+        const filePath = path.join(mapperStorageDir, file);
+        fs.unlinkSync(filePath);
+      });
+      console.log(`Cleared ${files.length} files from mapperStorage`);
+    }
+  } catch (error) {
+    console.error('Error clearing mapperStorage:', error);
+  }
+}
+
+// Function to create mapperStorage directory
+function createMapperStorageDir() {
+  try {
+    const mapperStorageDir = path.join(__dirname, 'mapperStorage');
+    if (!fs.existsSync(mapperStorageDir)) {
+      fs.mkdirSync(mapperStorageDir, { recursive: true });
+      console.log('Created mapperStorage directory');
+    }
+  } catch (error) {
+    console.error('Error creating mapperStorage directory:', error);
+  }
+}
+
+// Test endpoint
+app.get('/test', (req, res) => {
+  console.log('Test endpoint called');
+  res.json({ message: 'Test endpoint working', timestamp: new Date().toISOString() });
+});
+
+// Simple progress endpoint - truly non-blocking
+app.get('/query/progress', async (req, res) => {
+  try {
+    // Calculate percentage based on processed stocks (22 stocks = 1%)
+    const percentage = currentProgress.total > 0 ? 
+      Math.floor((currentProgress.processed / 22)) : 0;
+    
+    const response = {
+      ...currentProgress,
+      percentage: Math.min(percentage, 100) // Cap at 100%
+    };
+    
+    console.log('Progress endpoint called, current progress:', response);
+    
+    // Set CORS headers explicitly
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    
+    res.json(response);
+  } catch (error) {
+    console.error('Progress endpoint error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Helper function to update progress
+function updateProgress(updates) {
+  currentProgress = { ...currentProgress, ...updates };
+  
+  // Don't auto-calculate percentage here - it's calculated in the progress endpoint
+  // using the formula: 22 stocks = 1%
+}
+
+// Make updateProgress globally accessible for queryService
+global.updateProgress = updateProgress;
+
+
+// Function to delete mappedStorage directory completely (DEPRECATED - no longer used)
+// We now overwrite files instead of deleting the directory to avoid file handle issues
+function deleteMappedStorageDir() {
+  console.log('deleteMappedStorageDir called but no longer used - files are overwritten instead');
+}
+
+// Synchronous version for use at end of request (DEPRECATED - no longer used)  
+// We now overwrite files instead of deleting the directory to avoid file handle issues
+function deleteMappedStorageDirSync() {
+  console.log('deleteMappedStorageDirSync called but no longer used - files are overwritten instead');
+}
+
+// Function to abort current query
+function abortCurrentQuery() {
+  if (currentQueryAbortController) {
+    currentQueryAbortController.abort();
+    console.log('Previous query aborted');
+  }
+  isQueryAborted = true;
+}
+
+// Function to generate JSON for a single stock with indicators
+async function generateStockJSON(stock, requiredIndicators) {
+  try {
+    // This function will process a single stock and generate its JSON with indicators
+    await processStocksWithIndicators(requiredIndicators, [stock]);
+  } catch (error) {
+    console.error(`Error generating JSON for ${stock}:`, error);
+    throw error;
+  }
+}
+
+
 // Query endpoint for searching stocks based on conditions
-app.post('/query', async (req, res) => {
+app.post('/query',  async (req, res) => {
   try {
     const { query, stocks } = req.body;
     
     if (!query) {
       return res.status(400).json({ error: 'Query is required' });
     }
+
+    // Abort any existing query
+    abortCurrentQuery();
+    
+    // Clear mapperStorage directory and create it fresh
+    clearMapperStorage();
+    createMapperStorageDir();
+    
+    // Create new abort controller for this query
+    currentQueryAbortController = new AbortController();
+    isQueryAborted = false;
+    
+    // Reset progress for new query
+    updateProgress({
+      isRunning: true,
+      phase: 'initializing',
+      message: 'Starting query processing...',
+      processed: 0,
+      total: 2200,
+      matches: 0,
+      startTime: Date.now()
+    });
+    
+    console.log(`Processing query: ${query}`);
     
     // Parse the query
     let parsedQuery;
     try {
       parsedQuery = parseQuery(query);
     } catch (error) {
+      updateProgress({ isRunning: false, phase: 'error', message: 'Invalid query format' });
       return res.status(400).json({ 
         error: 'Invalid query format', 
         details: error.message,
-        hint: 'Example: "daily upper bollinger band > daily close and weekly rsi > 60"'
+        hint: 'Example: "rsi(14) > 70 and sma(20) < close"'
       });
     }
     
-    // If no stocks specified, get all available stocks from mapperStorage
-    let stockList = stocks;
-    if (!stockList || stockList.length === 0) {
-      const mapperStorageDir = path.join(__dirname, 'mapperStorage');
-      if (fs.existsSync(mapperStorageDir)) {
-        const files = fs.readdirSync(mapperStorageDir);
-        stockList = files
-          .filter(file => file.endsWith('_piped.json'))
-          .map(file => file.replace('_piped.json', ''));
-      }
-    }
+    // Extract indicators from the query
+    const requiredIndicators = extractIndicatorsFromQuery(parsedQuery);
+    console.log('Required indicators:', requiredIndicators);
     
-    if (!stockList || stockList.length === 0) {
-      return res.status(400).json({ 
-        error: 'No stocks available for analysis',
-        hint: 'Run test.js to generate mapped data first'
-      });
-    }
-    
+    // Process stocks with real-time progress tracking
     const allMatches = [];
     const errors = [];
+    let processedCount = 0;
+    const processingStart = Date.now();
     
-    // Process each stock
+    // Get stock list from constants
+    const { STOCK_SYMBOLS } = require('./stockSymbols.constants');
+    let stockList = stocks || STOCK_SYMBOLS;
+    const totalStocks = 2200; // Always show 2200 for proper percentage
+    
+    console.log(`Processing ${stockList.length} stocks with indicators and analyzing...`);
+    
+    updateProgress({ 
+      phase: 'processing_and_analyzing', 
+      message: 'Processing indicators and analyzing...', 
+      processed: 0, 
+      total: totalStocks 
+    });
+    
+    // Process each stock: generate JSON → analyze → update progress
     for (const stock of stockList) {
+      if (isQueryAborted) {
+        console.log('Query was aborted during processing');
+        return res.status(400).json({ error: 'Query was aborted' });
+      }
+      
       try {
-        const mappedFilePath = path.join(__dirname, 'mapperStorage', `${stock}_piped.json`);
-        
-        if (!fs.existsSync(mappedFilePath)) {
-          errors.push({ stock, error: 'Mapped data not found' });
+        // First check if stock data exists in db folder
+        const dbFilePath = path.join(__dirname, 'db', `${stock}.json`);
+        if (!fs.existsSync(dbFilePath)) {
+          errors.push({ stock, error: 'Stock data not found in db' });
+          processedCount++;
+          updateProgress({ 
+            phase: 'processing_and_analyzing', 
+            message: `Processing: ${processedCount}/${totalStocks} stocks, ${allMatches.length} matches found`, 
+            processed: processedCount, 
+            total: totalStocks,
+            matches: allMatches.length
+          });
           continue;
         }
         
-        const mappedData = JSON.parse(fs.readFileSync(mappedFilePath, 'utf8'));
-        const candles = mappedData.data;
-        
-        if (!candles || candles.length === 0) {
-          errors.push({ stock, error: 'No candle data available' });
-          continue;
+        // Generate JSON for this stock with indicators (saves to mapperStorage)
+        if (requiredIndicators.length > 0) {
+          await generateStockJSON(stock, requiredIndicators);
         }
         
-        // Find matching candles - the function handles data availability internally
-        const matches = findMatchingCandles(candles, parsedQuery, stock);
+        // Read the generated mapped data from mapperStorage
+        const mapperFilePath = path.join(__dirname, 'mapperStorage', `${stock}_piped.json`);
+        if (fs.existsSync(mapperFilePath)) {
+          const mappedData = JSON.parse(fs.readFileSync(mapperFilePath, 'utf8'));
+          const candles = mappedData.data;
+          
+          if (candles && candles.length > 0) {
+            // Find matching candles for backtesting
+            const matches = findMatchingCandles(candles, parsedQuery, stock);
+            allMatches.push(...matches);
+          } else {
+            errors.push({ stock, error: 'No candle data available' });
+          }
+        } else {
+          errors.push({ stock, error: 'Mapped data not found in mapperStorage' });
+        }
         
-        allMatches.push(...matches);
+        processedCount++;
+        
+        // Update progress for each stock
+        updateProgress({ 
+          phase: 'processing_and_analyzing', 
+          message: `Processing: ${processedCount}/${totalStocks} stocks, ${allMatches.length} matches found`, 
+          processed: processedCount, 
+          total: totalStocks,
+          matches: allMatches.length
+        });
+        
+        // Yield control to event loop every 5 stocks
+        if (processedCount % 5 === 0) {
+          await new Promise(resolve => setImmediate(resolve));
+        }
+        
+        // Log progress every 100 stocks
+        if (processedCount % 100 === 0) {
+          console.log(`Processed ${processedCount}/${stockList.length} stocks, found ${allMatches.length} matches so far...`);
+        }
         
       } catch (error) {
         errors.push({ stock, error: error.message });
+        processedCount++;
+        
+        // Update progress even for errors
+        updateProgress({ 
+          phase: 'processing_and_analyzing', 
+          message: `Processing: ${processedCount}/${stockList.length} stocks, ${allMatches.length} matches found`, 
+          processed: processedCount, 
+          total: stockList.length,
+          matches: allMatches.length
+        });
       }
+    }
+    
+    if (isQueryAborted) {
+      console.log('Query was aborted during processing');
+      return res.status(400).json({ error: 'Query was aborted' });
     }
     
     // Sort matches by date (most recent first)
     allMatches.sort((a, b) => parseInt(b.date) - parseInt(a.date));
+    
+    const processingTime = Date.now() - processingStart;
+    console.log(`Query processing completed in ${processingTime}ms. Found ${allMatches.length} matches across ${processedCount} stocks.`);
+    
+    // Update completion progress
+    updateProgress({ 
+      phase: 'completed', 
+      message: `Completed: Found ${allMatches.length} matches`, 
+      processed: processedCount, 
+      total: totalStocks,
+      matches: allMatches.length,
+      isRunning: false
+    });
+    
+    // Note: We no longer delete the mapperStorage directory
+    // Files are overwritten on each query for fresh calculations
     
     res.json({
       success: true,
@@ -234,14 +458,26 @@ app.post('/query', async (req, res) => {
         })),
         logicalOperators: parsedQuery.logicalOperators
       },
+      requiredIndicators: requiredIndicators,
       totalMatches: allMatches.length,
       matches: allMatches,
       errors: errors.length > 0 ? errors : undefined,
-      processedStocks: stockList.length
+      processedStocks: processedCount
     });
     
   } catch (error) {
     console.error('Query endpoint error:', error);
+    
+    // Update progress to show error state
+    updateProgress({ 
+      phase: 'error', 
+      message: 'Query processing failed', 
+      isRunning: false
+    });
+    
+    // Note: We no longer delete the mapperStorage directory on error
+    // Files are overwritten on each query for fresh calculations
+    
     res.status(500).json({ 
       error: 'Internal server error', 
       details: error.message 
@@ -249,8 +485,13 @@ app.post('/query', async (req, res) => {
   }
 });
 
+// Health check endpoint
+app.get('/health', async (req, res) => {
+  res.json({ status: 'ok', message: 'Server is running' });
+});
+
 // Query examples endpoint
-app.get('/query/examples', (req, res) => {
+app.get('/query/examples', async (req, res) => {
   res.json(getQueryExamples());
 });
 
@@ -702,4 +943,8 @@ async function processSimpleRefreshInBackground(totalResults) {
 // Start server
 app.listen(port, () => {
   console.log(`Server is running on http://localhost:${port}`);
+  console.log('Available endpoints:');
+  console.log('  GET /query/progress - Get current query progress');
+  console.log('  POST /query - Execute stock query');
+  console.log('  GET /health - Server health check');
 });

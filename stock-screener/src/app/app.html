@@ -20,6 +20,7 @@
         <li><strong>Value Type:</strong> Choose "Number" for fixed values or "Field" to compare with another indicator</li>
         <li><strong>Field comparisons:</strong> Compare indicators like "1 day ago volume > 1 week ago volume * 1.2"</li>
         <li><strong>Multiplier:</strong> Use 1.2 for 120%, 0.9 for 90%, etc.</li>
+        <li><strong>Indicator Parameters:</strong> Use parameterized indicators like "rsi(14)", "sma(20)", "bb(20, 2)"</li>
       </ul>
       <div class="preset-buttons">
         <span>Try presets:</span>
@@ -29,8 +30,11 @@
         <button class="preset-btn" (click)="loadPreset('price-breakout')" title="Find stocks trading 5% above SMA">
           📈 Price Breakout
         </button>
-        <button class="preset-btn" (click)="loadPreset('trend-reversal')" title="Find stocks where daily supertrend crossed above weekly">
+        <button class="preset-btn" (click)="loadPreset('trend-reversal')" title="Find stocks where SuperTrend(10,3) crossed above">
           🔄 Trend Reversal
+        </button>
+        <button class="preset-btn" (click)="loadPreset('rsi-oversold')" title="Find stocks with RSI(14) below 30">
+          💹 RSI Oversold
         </button>
       </div>
     </div>
@@ -73,11 +77,24 @@
               <option value="month">month(s) ago</option>
             </select>
 
-            <select [(ngModel)]="condition.field" class="field-select">
+            <select [(ngModel)]="condition.field" class="field-select" (change)="onFieldChange(condition)">
               <option *ngFor="let field of fields" [value]="field.value">
                 {{ field.label }}
               </option>
             </select>
+            
+            <!-- Indicator Parameters -->
+            <div class="indicator-params" *ngIf="condition.indicatorType === 'parameterized' && condition.indicatorName && condition.indicatorParams">
+              <div class="param-group" *ngFor="let param of condition.indicatorParams; let i = index">
+                <span class="param-label">{{ getIndicatorParamLabels(condition.indicatorName)[i] }}:</span>
+                <input 
+                  type="text" 
+                  [(ngModel)]="condition.indicatorParams[i]"
+                  class="param-input"
+                  [placeholder]="getIndicatorParamLabels(condition.indicatorName)[i]"
+                />
+              </div>
+            </div>
           </div>
 
           <select [(ngModel)]="condition.operator" class="operator-select">
@@ -131,11 +148,24 @@
               <option value="month">month(s) ago</option>
             </select>
             
-            <select [(ngModel)]="condition.valueField" class="field-select">
+            <select [(ngModel)]="condition.valueField" class="field-select" (change)="onValueFieldChange(condition)">
               <option *ngFor="let field of fields" [value]="field.value">
                 {{ field.label }}
               </option>
             </select>
+            
+            <!-- Value Indicator Parameters -->
+            <div class="indicator-params" *ngIf="condition.valueIndicatorType === 'parameterized' && condition.valueIndicatorName && condition.valueIndicatorParams">
+              <div class="param-group" *ngFor="let param of condition.valueIndicatorParams; let i = index">
+                <span class="param-label">{{ getIndicatorParamLabels(condition.valueIndicatorName)[i] }}:</span>
+                <input 
+                  type="text" 
+                  [(ngModel)]="condition.valueIndicatorParams[i]"
+                  class="param-input"
+                  [placeholder]="getIndicatorParamLabels(condition.valueIndicatorName)[i]"
+                />
+              </div>
+            </div>
           </div>
 
           <button 
@@ -196,8 +226,19 @@
     </div>
   </div>
 
-  <div class="loading-spinner" *ngIf="loading">
+  <div class="loading-spinner" *ngIf="loading && !showProgress">
     <div class="spinner"></div>
     <p>Scanning stocks...</p>
   </div>
+  
+  <!-- Progress Bar -->
+  <app-progress-bar
+    [show]="showProgress"
+    [phase]="progressPhase"
+    [message]="progressMessage"
+    [processed]="progressProcessed"
+    [total]="progressTotal"
+    [matches]="progressMatches"
+    [canClose]="progressPhase === 'completed'"
+  ></app-progress-bar>
 </div>

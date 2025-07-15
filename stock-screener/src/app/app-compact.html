@@ -1,0 +1,139 @@
+<div class="container">
+  <header class="header">
+    <h1>📈 Stock Screener</h1>
+    <p class="subtitle">Scan stocks using simple conditions</p>
+  </header>
+
+  <div class="filter-section">
+    <div class="section-header">
+      <h2>🔍 MAGIC FILTERS</h2>
+      <button class="generate-btn" (click)="buildQuery()" *ngIf="conditions.length > 0">
+        Generate →
+      </button>
+    </div>
+    
+    <div class="input-section">
+      <input 
+        type="text" 
+        class="natural-language-input" 
+        placeholder="Scan stocks using simple language like 'stocks up by 4% and rising volume'"
+        [(ngModel)]="naturalLanguageQuery"
+        (keyup.enter)="parseNaturalLanguage()"
+      />
+    </div>
+
+    <div class="filter-info">
+      Stock passes all of the below filters in <span class="segment">cash</span> segment: 
+      <span class="info-icon" title="Click on any highlighted value to edit">ℹ️</span>
+    </div>
+
+    <div class="conditions-list">
+      <app-condition-compact
+        *ngFor="let condition of conditions; let i = index"
+        [condition]="condition"
+        [showLogicalOperator]="i > 0"
+        [showRemove]="conditions.length > 1"
+        (conditionChange)="updateCondition($event)"
+        (remove)="removeCondition(condition.id)"
+      ></app-condition-compact>
+    </div>
+
+    <div class="add-condition-section">
+      <button class="add-btn" (click)="addCondition()">
+        + Add Condition
+      </button>
+      
+      <div class="preset-section">
+        <span class="preset-label">Quick presets:</span>
+        <button class="preset-chip" (click)="loadPreset('volume-surge')">
+          📊 Volume Surge
+        </button>
+        <button class="preset-chip" (click)="loadPreset('price-breakout')">
+          📈 Price Breakout
+        </button>
+        <button class="preset-chip" (click)="loadPreset('rsi-oversold')">
+          💹 RSI Oversold
+        </button>
+      </div>
+    </div>
+
+    <div class="action-section">
+      <button class="scan-btn" (click)="runScan()" [disabled]="loading || conditions.length === 0">
+        {{ loading ? 'Scanning...' : 'Scan Now' }} →
+      </button>
+      
+      <div class="secondary-actions">
+        <button class="icon-action" (click)="saveQuery()" title="Save query">
+          💾
+        </button>
+        <button class="icon-action" (click)="exportQuery()" title="Export query">
+          📤
+        </button>
+        <button class="icon-action" (click)="clearAll()" title="Clear all" *ngIf="conditions.length > 0">
+          🗑️
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="query-display" *ngIf="queryString">
+    <div class="query-header">
+      <h3>Generated Query</h3>
+      <button class="copy-btn" (click)="copyQuery()">📋 Copy</button>
+    </div>
+    <code class="query-code">{{ queryString }}</code>
+  </div>
+
+  <div class="error-message" *ngIf="error">
+    <span class="error-icon">⚠️</span>
+    <span class="error-text">{{ error }}</span>
+    <button class="dismiss-btn" (click)="error = null">×</button>
+  </div>
+
+  <div class="results-section" *ngIf="results">
+    <div class="results-header">
+      <h2>📊 Results</h2>
+      <div class="result-stats">
+        <span class="stat-item">
+          <span class="stat-label">Total Matches:</span>
+          <span class="stat-value">{{ results.totalMatches }}</span>
+        </span>
+        <span class="stat-item">
+          <span class="stat-label">Stocks Scanned:</span>
+          <span class="stat-value">{{ results.processedStocks || 'All' }}</span>
+        </span>
+      </div>
+    </div>
+
+    <div class="results-container">
+      <div class="date-group" *ngFor="let date of getGroupedDates()">
+        <h3 class="date-header">
+          <span class="date-icon">📅</span>
+          {{ formatDate(date) }}
+        </h3>
+        <div class="stock-grid">
+          <div class="stock-card" *ngFor="let match of groupedResults.get(date)">
+            <div class="stock-header">
+              <span class="stock-symbol">{{ match.stock }}</span>
+              <span class="stock-price">₹{{ formatNumber(match.close) }}</span>
+            </div>
+            <div class="stock-footer">
+              <span class="stock-day">{{ match.day }}</span>
+              <span class="stock-change" [class.positive]="getChange(match) > 0" [class.negative]="getChange(match) < 0">
+                {{ formatChange(match) }}%
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="loading-overlay" *ngIf="loading">
+    <div class="loading-content">
+      <div class="spinner"></div>
+      <p class="loading-text">Scanning stocks...</p>
+      <p class="loading-subtext">This may take a few moments</p>
+    </div>
+  </div>
+</div>

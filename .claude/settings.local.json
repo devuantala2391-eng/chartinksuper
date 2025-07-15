@@ -17,7 +17,17 @@
       "Bash(npm run build:*)",
       "Bash(npm run ng lint)",
       "Bash(python:*)",
-      "Bash(taskkill:*)"
+      "Bash(taskkill:*)",
+      "Bash(ng serve:*)",
+      "Bash(grep:*)",
+      "Bash(timeout:*)",
+      "WebFetch(domain:localhost)",
+      "Bash(cd:*)",
+      "Bash(tasklist:*)",
+      "Bash(cmd /c:*)",
+      "Bash(pkill:*)",
+      "Bash(mkdir:*)",
+      "Bash(git add:*)"
     ],
     "deny": []
   }

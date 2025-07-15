@@ -1,5 +1,11 @@
 // services/queryService.js
 
+const { calculateAllIndicators } = require('./indicatorCalculator');
+const { isCached, markAsCached } = require('./indicatorCache');
+const { sanitizeCandleArray, sanitizeNumericValue } = require('./dataUtils');
+const fs = require('fs');
+const path = require('path');
+
 const INDICATOR_MAPPINGS = {
   // Bollinger Bands
   'daily upper bollinger band': 'bb_upper_daily',
@@ -161,6 +167,22 @@ function parseField(fieldStr) {
     }
   }
   
+  // Check for indicator with parameters (e.g., "rsi(14)", "sma(20)", "bb(20, 2)")
+  const indicatorPattern = /^([a-zA-Z]+)\(([^)]+)\)$/;
+  const indicatorMatch = fieldStr.match(indicatorPattern);
+  
+  if (indicatorMatch) {
+    const indicatorName = indicatorMatch[1].toLowerCase();
+    const params = indicatorMatch[2].split(',').map(p => p.trim());
+    
+    return {
+      type: 'indicator',
+      name: indicatorName,
+      params: params,
+      originalString: fieldStr
+    };
+  }
+  
   // Check for field expressions with multipliers (e.g., "1 week ago volume * 1.2")
   const exprPattern = /^(.+?)\s*([*\/])\s*([\d.]+)$/;
   const exprMatch = fieldStr.match(exprPattern);
@@ -181,7 +203,7 @@ function parseField(fieldStr) {
     };
   }
   
-  // Check for time-based patterns (e.g., "1 day ago volume", "3 days ago rsi", "1 week ago high", "1 month ago close")
+  // Check for time-based patterns with indicators (e.g., "1 day ago rsi(14)", "3 days ago sma(20)")
   const dayPattern = /^(\d+)\s+days?\s+ago\s+(.+)$/;
   const weekPattern = /^(\d+)\s+weeks?\s+ago\s+(.+)$/;
   const monthPattern = /^(\d+)\s+months?\s+ago\s+(.+)$/;
@@ -206,6 +228,30 @@ function parseField(fieldStr) {
   if (match) {
     const unitsAgo = parseInt(match[1]);
     const fieldName = match[2];
+    
+    // Check if fieldName is an indicator with parameters
+    const indicatorMatch = fieldName.match(/^([a-zA-Z]+)\(([^)]+)\)$/);
+    if (indicatorMatch) {
+      const indicatorName = indicatorMatch[1].toLowerCase();
+      const params = indicatorMatch[2].split(',').map(p => p.trim());
+      
+      let daysAgo = unitsAgo;
+      if (timeUnit === 'week') {
+        daysAgo = unitsAgo * 7;
+      } else if (timeUnit === 'month') {
+        daysAgo = unitsAgo * 30;
+      }
+      
+      return {
+        type: 'indicator',
+        name: indicatorName,
+        params: params,
+        originalString: fieldName,
+        timeUnit: timeUnit,
+        unitsAgo: unitsAgo,
+        daysAgo: daysAgo
+      };
+    }
     
     // For week-based and month-based queries, check if we need to use aggregation
     let field = null;
@@ -323,6 +369,297 @@ function parseField(fieldStr) {
   return { type: 'field', field: fieldStr };
 }
 
+// Extract indicators from parsed query
+function extractIndicatorsFromQuery(parsedQuery) {
+  const indicators = new Set();
+  
+  function extractFromField(field) {
+    if (field.type === 'indicator') {
+      const period = parseInt(field.params[0]) || getDefaultPeriod(field.name);
+      const params = {};
+      
+      // Parse additional parameters based on indicator type
+      if (field.name === 'bb' || field.name === 'bollinger') {
+        params.stdDev = field.params[1] ? parseFloat(field.params[1]) : 2;
+      } else if (field.name === 'supertrend') {
+        params.multiplier = field.params[1] ? parseFloat(field.params[1]) : 3;
+      } else if (field.name === 'macd') {
+        params.fast = field.params[0] ? parseInt(field.params[0]) : 12;
+        params.slow = field.params[1] ? parseInt(field.params[1]) : 26;
+        params.signal = field.params[2] ? parseInt(field.params[2]) : 9;
+      } else if (field.name === 'stochastic') {
+        params.k = field.params[0] ? parseInt(field.params[0]) : 14;
+        params.d = field.params[1] ? parseInt(field.params[1]) : 3;
+      }
+      
+      indicators.add(JSON.stringify({
+        name: field.name,
+        period: period,
+        params: params
+      }));
+    } else if (field.type === 'expression' && field.field) {
+      extractFromField(field.field);
+    }
+  }
+  
+  for (const condition of parsedQuery.conditions) {
+    extractFromField(condition.left);
+    extractFromField(condition.right);
+  }
+  
+  return Array.from(indicators).map(ind => JSON.parse(ind));
+}
+
+// Get default period for indicators
+function getDefaultPeriod(indicatorName) {
+  const defaults = {
+    'rsi': 14,
+    'sma': 20,
+    'ema': 20,
+    'bb': 20,
+    'bollinger': 20,
+    'supertrend': 10,
+    'macd': 12,
+    'stochastic': 14,
+    'williamsr': 14
+  };
+  
+  return defaults[indicatorName] || 14;
+}
+
+// Generate mapped field name for indicators
+function generateIndicatorFieldName(indicator) {
+  const { name, period, params } = indicator;
+  
+  switch (name) {
+    case 'bb':
+    case 'bollinger':
+      return {
+        upper: `bb_upper_${period}_${params.stdDev}`,
+        middle: `bb_middle_${period}_${params.stdDev}`,
+        lower: `bb_lower_${period}_${params.stdDev}`
+      };
+    case 'supertrend':
+      return `supertrend_${period}_${params.multiplier}`;
+    case 'macd':
+      return {
+        macd: `macd_${params.fast}_${params.slow}_${params.signal}`,
+        signal: `macd_signal_${params.fast}_${params.slow}_${params.signal}`,
+        histogram: `macd_histogram_${params.fast}_${params.slow}_${params.signal}`
+      };
+    case 'stochastic':
+      return {
+        k: `stoch_k_${params.k}_${params.d}`,
+        d: `stoch_d_${params.k}_${params.d}`
+      };
+    default:
+      return `${name}_${period}`;
+  }
+}
+
+// Process all stocks and store in memory (NEW - replaces file-based storage)
+async function processStocksWithIndicatorsInMemory(indicators, stockList = null) {
+  // Helper function to send progress updates
+  const sendProgressUpdate = (processed, total, message) => {
+    if (global.updateProgress) {
+      global.updateProgress({ 
+        phase: 'processing_indicators',
+        processed, 
+        total, 
+        message 
+      });
+    }
+  };
+  
+  const dbPath = path.join(__dirname, '..', 'db');
+  
+  // Get stock files to process
+  let stockFiles;
+  if (stockList && stockList.length > 0) {
+    // Process only specified stocks
+    stockFiles = stockList.map(symbol => `${symbol}.json`).filter(file => 
+      fs.existsSync(path.join(dbPath, file))
+    );
+    console.log(`Processing ${stockFiles.length} specified stocks in memory`);
+  } else {
+    // Process all stocks
+    stockFiles = fs.readdirSync(dbPath).filter(file => file.endsWith('.json'));
+  }
+  
+  console.log(`Processing ${stockFiles.length} stocks with indicators in memory:`, indicators.map(i => `${i.name}(${i.period})`));
+  
+  const processedCount = { success: 0, failed: 0 };
+  const batchSize = 50; // Process 50 stocks at a time
+  
+  // Send initial progress
+  sendProgressUpdate(0, stockFiles.length, 'Starting indicator processing...');
+  
+  // Process in batches for better performance
+  for (let i = 0; i < stockFiles.length; i += batchSize) {
+    const batch = stockFiles.slice(i, i + batchSize);
+    
+    await Promise.all(batch.map(async (stockFile) => {
+      try {
+        const stockSymbol = stockFile.replace('.json', '');
+        const stockData = JSON.parse(fs.readFileSync(path.join(dbPath, stockFile), 'utf8'));
+        
+        if (!stockData.data || stockData.data.length === 0) {
+          console.warn(`No data found for ${stockSymbol}`);
+          processedCount.failed++;
+          return;
+        }
+        
+        // Sanitize the candle data to handle infinity values
+        const sanitizedCandles = sanitizeCandleArray(stockData.data);
+        
+        // Calculate indicators
+        const processedCandles = calculateAllIndicators(sanitizedCandles, indicators);
+        
+        // Store in memory instead of file
+        if (global.setInMemoryData) {
+          global.setInMemoryData(stockSymbol, { data: processedCandles });
+        }
+        
+        processedCount.success++;
+        
+      } catch (error) {
+        console.error(`Error processing ${stockFile}:`, error.message);
+        processedCount.failed++;
+      }
+    }));
+    
+    if ((i + batch.length) % 200 === 0 || i + batch.length >= stockFiles.length) {
+      console.log(`Processed ${i + batch.length}/${stockFiles.length} stocks in memory...`);
+      sendProgressUpdate(i + batch.length, stockFiles.length, 
+        `Processing indicators: ${i + batch.length}/${stockFiles.length} stocks`);
+    }
+    
+    // Yield control to event loop
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  
+  console.log(`Finished processing ${stockFiles.length} stocks in memory. Success: ${processedCount.success}, Failed: ${processedCount.failed}`);
+  
+  return processedCount;
+}
+
+// COMMENTED OUT - OLD FILE-BASED FUNCTION (kept for potential revert)
+// Process all stocks and generate mapperStorage
+async function processStocksWithIndicators(indicators, stockList = null) {
+  // Helper function to send progress updates
+  const sendProgressUpdate = (processed, total, message) => {
+    if (global.updateProgress) {
+      global.updateProgress({ 
+        phase: 'processing_indicators',
+        processed, 
+        total, 
+        message 
+      });
+    }
+  };
+  
+  // Check cache first (only if processing all stocks)
+  if (!stockList && isCached(indicators)) {
+    console.log('Using cached indicator calculations');
+    const mapperStoragePath = path.join(__dirname, '..', 'mapperStorage');
+    const files = fs.readdirSync(mapperStoragePath).filter(f => f.endsWith('_piped.json'));
+    return { success: files.length, failed: 0, cached: true };
+  }
+  
+  const dbPath = path.join(__dirname, '..', 'db');
+  const mapperStoragePath = path.join(__dirname, '..', 'mapperStorage');
+  
+  // Clear existing mapperStorage
+  if (stockList && stockList.length > 0) {
+    // If processing specific stocks, only delete their mapper files
+    if (!fs.existsSync(mapperStoragePath)) {
+      fs.mkdirSync(mapperStoragePath, { recursive: true });
+    }
+    stockList.forEach(symbol => {
+      const mapperFile = path.join(mapperStoragePath, `${symbol}_piped.json`);
+      if (fs.existsSync(mapperFile)) {
+        fs.unlinkSync(mapperFile);
+      }
+    });
+  } else {
+    // Processing all stocks - clear everything
+    if (fs.existsSync(mapperStoragePath)) {
+      fs.rmSync(mapperStoragePath, { recursive: true, force: true });
+    }
+    fs.mkdirSync(mapperStoragePath, { recursive: true });
+  }
+  
+  // Get stock files to process
+  let stockFiles;
+  if (stockList && stockList.length > 0) {
+    // Process only specified stocks
+    stockFiles = stockList.map(symbol => `${symbol}.json`).filter(file => 
+      fs.existsSync(path.join(dbPath, file))
+    );
+    console.log(`Processing ${stockFiles.length} specified stocks`);
+  } else {
+    // Process all stocks
+    stockFiles = fs.readdirSync(dbPath).filter(file => file.endsWith('.json'));
+  }
+  
+  console.log(`Processing ${stockFiles.length} stocks with indicators:`, indicators.map(i => `${i.name}(${i.period})`));
+  
+  const processedCount = { success: 0, failed: 0 };
+  const batchSize = 50; // Process 50 stocks at a time
+  
+  // Send initial progress
+  sendProgressUpdate(0, stockFiles.length, 'Starting indicator processing...');
+  
+  // Process in batches for better performance
+  for (let i = 0; i < stockFiles.length; i += batchSize) {
+    const batch = stockFiles.slice(i, i + batchSize);
+    
+    await Promise.all(batch.map(async (stockFile) => {
+      try {
+        const stockSymbol = stockFile.replace('.json', '');
+        const stockData = JSON.parse(fs.readFileSync(path.join(dbPath, stockFile), 'utf8'));
+        
+        if (!stockData.data || stockData.data.length === 0) {
+          console.warn(`No data found for ${stockSymbol}`);
+          processedCount.failed++;
+          return;
+        }
+        
+        // Sanitize the candle data to handle infinity values
+        const sanitizedCandles = sanitizeCandleArray(stockData.data);
+        
+        // Calculate indicators
+        const processedCandles = calculateAllIndicators(sanitizedCandles, indicators);
+        
+        // Save to mapperStorage
+        const outputPath = path.join(mapperStoragePath, `${stockSymbol}_piped.json`);
+        fs.writeFileSync(outputPath, JSON.stringify({ data: processedCandles }));
+        
+        processedCount.success++;
+        
+      } catch (error) {
+        console.error(`Error processing ${stockFile}:`, error.message);
+        processedCount.failed++;
+      }
+    }));
+    
+    if ((i + batch.length) % 200 === 0 || i + batch.length >= stockFiles.length) {
+      console.log(`Processed ${i + batch.length}/${stockFiles.length} stocks...`);
+      sendProgressUpdate(i + batch.length, stockFiles.length, 
+        `Processing indicators: ${i + batch.length}/${stockFiles.length} stocks`);
+    }
+  }
+  
+  console.log(`Stock processing completed. Success: ${processedCount.success}, Failed: ${processedCount.failed}`);
+  
+  // Mark as cached for future use (only if processing all stocks)
+  if (!stockList && processedCount.success > 0) {
+    markAsCached(indicators);
+  }
+  
+  return processedCount;
+}
+
 function parseQuery(query) {
   const normalizedQuery = normalizeQuery(query);
   const parts = extractConditions(normalizedQuery);
@@ -353,7 +690,7 @@ function parseQuery(query) {
 function getFieldValue(candle, prevCandle, field, candles, currentIndex) {
   // Handle special case for previous close
   if (field === 'prev_close' && prevCandle) {
-    return parseFloat(prevCandle.close);
+    return sanitizeNumericValue(prevCandle.close);
   }
   
   const value = candle[field];
@@ -361,7 +698,7 @@ function getFieldValue(candle, prevCandle, field, candles, currentIndex) {
     return null;
   }
   
-  return parseFloat(value);
+  return sanitizeNumericValue(value);
 }
 
 function getHistoricalFieldValue(candles, currentIndex, field, daysAgo) {
@@ -378,7 +715,7 @@ function getHistoricalFieldValue(candles, currentIndex, field, daysAgo) {
     return null;
   }
   
-  return parseFloat(value);
+  return sanitizeNumericValue(value);
 }
 
 function getWeeklyAggregatedValue(candles, currentIndex, field, weeksAgo) {
@@ -419,18 +756,21 @@ function getWeeklyAggregatedValue(candles, currentIndex, field, weeksAgo) {
   // Aggregate based on field type
   switch (field) {
     case 'high':
-      return Math.max(...weekCandles.map(c => parseFloat(c.high)));
+      return Math.max(...weekCandles.map(c => sanitizeNumericValue(c.high)).filter(v => v !== null));
     case 'low':
-      return Math.min(...weekCandles.map(c => parseFloat(c.low)));
+      return Math.min(...weekCandles.map(c => sanitizeNumericValue(c.low)).filter(v => v !== null));
     case 'open':
-      return parseFloat(weekCandles[0].open); // First candle's open
+      return sanitizeNumericValue(weekCandles[0].open); // First candle's open
     case 'close':
-      return parseFloat(weekCandles[weekCandles.length - 1].close); // Last candle's close
+      return sanitizeNumericValue(weekCandles[weekCandles.length - 1].close); // Last candle's close
     case 'volume':
-      return weekCandles.reduce((sum, c) => sum + parseFloat(c.volume), 0);
+      return weekCandles.reduce((sum, c) => {
+        const vol = sanitizeNumericValue(c.volume);
+        return sum + (vol !== null ? vol : 0);
+      }, 0);
     default:
       // For other fields, return the last value of the week
-      return parseFloat(weekCandles[weekCandles.length - 1][field]);
+      return sanitizeNumericValue(weekCandles[weekCandles.length - 1][field]);
   }
 }
 
@@ -481,18 +821,21 @@ function getMonthlyAggregatedValue(candles, currentIndex, field, monthsAgo) {
   // Aggregate based on field type
   switch (field) {
     case 'high':
-      return Math.max(...monthCandles.map(c => parseFloat(c.high)));
+      return Math.max(...monthCandles.map(c => sanitizeNumericValue(c.high)).filter(v => v !== null));
     case 'low':
-      return Math.min(...monthCandles.map(c => parseFloat(c.low)));
+      return Math.min(...monthCandles.map(c => sanitizeNumericValue(c.low)).filter(v => v !== null));
     case 'open':
-      return parseFloat(monthCandles[0].open); // First candle's open
+      return sanitizeNumericValue(monthCandles[0].open); // First candle's open
     case 'close':
-      return parseFloat(monthCandles[monthCandles.length - 1].close); // Last candle's close
+      return sanitizeNumericValue(monthCandles[monthCandles.length - 1].close); // Last candle's close
     case 'volume':
-      return monthCandles.reduce((sum, c) => sum + parseFloat(c.volume), 0);
+      return monthCandles.reduce((sum, c) => {
+        const vol = sanitizeNumericValue(c.volume);
+        return sum + (vol !== null ? vol : 0);
+      }, 0);
     default:
       // For other fields, return the last value of the month
-      return parseFloat(monthCandles[monthCandles.length - 1][field]);
+      return sanitizeNumericValue(monthCandles[monthCandles.length - 1][field]);
   }
 }
 
@@ -507,6 +850,34 @@ function evaluateExpression(expr, candle, prevCandle, candles, currentIndex) {
       return baseValue * expr.multiplier;
     } else if (expr.operator === '/') {
       return baseValue / expr.multiplier;
+    }
+  } else if (expr.type === 'indicator') {
+    // Handle indicator fields
+    const fieldNames = generateIndicatorFieldName({
+      name: expr.name,
+      period: parseInt(expr.params[0]) || getDefaultPeriod(expr.name),
+      params: parseIndicatorParams(expr.name, expr.params)
+    });
+    
+    // For indicators with multiple outputs (like Bollinger Bands, MACD)
+    let fieldName = fieldNames;
+    if (typeof fieldNames === 'object') {
+      // Default to main field for complex indicators
+      if (expr.name === 'bb' || expr.name === 'bollinger') {
+        fieldName = fieldNames.middle; // Use middle band as default
+      } else if (expr.name === 'macd') {
+        fieldName = fieldNames.macd; // Use MACD line as default
+      } else if (expr.name === 'stochastic') {
+        fieldName = fieldNames.k; // Use %K as default
+      }
+    }
+    
+    if (expr.daysAgo) {
+      // Historical indicator value
+      return getHistoricalFieldValue(candles, currentIndex, fieldName, expr.daysAgo);
+    } else {
+      // Current indicator value
+      return getFieldValue(candle, prevCandle, fieldName, candles, currentIndex);
     }
   } else if (expr.type === 'field') {
     if (expr.timeUnit === 'week' && expr.unitsAgo > 0) {
@@ -541,6 +912,32 @@ function evaluateExpression(expr, candle, prevCandle, candles, currentIndex) {
   }
   
   return null;
+}
+
+// Parse indicator parameters based on indicator type
+function parseIndicatorParams(indicatorName, params) {
+  const result = {};
+  
+  switch (indicatorName) {
+    case 'bb':
+    case 'bollinger':
+      result.stdDev = params[1] ? parseFloat(params[1]) : 2;
+      break;
+    case 'supertrend':
+      result.multiplier = params[1] ? parseFloat(params[1]) : 3;
+      break;
+    case 'macd':
+      result.fast = params[0] ? parseInt(params[0]) : 12;
+      result.slow = params[1] ? parseInt(params[1]) : 26;
+      result.signal = params[2] ? parseInt(params[2]) : 9;
+      break;
+    case 'stochastic':
+      result.k = params[0] ? parseInt(params[0]) : 14;
+      result.d = params[1] ? parseInt(params[1]) : 3;
+      break;
+  }
+  
+  return result;
 }
 
 function evaluateCondition(condition, candle, prevCandle, candles, currentIndex) {
@@ -616,6 +1013,23 @@ function getDataAvailabilityIndex(candles, parsedQuery) {
   function extractFieldInfo(expr) {
     if (expr.type === 'expression' && expr.field) {
       extractFieldInfo(expr.field);
+    } else if (expr.type === 'indicator') {
+      const fieldNames = generateIndicatorFieldName({
+        name: expr.name,
+        period: parseInt(expr.params[0]) || getDefaultPeriod(expr.name),
+        params: parseIndicatorParams(expr.name, expr.params)
+      });
+      
+      if (typeof fieldNames === 'object') {
+        // Add all fields for complex indicators
+        Object.values(fieldNames).forEach(field => requiredFields.add(field));
+      } else {
+        requiredFields.add(fieldNames);
+      }
+      
+      if (expr.daysAgo) {
+        maxDaysAgo = Math.max(maxDaysAgo, expr.daysAgo);
+      }
     } else if (expr.type === 'field') {
       if (expr.field !== 'prev_close') {
         requiredFields.add(expr.field);
@@ -752,5 +1166,9 @@ const getQueryExamples = () => ({
 module.exports = {
   parseQuery,
   findMatchingCandles,
-  getQueryExamples
+  getQueryExamples,
+  extractIndicatorsFromQuery,
+  processStocksWithIndicatorsInMemory,
+  processStocksWithIndicators,
+  generateIndicatorFieldName
 };
