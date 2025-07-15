@@ -5,7 +5,7 @@ const path = require('path');
 const cors = require('cors');
 const qs = require('qs');
 const { parseQuery, findMatchingCandles, getQueryExamples, extractIndicatorsFromQuery, processStocksWithIndicators } = require('./services/queryService');
-const { STOCK_SYMBOLS } = require('./stockSymbols.constants');
+const { STOCK_SYMBOLS, TOTAL_SYMBOLS } = require('./stockSymbols.constants');
 
 const app = express();
 app.use(cors());
@@ -150,12 +150,13 @@ app.post('/chartink-api', async (req, res) => {
 });
 
 // Global progress state for the current query
+
 let currentProgress = {
   isRunning: false,
   phase: 'idle',
   message: '',
   processed: 0,
-  total: 2200, // Total stocks to process
+  total: TOTAL_SYMBOLS, // Total stocks to process
   matches: 0,
   percentage: 0,
   startTime: null
@@ -298,7 +299,7 @@ app.post('/query',  async (req, res) => {
       phase: 'initializing',
       message: 'Starting query processing...',
       processed: 0,
-      total: 2200,
+      total: TOTAL_SYMBOLS,
       matches: 0,
       startTime: Date.now()
     });
@@ -329,9 +330,8 @@ app.post('/query',  async (req, res) => {
     const processingStart = Date.now();
     
     // Get stock list from constants
-    const { STOCK_SYMBOLS } = require('./stockSymbols.constants');
     let stockList = stocks || STOCK_SYMBOLS;
-    const totalStocks = 2200; // Always show 2200 for proper percentage
+    const totalStocks = TOTAL_SYMBOLS;
     
     console.log(`Processing ${stockList.length} stocks with indicators and analyzing...`);
     
@@ -720,7 +720,7 @@ let globalRefreshState = {
 };
 
 // Simple refresh DB endpoint
-app.post('/refreshdb-simple', async (req, res) => {
+app.post('/refreshdb', async (req, res) => {
   try {
     const { totalResults = 2000 } = req.body;
     

@@ -312,7 +312,7 @@ export class App implements OnInit {
               this.progressPhase = progress.phase;
               this.progressMessage = progress.message || '';
               this.progressProcessed = progress.processed || 0;
-              this.progressTotal = progress.total || 2200;
+              this.progressTotal = progress.total || 2446;
               if (progress.matches !== undefined) {
                 this.progressMatches = progress.matches;
               }
