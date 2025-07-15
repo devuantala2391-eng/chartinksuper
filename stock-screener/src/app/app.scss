@@ -146,7 +146,9 @@
     .field-select,
     .operator-select,
     .value-type-select,
-    .time-unit-select {
+    .time-unit-select,
+    .time-period-select,
+    .arithmetic-operator-select {
       flex: 1;
       padding: 8px;
       border: 2px solid #e0e0e0;
@@ -170,6 +172,19 @@
       font-size: 13px;
     }
     
+    .time-period-select {
+      flex: 0 0 auto;
+      width: 130px;
+      font-size: 13px;
+      background: #f0f8ff;
+      border-color: #4682b4;
+      
+      &:focus {
+        border-color: #1e90ff;
+        box-shadow: 0 0 0 2px rgba(30, 144, 255, 0.1);
+      }
+    }
+    
     .value-input {
       flex: 0.4;
       padding: 8px;
@@ -184,13 +199,14 @@
       }
     }
     
-    .days-ago-input {
+    .days-ago-input,
+    .custom-days-input {
       flex: 0 0 auto;
       padding: 8px;
       border: 2px solid #e0e0e0;
       border-radius: 6px;
       font-size: 14px;
-      width: 50px;
+      width: 80px;
       
       &:focus {
         outline: none;
@@ -288,6 +304,45 @@
       }
     }
     
+    .arithmetic-operations {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 8px;
+      padding: 8px;
+      background: #fff8e1;
+      border-radius: 4px;
+      border: 1px solid #ffcc02;
+      
+      .arithmetic-operator-select {
+        flex: 0 0 auto;
+        width: 80px;
+        font-size: 12px;
+        padding: 4px 6px;
+        
+        &:focus {
+          border-color: #ff9800;
+          box-shadow: 0 0 0 2px rgba(255, 152, 0, 0.1);
+        }
+      }
+      
+      .arithmetic-value-input {
+        flex: 0 0 auto;
+        width: 80px;
+        padding: 4px 6px;
+        border: 1px solid #ffcc02;
+        border-radius: 4px;
+        font-size: 12px;
+        text-align: center;
+        
+        &:focus {
+          outline: none;
+          border-color: #ff9800;
+          box-shadow: 0 0 0 2px rgba(255, 152, 0, 0.1);
+        }
+      }
+    }
+    
     @media (max-width: 1200px) {
       .left-field-group,
       .value-group {
@@ -304,17 +359,32 @@
       .value-group,
       .field-select,
       .operator-select,
-      .value-type-select {
+      .value-type-select,
+      .time-period-select,
+      .time-unit-select,
+      .arithmetic-operator-select {
         width: 100%;
         flex: none;
       }
       
-      .days-ago-input {
-        width: 50px;
+      .days-ago-input,
+      .custom-days-input {
+        width: 80px;
       }
       
       .multiplier-input {
         width: 60px;
+      }
+      
+      .arithmetic-operations {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+        
+        .arithmetic-operator-select,
+        .arithmetic-value-input {
+          width: 100%;
+        }
       }
     }
   }

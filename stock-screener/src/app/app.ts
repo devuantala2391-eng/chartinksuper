@@ -10,14 +10,18 @@ interface Condition {
   operator: string;
   value: string;
   logicalOperator: 'and' | 'or';
-  daysAgo?: number;
+  // Simplified time period handling
+  timePeriod: 'today' | '1-day' | '2-days' | '3-days' | '4-days' | '5-days' | 'n-days';
+  customDaysAgo?: number;
   timeUnit: 'day' | 'week' | 'month';
-  leftMultiplier?: number;
   valueType: 'number' | 'field';
   valueField?: string;
-  valueDaysAgo?: number;
+  valueTimePeriod?: 'today' | '1-day' | '2-days' | '3-days' | '4-days' | '5-days' | 'n-days';
+  valueCustomDaysAgo?: number;
   valueTimeUnit?: 'day' | 'week' | 'month';
-  multiplier?: number;
+  // Arithmetic operators for right side
+  arithmeticOperator?: '+' | '-' | '*' | '/';
+  arithmeticValue?: string;
   // New fields for indicator parameters
   indicatorType?: 'simple' | 'parameterized';
   indicatorName?: string;
@@ -58,38 +62,17 @@ export class App implements OnInit {
     { value: 'high', label: 'High' },
     { value: 'low', label: 'Low' },
     { value: 'volume', label: 'Volume' },
-    { value: 'current close', label: 'Current Close' },
-    { value: 'yesterday\'s close', label: 'Yesterday\'s Close' },
-    { value: 'weekly volume', label: 'Weekly Volume' },
-    // Parameterized indicators
-    { value: 'rsi', label: 'RSI (with params)' },
-    { value: 'sma', label: 'SMA (with params)' },
-    { value: 'ema', label: 'EMA (with params)' },
-    { value: 'bb', label: 'Bollinger Bands (with params)' },
-    { value: 'supertrend', label: 'SuperTrend (with params)' },
-    { value: 'macd', label: 'MACD (with params)' },
-    { value: 'stochastic', label: 'Stochastic (with params)' },
-    { value: 'williamsr', label: 'Williams %R (with params)' },
-    // Legacy fields for backward compatibility
-    { value: 'daily rsi', label: 'Daily RSI (legacy)' },
-    { value: 'weekly rsi', label: 'Weekly RSI (legacy)' },
-    { value: 'daily sma', label: 'Daily SMA (legacy)' },
-    { value: 'weekly sma', label: 'Weekly SMA (legacy)' },
-    { value: 'daily ema', label: 'Daily EMA (legacy)' },
-    { value: 'weekly ema', label: 'Weekly EMA (legacy)' },
-    { value: 'daily upper bollinger band', label: 'Daily Upper Bollinger Band (legacy)' },
-    { value: 'daily lower bollinger band', label: 'Daily Lower Bollinger Band (legacy)' },
-    { value: 'weekly upper bollinger band', label: 'Weekly Upper Bollinger Band (legacy)' },
-    { value: 'weekly lower bollinger band', label: 'Weekly Lower Bollinger Band (legacy)' },
-    { value: 'daily supertrend', label: 'Daily Supertrend (legacy)' },
-    { value: 'weekly supertrend', label: 'Weekly Supertrend (legacy)' },
-    { value: 'daily percent change', label: 'Daily % Change (legacy)' },
-    { value: 'weekly percent change', label: 'Weekly % Change (legacy)' }
+    // Working parameterized indicators
+    { value: 'rsi', label: 'RSI' },
+    { value: 'sma', label: 'SMA' },
+    { value: 'ema', label: 'EMA' },
+    { value: 'bb', label: 'Bollinger Bands' },
+    { value: 'supertrend', label: 'SuperTrend' }
   ];
   
   // Parameterized indicators
   parameterizedIndicators = [
-    'rsi', 'sma', 'ema', 'bb', 'supertrend', 'macd', 'stochastic', 'williamsr'
+    'rsi', 'sma', 'ema', 'bb', 'supertrend'
   ];
   
   // Default parameters for indicators
@@ -98,10 +81,7 @@ export class App implements OnInit {
     'sma': ['20'],
     'ema': ['20'],
     'bb': ['20', '2'],
-    'supertrend': ['10', '3'],
-    'macd': ['12', '26', '9'],
-    'stochastic': ['14', '3'],
-    'williamsr': ['14']
+    'supertrend': ['10', '3']
   };
 
   operators = [
@@ -113,6 +93,25 @@ export class App implements OnInit {
     { value: '!=', label: 'Not equal to' }
   ];
 
+  // Time period options
+  timePeriodOptions = [
+    { value: 'today', label: "Today's" },
+    { value: '1-day', label: '1 day ago' },
+    { value: '2-days', label: '2 days ago' },
+    { value: '3-days', label: '3 days ago' },
+    { value: '4-days', label: '4 days ago' },
+    { value: '5-days', label: '5 days ago' },
+    { value: 'n-days', label: 'n days ago' }
+  ];
+
+  // Arithmetic operators
+  arithmeticOperators = [
+    { value: '+', label: '+' },
+    { value: '-', label: '-' },
+    { value: '*', label: '×' },
+    { value: '/', label: '÷' }
+  ];
+
   conditions: Condition[] = [
     { 
       id: 1, 
@@ -120,9 +119,8 @@ export class App implements OnInit {
       operator: '>', 
       value: '60', 
       logicalOperator: 'and', 
-      daysAgo: 0, 
+      timePeriod: 'today', 
       timeUnit: 'day', 
-      leftMultiplier: 1, 
       valueType: 'number',
       indicatorType: 'parameterized',
       indicatorName: 'rsi',
@@ -166,14 +164,12 @@ export class App implements OnInit {
       operator: '>',
       value: '',
       logicalOperator: 'and',
-      daysAgo: 0,
+      timePeriod: 'today',
       timeUnit: 'day',
-      leftMultiplier: 1,
       valueType: 'number',
       valueField: 'rsi',
-      valueDaysAgo: 0,
+      valueTimePeriod: 'today',
       valueTimeUnit: 'day',
-      multiplier: 1,
       indicatorType: 'parameterized',
       indicatorName: 'rsi',
       indicatorParams: ['14'],
@@ -194,18 +190,30 @@ export class App implements OnInit {
     return field;
   }
 
+  // Helper method to convert time period to days ago
+  private getTimePeriodDays(timePeriod: string, customDaysAgo?: number): number {
+    switch (timePeriod) {
+      case 'today': return 0;
+      case '1-day': return 1;
+      case '2-days': return 2;
+      case '3-days': return 3;
+      case '4-days': return 4;
+      case '5-days': return 5;
+      case 'n-days': return customDaysAgo || 0;
+      default: return 0;
+    }
+  }
+
   buildQuery(): string {
     return this.conditions.map((condition, index) => {
       // Build left side
       let field = this.buildFieldString(condition.field, condition.indicatorType, condition.indicatorName, condition.indicatorParams);
       
-      if (condition.daysAgo !== null && condition.daysAgo !== undefined && condition.daysAgo > 0) {
+      const daysAgo = this.getTimePeriodDays(condition.timePeriod, condition.customDaysAgo);
+      if (daysAgo > 0) {
         let unit = condition.timeUnit;
-        const plural = condition.daysAgo === 1 ? unit : unit + 's';
-        field = `${condition.daysAgo} ${plural} ago ${field}`;
-      }
-      if (condition.leftMultiplier && condition.leftMultiplier !== 1) {
-        field = `${field} * ${condition.leftMultiplier}`;
+        const plural = daysAgo === 1 ? unit : unit + 's';
+        field = `${daysAgo} ${plural} ago ${field}`;
       }
       
       // Build right side
@@ -213,13 +221,16 @@ export class App implements OnInit {
       if (condition.valueType === 'field' && condition.valueField) {
         value = this.buildFieldString(condition.valueField, condition.valueIndicatorType, condition.valueIndicatorName, condition.valueIndicatorParams);
         
-        if (condition.valueDaysAgo && condition.valueDaysAgo > 0) {
+        const valueDaysAgo = this.getTimePeriodDays(condition.valueTimePeriod || 'today', condition.valueCustomDaysAgo);
+        if (valueDaysAgo > 0) {
           let unit = condition.valueTimeUnit;
-          const plural = condition.valueDaysAgo === 1 ? unit : unit + 's';
-          value = `${condition.valueDaysAgo} ${plural} ago ${value}`;
+          const plural = valueDaysAgo === 1 ? unit : unit + 's';
+          value = `${valueDaysAgo} ${plural} ago ${value}`;
         }
-        if (condition.multiplier && condition.multiplier !== 1) {
-          value = `${value} * ${condition.multiplier}`;
+        
+        // Add arithmetic operation if specified
+        if (condition.arithmeticOperator && condition.arithmeticValue) {
+          value = `${value} ${condition.arithmeticOperator} ${condition.arithmeticValue}`;
         }
       }
       
@@ -391,14 +402,14 @@ export class App implements OnInit {
           operator: '>',
           value: '',
           logicalOperator: 'and',
-          daysAgo: 1,
+          timePeriod: '1-day',
           timeUnit: 'day',
-          leftMultiplier: 1,
           valueType: 'field',
           valueField: 'volume',
-          valueDaysAgo: 1,
+          valueTimePeriod: '1-day',
           valueTimeUnit: 'week',
-          multiplier: 1.2
+          arithmeticOperator: '*',
+          arithmeticValue: '1.2'
         });
         break;
       case 'price-breakout':
@@ -408,14 +419,14 @@ export class App implements OnInit {
           operator: '>',
           value: '',
           logicalOperator: 'and',
-          daysAgo: 0,
+          timePeriod: 'today',
           timeUnit: 'day',
-          leftMultiplier: 1,
           valueType: 'field',
           valueField: 'sma',
-          valueDaysAgo: 0,
+          valueTimePeriod: 'today',
           valueTimeUnit: 'day',
-          multiplier: 1.05
+          arithmeticOperator: '*',
+          arithmeticValue: '1.05'
         });
         break;
       case 'trend-reversal':
@@ -425,14 +436,12 @@ export class App implements OnInit {
           operator: '>',
           value: '',
           logicalOperator: 'and',
-          daysAgo: 1,
+          timePeriod: '1-day',
           timeUnit: 'day',
-          leftMultiplier: 1,
           valueType: 'field',
           valueField: 'supertrend',
-          valueDaysAgo: 0,
+          valueTimePeriod: 'today',
           valueTimeUnit: 'day',
-          multiplier: 1,
           indicatorType: 'parameterized',
           indicatorName: 'supertrend',
           indicatorParams: ['10', '3'],
@@ -448,9 +457,8 @@ export class App implements OnInit {
           operator: '<',
           value: '30',
           logicalOperator: 'and',
-          daysAgo: 0,
+          timePeriod: 'today',
           timeUnit: 'day',
-          leftMultiplier: 1,
           valueType: 'number',
           indicatorType: 'parameterized',
           indicatorName: 'rsi',
@@ -495,10 +503,7 @@ export class App implements OnInit {
       'sma': ['Period'],
       'ema': ['Period'],
       'bb': ['Period', 'Std Dev'],
-      'supertrend': ['Period', 'Multiplier'],
-      'macd': ['Fast', 'Slow', 'Signal'],
-      'stochastic': ['%K', '%D'],
-      'williamsr': ['Period']
+      'supertrend': ['Period', 'Multiplier']
     };
     return labels[indicatorName] || ['Period'];
   }

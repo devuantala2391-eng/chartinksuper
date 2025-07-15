@@ -397,14 +397,46 @@ function extractIndicatorsFromQuery(parsedQuery) {
         period: period,
         params: params
       }));
-    } else if (field.type === 'expression' && field.field) {
-      extractFromField(field.field);
+    } else if (field.type === 'field') {
+      // Add basic field as an indicator to ensure it gets processed
+      indicators.add(JSON.stringify({
+        name: field.field,
+        period: 1,
+        params: {}
+      }));
+    } else if (field.type === 'expression') {
+      // Handle time-based expressions like "1 day ago volume"
+      if (field.daysAgo || field.weeksAgo || field.monthsAgo) {
+        indicators.add(JSON.stringify({
+          name: field.field,
+          period: 1,
+          params: {
+            daysAgo: field.daysAgo,
+            weeksAgo: field.weeksAgo,
+            monthsAgo: field.monthsAgo,
+            timeUnit: field.timeUnit
+          }
+        }));
+      }
+      if (field.field) {
+        extractFromField(field.field);
+      }
     }
   }
   
   for (const condition of parsedQuery.conditions) {
     extractFromField(condition.left);
     extractFromField(condition.right);
+  }
+  
+  // Always ensure basic calculations are included
+  // This ensures mapperStorage is always generated for any query
+  if (indicators.size === 0) {
+    indicators.add(JSON.stringify({
+      name: 'volume',
+      period: 1,
+      params: {}
+    }));
   }
   
   return Array.from(indicators).map(ind => JSON.parse(ind));
@@ -559,6 +591,7 @@ async function processStocksWithIndicators(indicators, stockList = null) {
   };
   
   // Check cache first (only if processing all stocks)
+  // NOTE: Cache is now cleared for each new query to ensure fresh data
   if (!stockList && isCached(indicators)) {
     console.log('Using cached indicator calculations');
     const mapperStoragePath = path.join(__dirname, '..', 'mapperStorage');

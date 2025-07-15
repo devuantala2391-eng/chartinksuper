@@ -16,10 +16,10 @@
     <div class="help-text">
       <p>💡 <strong>Tips:</strong></p>
       <ul>
-        <li><strong>Days ago:</strong> Enter "0" for current value, "1" for yesterday, etc.</li>
+        <li><strong>Time Period:</strong> Choose from "Today's", "1 day ago", "2 days ago", etc. or "n days ago" for custom periods</li>
         <li><strong>Value Type:</strong> Choose "Number" for fixed values or "Field" to compare with another indicator</li>
-        <li><strong>Field comparisons:</strong> Compare indicators like "1 day ago volume > 1 week ago volume * 1.2"</li>
-        <li><strong>Multiplier:</strong> Use 1.2 for 120%, 0.9 for 90%, etc.</li>
+        <li><strong>Field comparisons:</strong> Compare indicators like "1 day ago volume > 1 week ago volume + 1000"</li>
+        <li><strong>Arithmetic Operations:</strong> Use +, -, ×, ÷ for calculations on the right side</li>
         <li><strong>Indicator Parameters:</strong> Use parameterized indicators like "rsi(14)", "sma(20)", "bb(20, 2)"</li>
       </ul>
       <div class="preset-buttons">
@@ -50,31 +50,29 @@
 
         <div class="condition-inputs">
           <div class="left-field-group">
+            <!-- Simplified Time Period Dropdown -->
+            <select [(ngModel)]="condition.timePeriod" class="time-period-select" title="Time period">
+              <option *ngFor="let period of timePeriodOptions" [value]="period.value">
+                {{ period.label }}
+              </option>
+            </select>
+            
+            <!-- Custom days input (only show when n-days is selected) -->
             <input 
+              *ngIf="condition.timePeriod === 'n-days'"
               type="number" 
-              [(ngModel)]="condition.leftMultiplier" 
-              placeholder="1"
-              class="multiplier-input"
-              min="0"
-              step="0.1"
-              title="Multiplier (1 = 100%, 1.2 = 120%)"
+              [(ngModel)]="condition.customDaysAgo" 
+              placeholder="Enter days"
+              class="custom-days-input"
+              min="1"
+              title="Enter number of days ago"
             />
             
-            <span class="hint">×</span>
-            
-            <input 
-              type="number" 
-              [(ngModel)]="condition.daysAgo" 
-              placeholder="0"
-              class="days-ago-input"
-              min="0"
-              title="How many periods ago (0 = current)"
-            />
-            
+            <!-- Time Unit -->
             <select [(ngModel)]="condition.timeUnit" class="time-unit-select" title="Time unit">
-              <option value="day">day(s) ago</option>
-              <option value="week">week(s) ago</option>
-              <option value="month">month(s) ago</option>
+              <option value="day">day(s)</option>
+              <option value="week">week(s)</option>
+              <option value="month">month(s)</option>
             </select>
 
             <select [(ngModel)]="condition.field" class="field-select" (change)="onFieldChange(condition)">
@@ -121,31 +119,29 @@
 
           <!-- Field comparison inputs -->
           <div class="value-group field-value" *ngIf="condition.valueType === 'field'">
+            <!-- Time Period for Value Field -->
+            <select [(ngModel)]="condition.valueTimePeriod" class="time-period-select" title="Value time period">
+              <option *ngFor="let period of timePeriodOptions" [value]="period.value">
+                {{ period.label }}
+              </option>
+            </select>
+            
+            <!-- Custom days input for value field -->
             <input 
+              *ngIf="condition.valueTimePeriod === 'n-days'"
               type="number" 
-              [(ngModel)]="condition.multiplier" 
-              placeholder="1"
-              class="multiplier-input"
-              min="0"
-              step="0.1"
-              title="Multiplier (1 = 100%, 1.2 = 120%)"
+              [(ngModel)]="condition.valueCustomDaysAgo" 
+              placeholder="Enter days"
+              class="custom-days-input"
+              min="1"
+              title="Enter number of days ago for value field"
             />
             
-            <span class="hint">×</span>
-            
-            <input 
-              type="number" 
-              [(ngModel)]="condition.valueDaysAgo" 
-              placeholder="0"
-              class="days-ago-input"
-              min="0"
-              title="How many periods ago (0 = current)"
-            />
-            
-            <select [(ngModel)]="condition.valueTimeUnit" class="time-unit-select" title="Time unit">
-              <option value="day">day(s) ago</option>
-              <option value="week">week(s) ago</option>
-              <option value="month">month(s) ago</option>
+            <!-- Value Time Unit -->
+            <select [(ngModel)]="condition.valueTimeUnit" class="time-unit-select" title="Value time unit">
+              <option value="day">day(s)</option>
+              <option value="week">week(s)</option>
+              <option value="month">month(s)</option>
             </select>
             
             <select [(ngModel)]="condition.valueField" class="field-select" (change)="onValueFieldChange(condition)">
@@ -165,6 +161,25 @@
                   [placeholder]="getIndicatorParamLabels(condition.valueIndicatorName)[i]"
                 />
               </div>
+            </div>
+            
+            <!-- Arithmetic Operations -->
+            <div class="arithmetic-operations">
+              <select [(ngModel)]="condition.arithmeticOperator" class="arithmetic-operator-select" title="Arithmetic operation">
+                <option value="">Select operation</option>
+                <option *ngFor="let op of arithmeticOperators" [value]="op.value">
+                  {{ op.label }}
+                </option>
+              </select>
+              
+              <input 
+                *ngIf="condition.arithmeticOperator"
+                type="text" 
+                [(ngModel)]="condition.arithmeticValue" 
+                placeholder="Enter value"
+                class="arithmetic-value-input"
+                title="Enter arithmetic value"
+              />
             </div>
           </div>
 

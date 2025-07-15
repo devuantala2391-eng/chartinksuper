@@ -287,6 +287,14 @@ function calculateAllIndicators(candles, indicators) {
     
     try {
       switch (name.toLowerCase()) {
+        // Basic fields - already exist in candles, no calculation needed
+        case 'open':
+        case 'high':
+        case 'low':
+        case 'close':
+        case 'volume':
+          // These are already in the result array, no additional processing needed
+          break;
         case 'sma':
           const smaValues = calculateSMA(closes, period);
           result.forEach((candle, i) => {

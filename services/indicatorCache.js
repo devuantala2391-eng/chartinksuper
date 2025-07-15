@@ -77,6 +77,7 @@ function clearCache() {
   try {
     if (fs.existsSync(CACHE_FILE)) {
       fs.unlinkSync(CACHE_FILE);
+      console.log('Cleared indicator cache');
     }
   } catch (error) {
     console.warn('Failed to clear cache:', error.message);

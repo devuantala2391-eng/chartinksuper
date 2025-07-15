@@ -27,7 +27,11 @@
       "Bash(cmd /c:*)",
       "Bash(pkill:*)",
       "Bash(mkdir:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(ng build:*)",
+      "Bash(ng test:*)",
+      "Bash(npx tsc:*)",
+      "Bash(kill:*)"
     ],
     "deny": []
   }

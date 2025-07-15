@@ -6,6 +6,7 @@ const cors = require('cors');
 const qs = require('qs');
 const { parseQuery, findMatchingCandles, getQueryExamples, extractIndicatorsFromQuery, processStocksWithIndicators } = require('./services/queryService');
 const { STOCK_SYMBOLS, TOTAL_SYMBOLS } = require('./stockSymbols.constants');
+const { clearCache } = require('./services/indicatorCache');
 
 const app = express();
 app.use(cors());
@@ -76,7 +77,7 @@ app.post('/chartink-api', async (req, res) => {
         if (fs.existsSync(filePath)) {
           fs.unlinkSync(filePath);
         }
-        const queryString = "select high, low, open, close, volume, Upper Bollinger band(  20 ,  2 ) as 'ubb', Lower Bollinger band(  20 ,  2 ) as 'lbb', Sma(  Close ,  20 ) as 'sma'";
+        const queryString = "select high, low, open, close, volume";
         const data = qs.stringify({
           query: queryString,
           use_live: 1,
@@ -118,9 +119,6 @@ app.post('/chartink-api', async (req, res) => {
           const opens = groupData[2]?.open || [];
           const closes = groupData[3]?.close || [];
           const volumes = groupData[4]?.volume || [];
-          const ubbs = groupData[5]?.ubb || [];
-          const lbbs = groupData[6]?.lbb || [];
-          const sma20s = groupData[7]?.sma || [];
           highs.forEach((element, idx) => {
             if(idx < metaData.length){
               mappedData.push( {
@@ -176,7 +174,9 @@ function clearMapperStorage() {
         const filePath = path.join(mapperStorageDir, file);
         fs.unlinkSync(filePath);
       });
-      console.log(`Cleared ${files.length} files from mapperStorage`);
+      console.log(`🗑️  Cleared ${files.length} files from mapperStorage`);
+    } else {
+      console.log('🗑️  MapperStorage directory does not exist - nothing to clear');
     }
   } catch (error) {
     console.error('Error clearing mapperStorage:', error);
@@ -201,6 +201,7 @@ app.get('/test', (req, res) => {
   console.log('Test endpoint called');
   res.json({ message: 'Test endpoint working', timestamp: new Date().toISOString() });
 });
+
 
 // Simple progress endpoint - truly non-blocking
 app.get('/query/progress', async (req, res) => {
@@ -289,6 +290,10 @@ app.post('/query',  async (req, res) => {
     clearMapperStorage();
     createMapperStorageDir();
     
+    // Clear indicator cache to ensure fresh processing for new queries
+    console.log('🧹 Clearing indicator cache for new query...');
+    clearCache();
+    
     // Create new abort controller for this query
     currentQueryAbortController = new AbortController();
     isQueryAborted = false;
@@ -320,8 +325,40 @@ app.post('/query',  async (req, res) => {
     }
     
     // Extract indicators from the query
-    const requiredIndicators = extractIndicatorsFromQuery(parsedQuery);
+    let requiredIndicators = extractIndicatorsFromQuery(parsedQuery);
     console.log('Required indicators:', requiredIndicators);
+    console.log('Number of required indicators:', requiredIndicators.length);
+    
+    // Ensure we always have indicators for mapperStorage generation
+    if (requiredIndicators.length === 0) {
+      console.log('No indicators found by extraction, manually parsing query conditions...');
+      
+      // Extract required fields from the parsed query conditions
+      const requiredFields = new Set();
+      for (const condition of parsedQuery.conditions) {
+        if (condition.left.type === 'field') {
+          requiredFields.add(condition.left.field);
+        }
+        if (condition.right.type === 'field') {
+          requiredFields.add(condition.right.field);
+        }
+        if (condition.left.type === 'indicator') {
+          requiredFields.add(condition.left.name);
+        }
+        if (condition.right.type === 'indicator') {
+          requiredFields.add(condition.right.name);
+        }
+      }
+      
+      // Convert fields to indicators
+      requiredIndicators = Array.from(requiredFields).map(field => ({
+        name: field,
+        period: 1,
+        params: {}
+      }));
+      
+      console.log('Manually extracted indicators:', requiredIndicators);
+    }
     
     // Process stocks with real-time progress tracking
     const allMatches = [];
@@ -365,26 +402,28 @@ app.post('/query',  async (req, res) => {
           continue;
         }
         
-        // Generate JSON for this stock with indicators (saves to mapperStorage)
-        if (requiredIndicators.length > 0) {
-          await generateStockJSON(stock, requiredIndicators);
-        }
+        // Always generate mapperStorage files for any query (includes basic fields and indicators)
+        console.log(`Generating mapperStorage for ${stock} with indicators:`, requiredIndicators);
+        await generateStockJSON(stock, requiredIndicators);
         
         // Read the generated mapped data from mapperStorage
         const mapperFilePath = path.join(__dirname, 'mapperStorage', `${stock}_piped.json`);
+        let candles;
+        
         if (fs.existsSync(mapperFilePath)) {
           const mappedData = JSON.parse(fs.readFileSync(mapperFilePath, 'utf8'));
-          const candles = mappedData.data;
-          
-          if (candles && candles.length > 0) {
-            // Find matching candles for backtesting
-            const matches = findMatchingCandles(candles, parsedQuery, stock);
-            allMatches.push(...matches);
-          } else {
-            errors.push({ stock, error: 'No candle data available' });
-          }
+          candles = mappedData.data;
         } else {
           errors.push({ stock, error: 'Mapped data not found in mapperStorage' });
+          continue;
+        }
+        
+        if (candles && candles.length > 0) {
+          // Find matching candles for backtesting
+          const matches = findMatchingCandles(candles, parsedQuery, stock);
+          allMatches.push(...matches);
+        } else {
+          errors.push({ stock, error: 'No candle data available' });
         }
         
         processedCount++;
@@ -571,7 +610,7 @@ app.post('/refreshdb', async (req, res) => {
       const batch = batches[batchIndex];
       const batchPromises = batch.map(async (symbol) => {
         try {
-          const queryString = "select high, low, open, close, volume, Upper Bollinger band(  20 ,  2 ) as 'ubb', Lower Bollinger band(  20 ,  2 ) as 'lbb', Sma(  Close ,  20 ) as 'sma'";
+          const queryString = "select high, low, open, close, volume";
           const data = qs.stringify({
             query: queryString,
             use_live: 1,
@@ -617,9 +656,6 @@ app.post('/refreshdb', async (req, res) => {
             const opens = groupData[2]?.open || [];
             const closes = groupData[3]?.close || [];
             const volumes = groupData[4]?.volume || [];
-            const ubbs = groupData[5]?.ubb || [];
-            const lbbs = groupData[6]?.lbb || [];
-            const sma20s = groupData[7]?.sma || [];
             
             highs.forEach((element, idx) => {
               if(idx < metaData.length){
@@ -630,10 +666,7 @@ app.post('/refreshdb', async (req, res) => {
                   close: closes[idx] !== undefined && closes[idx] !== null ? String(closes[idx]) : '',
                   volume: volumes[idx] !== undefined && volumes[idx] !== null ? String(volumes[idx]) : null,
                   date: metaData[idx] !== undefined && metaData[idx] !== null ? String(getNextDayTimestamp(metaData[idx])) : '',
-                  day: metaData[idx] !== undefined && metaData[idx] !== null ? getDayOfWeekName(getNextDayTimestamp(metaData[idx])) : '',
-                  ubb: ubbs[idx] !== undefined && ubbs[idx] !== null ? String(ubbs[idx]) : '',
-                  lbb: lbbs[idx] !== undefined && lbbs[idx] !== null ? String(lbbs[idx]) : '',
-                  sma20: sma20s[idx] !== undefined && sma20s[idx] !== null ? String(sma20s[idx]) : ''
+                  day: metaData[idx] !== undefined && metaData[idx] !== null ? getDayOfWeekName(getNextDayTimestamp(metaData[idx])) : ''
                 });
               }
             });
@@ -831,7 +864,7 @@ async function processSimpleRefreshInBackground(totalResults) {
       const batch = batches[batchIndex];
       const batchPromises = batch.map(async (symbol) => {
         try {
-          const queryString = "select high, low, open, close, volume, Upper Bollinger band(  20 ,  2 ) as 'ubb', Lower Bollinger band(  20 ,  2 ) as 'lbb', Sma(  Close ,  20 ) as 'sma'";
+          const queryString = "select high, low, open, close, volume";
           const data = qs.stringify({
             query: queryString,
             use_live: 1,
@@ -877,9 +910,6 @@ async function processSimpleRefreshInBackground(totalResults) {
             const opens = groupData[2]?.open || [];
             const closes = groupData[3]?.close || [];
             const volumes = groupData[4]?.volume || [];
-            const ubbs = groupData[5]?.ubb || [];
-            const lbbs = groupData[6]?.lbb || [];
-            const sma20s = groupData[7]?.sma || [];
             
             highs.forEach((element, idx) => {
               if(idx < metaData.length){
@@ -891,9 +921,6 @@ async function processSimpleRefreshInBackground(totalResults) {
                   volume: volumes[idx] !== undefined && volumes[idx] !== null ? String(volumes[idx]) : null,
                   date: metaData[idx] !== undefined && metaData[idx] !== null ? String(getNextDayTimestamp(metaData[idx])) : '',
                   day: metaData[idx] !== undefined && metaData[idx] !== null ? getDayOfWeekName(getNextDayTimestamp(metaData[idx])) : '',
-                  ubb: ubbs[idx] !== undefined && ubbs[idx] !== null ? String(ubbs[idx]) : '',
-                  lbb: lbbs[idx] !== undefined && lbbs[idx] !== null ? String(lbbs[idx]) : '',
-                  sma20: sma20s[idx] !== undefined && sma20s[idx] !== null ? String(sma20s[idx]) : ''
                 });
               }
             });
