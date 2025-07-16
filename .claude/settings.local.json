@@ -31,7 +31,8 @@
       "Bash(ng build:*)",
       "Bash(ng test:*)",
       "Bash(npx tsc:*)",
-      "Bash(kill:*)"
+      "Bash(kill:*)",
+      "WebFetch(domain:chartink.com)"
     ],
     "deny": []
   }

@@ -375,6 +375,52 @@ function calculateAllIndicators(candles, indicators) {
   return result;
 }
 
+// Enhanced function to calculate indicators with timeframe support
+function calculateAllIndicatorsWithTimeframes(candles, indicators, timeframes = ['daily']) {
+  const { aggregateToWeekly, aggregateToMonthly, mapAggregatedIndicators } = require('./timeframeAggregator');
+  
+  // First, calculate daily indicators with 'daily_' prefix
+  let result = [...candles];
+  
+  // Calculate daily indicators
+  if (timeframes.includes('daily')) {
+    const dailyResult = calculateAllIndicators(candles, indicators);
+    
+    // Rename all indicator fields to have 'daily_' prefix
+    dailyResult.forEach(candle => {
+      Object.keys(candle).forEach(key => {
+        // Check if this is an indicator field (not basic OHLCV fields)
+        if (key.includes('_') && !['date', 'day', 'open', 'high', 'low', 'close', 'volume'].includes(key)) {
+          candle[`daily_${key}`] = candle[key];
+          delete candle[key]; // Remove the unprefixed version
+        }
+      });
+    });
+    
+    result = dailyResult;
+  }
+  
+  // Calculate weekly indicators if requested
+  if (timeframes.includes('weekly')) {
+    const weeklyCandles = aggregateToWeekly(candles);
+    const weeklyWithIndicators = calculateAllIndicators(weeklyCandles, indicators);
+    
+    // Map weekly indicators back to daily candles with 'weekly_' prefix
+    result = mapAggregatedIndicators(result, weeklyWithIndicators, [], indicators);
+  }
+  
+  // Calculate monthly indicators if requested
+  if (timeframes.includes('monthly')) {
+    const monthlyCandles = aggregateToMonthly(candles);
+    const monthlyWithIndicators = calculateAllIndicators(monthlyCandles, indicators);
+    
+    // Map monthly indicators back to daily candles with 'monthly_' prefix
+    result = mapAggregatedIndicators(result, [], monthlyWithIndicators, indicators);
+  }
+  
+  return result;
+}
+
 module.exports = {
   calculateSMA,
   calculateEMA,
@@ -385,5 +431,6 @@ module.exports = {
   calculateMACD,
   calculateStochastic,
   calculateWilliamsR,
-  calculateAllIndicators
+  calculateAllIndicators,
+  calculateAllIndicatorsWithTimeframes
 };

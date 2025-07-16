@@ -263,10 +263,14 @@ function abortCurrentQuery() {
 }
 
 // Function to generate JSON for a single stock with indicators
-async function generateStockJSON(stock, requiredIndicators) {
+async function generateStockJSON(stock, requiredIndicators, requiredTimeframes = ['daily']) {
   try {
     // This function will process a single stock and generate its JSON with indicators
-    await processStocksWithIndicators(requiredIndicators, [stock]);
+    // Pass the new format with indicators and timeframes
+    await processStocksWithIndicators({
+      indicators: requiredIndicators,
+      timeframes: requiredTimeframes
+    }, [stock]);
   } catch (error) {
     console.error(`Error generating JSON for ${stock}:`, error);
     throw error;
@@ -325,8 +329,11 @@ app.post('/query',  async (req, res) => {
     }
     
     // Extract indicators from the query
-    let requiredIndicators = extractIndicatorsFromQuery(parsedQuery);
+    let indicatorsData = extractIndicatorsFromQuery(parsedQuery);
+    let requiredIndicators = indicatorsData.indicators;
+    let requiredTimeframes = indicatorsData.timeframes;
     console.log('Required indicators:', requiredIndicators);
+    console.log('Required timeframes:', requiredTimeframes);
     console.log('Number of required indicators:', requiredIndicators.length);
     
     // Ensure we always have indicators for mapperStorage generation
@@ -356,6 +363,7 @@ app.post('/query',  async (req, res) => {
         period: 1,
         params: {}
       }));
+      requiredTimeframes = ['daily']; // Default to daily if no indicators found
       
       console.log('Manually extracted indicators:', requiredIndicators);
     }
@@ -404,7 +412,8 @@ app.post('/query',  async (req, res) => {
         
         // Always generate mapperStorage files for any query (includes basic fields and indicators)
         console.log(`Generating mapperStorage for ${stock} with indicators:`, requiredIndicators);
-        await generateStockJSON(stock, requiredIndicators);
+        console.log(`Using timeframes:`, requiredTimeframes);
+        await generateStockJSON(stock, requiredIndicators, requiredTimeframes);
         
         // Read the generated mapped data from mapperStorage
         const mapperFilePath = path.join(__dirname, 'mapperStorage', `${stock}_piped.json`);
@@ -516,6 +525,270 @@ app.post('/query',  async (req, res) => {
     
     // Note: We no longer delete the mapperStorage directory on error
     // Files are overwritten on each query for fresh calculations
+    
+    res.status(500).json({ 
+      error: 'Internal server error', 
+      details: error.message 
+    });
+  }
+});
+
+// Latest day scan endpoint - only checks the most recent candle
+app.post('/query/latest',  async (req, res) => {
+  try {
+    const { query, stocks } = req.body;
+    
+    if (!query) {
+      return res.status(400).json({ error: 'Query is required' });
+    }
+
+    // Abort any existing query
+    abortCurrentQuery();
+    
+    // Clear mapperStorage directory and create it fresh
+    clearMapperStorage();
+    createMapperStorageDir();
+    
+    // Clear indicator cache to ensure fresh processing for new queries
+    console.log('🧹 Clearing indicator cache for latest day scan...');
+    clearCache();
+    
+    // Create new abort controller for this query
+    currentQueryAbortController = new AbortController();
+    isQueryAborted = false;
+    
+    // Reset progress for new query
+    updateProgress({
+      isRunning: true,
+      phase: 'initializing',
+      message: 'Starting latest day scan...',
+      processed: 0,
+      total: TOTAL_SYMBOLS,
+      matches: 0,
+      startTime: Date.now()
+    });
+    
+    console.log(`Processing latest day scan: ${query}`);
+    
+    // Parse the query
+    let parsedQuery;
+    try {
+      parsedQuery = parseQuery(query);
+    } catch (error) {
+      updateProgress({ isRunning: false, phase: 'error', message: 'Invalid query format' });
+      return res.status(400).json({ 
+        error: 'Invalid query format', 
+        details: error.message,
+        hint: 'Example: "rsi(14) > 70 and sma(20) < close"'
+      });
+    }
+    
+    // Extract indicators from the query
+    let indicatorsData = extractIndicatorsFromQuery(parsedQuery);
+    let requiredIndicators = indicatorsData.indicators;
+    let requiredTimeframes = indicatorsData.timeframes;
+    console.log('Required indicators for latest day scan:', requiredIndicators);
+    console.log('Required timeframes:', requiredTimeframes);
+    
+    // Ensure we always have indicators for mapperStorage generation
+    if (requiredIndicators.length === 0) {
+      console.log('No indicators found by extraction, manually parsing query conditions...');
+      
+      // Extract required fields from the parsed query conditions
+      const requiredFields = new Set();
+      for (const condition of parsedQuery.conditions) {
+        if (condition.left.type === 'field') {
+          requiredFields.add(condition.left.field);
+        }
+        if (condition.right.type === 'field') {
+          requiredFields.add(condition.right.field);
+        }
+        if (condition.left.type === 'indicator') {
+          requiredFields.add(condition.left.name);
+        }
+        if (condition.right.type === 'indicator') {
+          requiredFields.add(condition.right.name);
+        }
+      }
+      
+      // Convert fields to indicators
+      requiredIndicators = Array.from(requiredFields).map(field => ({
+        name: field,
+        period: 1,
+        params: {}
+      }));
+    }
+    
+    // Process stocks for latest day only
+    const allMatches = [];
+    const errors = [];
+    let processedCount = 0;
+    const processingStart = Date.now();
+    
+    // Get stock list from constants
+    let stockList = stocks || STOCK_SYMBOLS;
+    const totalStocks = TOTAL_SYMBOLS;
+    
+    console.log(`Processing ${stockList.length} stocks for latest day scan...`);
+    
+    updateProgress({ 
+      phase: 'processing_and_analyzing', 
+      message: 'Scanning latest day...', 
+      processed: 0, 
+      total: totalStocks 
+    });
+    
+    // Process each stock but only check the latest candle
+    for (const stock of stockList) {
+      if (isQueryAborted) {
+        console.log('Query was aborted during processing');
+        return res.status(400).json({ error: 'Query was aborted' });
+      }
+      
+      try {
+        // First check if stock data exists in db folder
+        const dbFilePath = path.join(__dirname, 'db', `${stock}.json`);
+        if (!fs.existsSync(dbFilePath)) {
+          errors.push({ stock, error: 'Stock data not found in db' });
+          processedCount++;
+          updateProgress({ 
+            phase: 'processing_and_analyzing', 
+            message: `Scanning: ${processedCount}/${totalStocks} stocks, ${allMatches.length} matches found`, 
+            processed: processedCount, 
+            total: totalStocks,
+            matches: allMatches.length
+          });
+          continue;
+        }
+        
+        // Generate mapperStorage files with indicators
+        await generateStockJSON(stock, requiredIndicators, requiredTimeframes);
+        
+        // Read the generated mapped data from mapperStorage
+        const mapperFilePath = path.join(__dirname, 'mapperStorage', `${stock}_piped.json`);
+        let candles;
+        
+        if (fs.existsSync(mapperFilePath)) {
+          const mappedData = JSON.parse(fs.readFileSync(mapperFilePath, 'utf8'));
+          candles = mappedData.data;
+        } else {
+          errors.push({ stock, error: 'Mapped data not found in mapperStorage' });
+          continue;
+        }
+        
+        if (candles && candles.length > 0) {
+          // Only check the latest candle
+          const latestCandle = candles[candles.length - 1];
+          const prevCandle = candles[candles.length - 2];
+          
+          if (latestCandle.close) {
+            try {
+              // Import the evaluation functions
+              const { evaluateAllConditions } = require('./services/queryService');
+              
+              if (evaluateAllConditions(parsedQuery, latestCandle, prevCandle, candles, candles.length - 1)) {
+                allMatches.push({
+                  date: latestCandle.date,
+                  day: latestCandle.day,
+                  timestamp: new Date(parseInt(latestCandle.date)).toISOString(),
+                  stock: stock,
+                  close: latestCandle.close,
+                  matchedConditions: query
+                });
+              }
+            } catch (error) {
+              console.error(`Error evaluating latest candle for ${stock}:`, error.message);
+            }
+          }
+        } else {
+          errors.push({ stock, error: 'No candle data available' });
+        }
+        
+        processedCount++;
+        
+        // Update progress for each stock
+        updateProgress({ 
+          phase: 'processing_and_analyzing', 
+          message: `Scanning: ${processedCount}/${totalStocks} stocks, ${allMatches.length} matches found`, 
+          processed: processedCount, 
+          total: totalStocks,
+          matches: allMatches.length
+        });
+        
+        // Yield control to event loop every 10 stocks
+        if (processedCount % 10 === 0) {
+          await new Promise(resolve => setImmediate(resolve));
+        }
+        
+        // Log progress every 100 stocks
+        if (processedCount % 100 === 0) {
+          console.log(`Scanned ${processedCount}/${stockList.length} stocks, found ${allMatches.length} matches so far...`);
+        }
+        
+      } catch (error) {
+        errors.push({ stock, error: error.message });
+        processedCount++;
+        
+        // Update progress even for errors
+        updateProgress({ 
+          phase: 'processing_and_analyzing', 
+          message: `Scanning: ${processedCount}/${stockList.length} stocks, ${allMatches.length} matches found`, 
+          processed: processedCount, 
+          total: stockList.length,
+          matches: allMatches.length
+        });
+      }
+    }
+    
+    if (isQueryAborted) {
+      console.log('Query was aborted during processing');
+      return res.status(400).json({ error: 'Query was aborted' });
+    }
+    
+    // Sort matches by stock name for consistent ordering
+    allMatches.sort((a, b) => a.stock.localeCompare(b.stock));
+    
+    const processingTime = Date.now() - processingStart;
+    console.log(`Latest day scan completed in ${processingTime}ms. Found ${allMatches.length} matches across ${processedCount} stocks.`);
+    
+    // Update completion progress
+    updateProgress({ 
+      phase: 'completed', 
+      message: `Completed: Found ${allMatches.length} matches for latest day`, 
+      processed: processedCount, 
+      total: totalStocks,
+      matches: allMatches.length,
+      isRunning: false
+    });
+    
+    res.json({
+      success: true,
+      query: query,
+      scanType: 'latest_day',
+      parsedQuery: {
+        conditions: parsedQuery.conditions.map(c => ({
+          left: c.left,
+          operator: c.operator,
+          right: c.right
+        })),
+        logicalOperators: parsedQuery.logicalOperators
+      },
+      requiredIndicators: requiredIndicators,
+      totalMatches: allMatches.length,
+      matches: allMatches,
+      errors: errors.length > 0 ? errors : undefined,
+      processedStocks: processedCount
+    });
+    
+  } catch (error) {
+    console.error('Latest day scan endpoint error:', error);
+    
+    // Update progress to show error state
+    updateProgress({ 
+      phase: 'error', 
+      message: 'Latest day scan failed', 
+      isRunning: false
+    });
     
     res.status(500).json({ 
       error: 'Internal server error', 

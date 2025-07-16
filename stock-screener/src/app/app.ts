@@ -10,25 +10,64 @@ interface Condition {
   operator: string;
   value: string;
   logicalOperator: 'and' | 'or';
-  // Simplified time period handling
-  timePeriod: 'today' | '1-day' | '2-days' | '3-days' | '4-days' | '5-days' | 'n-days';
+  // Left side expression support
+  leftExpressionType?: 'simple' | 'complex' | 'avg';
+  leftExpression?: ComplexExpression;
+  // Time period handling
+  timePeriod: 'daily' | '1-day' | '2-days' | '3-days' | '4-days' | '5-days' | 'n-days' | 
+              'weekly' | '1-week' | '2-weeks' | '3-weeks' | 'n-weeks' |
+              'monthly' | '1-month' | '2-months' | '3-months' | 'n-months';
   customDaysAgo?: number;
-  timeUnit: 'day' | 'week' | 'month';
-  valueType: 'number' | 'field';
+  customWeeksAgo?: number;
+  customMonthsAgo?: number;
+  timeUnit?: 'day' | 'week' | 'month'; // This is now derived from timePeriod
+  valueType: 'number' | 'field' | 'expression';
   valueField?: string;
-  valueTimePeriod?: 'today' | '1-day' | '2-days' | '3-days' | '4-days' | '5-days' | 'n-days';
+  valueTimePeriod?: 'daily' | '1-day' | '2-days' | '3-days' | '4-days' | '5-days' | 'n-days' | 
+                    'weekly' | '1-week' | '2-weeks' | '3-weeks' | 'n-weeks' |
+                    'monthly' | '1-month' | '2-months' | '3-months' | 'n-months';
   valueCustomDaysAgo?: number;
+  valueCustomWeeksAgo?: number;
+  valueCustomMonthsAgo?: number;
   valueTimeUnit?: 'day' | 'week' | 'month';
-  // Arithmetic operators for right side
-  arithmeticOperator?: '+' | '-' | '*' | '/';
+  // Arithmetic expression support
+  arithmeticOperator?: '+' | '-' | '*' | '/' | 'avg' | '';
   arithmeticValue?: string;
-  // New fields for indicator parameters
+  arithmeticExpression?: ArithmeticExpression;
+  // Indicator parameters
   indicatorType?: 'simple' | 'parameterized';
   indicatorName?: string;
   indicatorParams?: string[];
   valueIndicatorType?: 'simple' | 'parameterized';
   valueIndicatorName?: string;
   valueIndicatorParams?: string[];
+}
+
+interface ComplexExpression {
+  type: 'arithmetic' | 'avg';
+  terms: ExpressionTerm[];
+  operator?: '+' | '-' | '*' | '/';
+}
+
+interface ExpressionTerm {
+  field: string;
+  timePeriod: string;
+  indicatorType?: 'simple' | 'parameterized';
+  indicatorName?: string;
+  indicatorParams?: string[];
+  customDaysAgo?: number;
+  customWeeksAgo?: number;
+  customMonthsAgo?: number;
+}
+
+interface ArithmeticExpression {
+  type: 'field' | 'number' | 'operator' | 'function';
+  value?: string;
+  field?: string;
+  timePeriod?: string;
+  indicatorParams?: string[];
+  operator?: '+' | '-' | '*' | '/' | 'avg';
+  operands?: ArithmeticExpression[];
 }
 
 interface QueryResult {
@@ -41,6 +80,7 @@ interface QueryResult {
     close: string;
     day: string;
   }>;
+  scanType?: string;
 }
 
 @Component({
@@ -54,25 +94,40 @@ export class App implements OnInit {
   title = 'Stock Screener';
   naturalLanguageQuery = '';
   
-  // Available fields for conditions
+  // Available fields for conditions - organized by category
   fields = [
-    // Price fields
-    { value: 'close', label: 'Close' },
+    // All available indicators
     { value: 'open', label: 'Open' },
     { value: 'high', label: 'High' },
     { value: 'low', label: 'Low' },
+    { value: 'close', label: 'Close' },
     { value: 'volume', label: 'Volume' },
-    // Working parameterized indicators
-    { value: 'rsi', label: 'RSI' },
     { value: 'sma', label: 'SMA' },
     { value: 'ema', label: 'EMA' },
+    { value: 'wma', label: 'WMA' },
+    { value: 'vwap', label: 'VWAP' },
+    { value: 'rsi', label: 'RSI' },
+    { value: 'macd', label: 'MACD' },
+    { value: 'stochastic', label: 'Stochastic' },
+    { value: 'cci', label: 'CCI' },
+    { value: 'mfi', label: 'MFI' },
+    { value: 'roc', label: 'ROC' },
     { value: 'bb', label: 'Bollinger Bands' },
-    { value: 'supertrend', label: 'SuperTrend' }
+    { value: 'atr', label: 'ATR' },
+    { value: 'keltner', label: 'Keltner Channel' },
+    { value: 'supertrend', label: 'SuperTrend' },
+    { value: 'adx', label: 'ADX' },
+    { value: 'psar', label: 'Parabolic SAR' },
+    { value: 'ichimoku', label: 'Ichimoku' },
+    { value: 'obv', label: 'OBV' },
+    { value: 'vpt', label: 'VPT' },
+    { value: 'ad', label: 'A/D Line' }
   ];
   
   // Parameterized indicators
   parameterizedIndicators = [
-    'rsi', 'sma', 'ema', 'bb', 'supertrend'
+    'rsi', 'sma', 'ema', 'wma', 'bb', 'supertrend', 'macd', 'stochastic',
+    'cci', 'mfi', 'roc', 'atr', 'keltner', 'adx', 'psar', 'ichimoku'
   ];
   
   // Default parameters for indicators
@@ -80,8 +135,19 @@ export class App implements OnInit {
     'rsi': ['14'],
     'sma': ['20'],
     'ema': ['20'],
+    'wma': ['20'],
     'bb': ['20', '2'],
-    'supertrend': ['10', '3']
+    'supertrend': ['10', '3'],
+    'macd': ['12', '26', '9'],
+    'stochastic': ['14', '3', '3'],
+    'cci': ['20'],
+    'mfi': ['14'],
+    'roc': ['10'],
+    'atr': ['14'],
+    'keltner': ['20', '2'],
+    'adx': ['14'],
+    'psar': ['0.02', '0.2'],
+    'ichimoku': ['9', '26', '52']
   };
 
   operators = [
@@ -90,18 +156,35 @@ export class App implements OnInit {
     { value: '>=', label: 'Greater than or equal' },
     { value: '<=', label: 'Less than or equal' },
     { value: '=', label: 'Equal to' },
-    { value: '!=', label: 'Not equal to' }
+    { value: '!=', label: 'Not equal to' },
+    { value: 'crosses_above', label: 'crosses above' },
+    { value: 'crosses_below', label: 'crosses below' },
+    { value: 'increased_by', label: 'increased by %' },
+    { value: 'decreased_by', label: 'decreased by %' }
   ];
 
   // Time period options
   timePeriodOptions = [
-    { value: 'today', label: "Today's" },
+    // Daily options
+    { value: 'daily', label: 'Daily' },
     { value: '1-day', label: '1 day ago' },
     { value: '2-days', label: '2 days ago' },
     { value: '3-days', label: '3 days ago' },
     { value: '4-days', label: '4 days ago' },
     { value: '5-days', label: '5 days ago' },
-    { value: 'n-days', label: 'n days ago' }
+    { value: 'n-days', label: 'n days ago' },
+    // Weekly options
+    { value: 'weekly', label: 'Weekly' },
+    { value: '1-week', label: '1 week ago' },
+    { value: '2-weeks', label: '2 weeks ago' },
+    { value: '3-weeks', label: '3 weeks ago' },
+    { value: 'n-weeks', label: 'n weeks ago' },
+    // Monthly options
+    { value: 'monthly', label: 'Monthly' },
+    { value: '1-month', label: '1 month ago' },
+    { value: '2-months', label: '2 months ago' },
+    { value: '3-months', label: '3 months ago' },
+    { value: 'n-months', label: 'n months ago' }
   ];
 
   // Arithmetic operators
@@ -109,7 +192,8 @@ export class App implements OnInit {
     { value: '+', label: '+' },
     { value: '-', label: '-' },
     { value: '*', label: '×' },
-    { value: '/', label: '÷' }
+    { value: '/', label: '÷' },
+    { value: 'avg', label: 'AVG' }
   ];
 
   conditions: Condition[] = [
@@ -119,8 +203,8 @@ export class App implements OnInit {
       operator: '>', 
       value: '60', 
       logicalOperator: 'and', 
-      timePeriod: 'today', 
-      timeUnit: 'day', 
+      leftExpressionType: 'simple',
+      timePeriod: 'daily', 
       valueType: 'number',
       indicatorType: 'parameterized',
       indicatorName: 'rsi',
@@ -157,26 +241,50 @@ export class App implements OnInit {
     });
   }
 
+  // Helper method to get timeframe from time period
+  getTimeframe(timePeriod: string): 'daily' | 'weekly' | 'monthly' {
+    if (timePeriod.includes('week')) return 'weekly';
+    if (timePeriod.includes('month')) return 'monthly';
+    return 'daily';
+  }
+
+  // Generate dynamic indicator key based on timeframe and parameters
+  generateIndicatorKey(field: string, timePeriod: string, params?: string[]): string {
+    const timeframe = this.getTimeframe(timePeriod);
+    const isIndicator = this.parameterizedIndicators.includes(field);
+    
+    if (isIndicator && params && params.length > 0) {
+      // For indicators with parameters: timeframe_indicator_param1_param2
+      return `${timeframe}_${field}_${params.join('_')}`;
+    } else if (isIndicator) {
+      // For indicators without specified params, use defaults
+      const defaultParams = this.indicatorDefaults[field] || [];
+      return `${timeframe}_${field}_${defaultParams.join('_')}`;
+    } else {
+      // For basic fields: timeframe_field
+      return `${timeframe}_${field}`;
+    }
+  }
+
   addCondition() {
-    this.conditions.push({
+    const newCondition: Condition = {
       id: this.nextId++,
       field: 'rsi',
       operator: '>',
       value: '',
       logicalOperator: 'and',
-      timePeriod: 'today',
-      timeUnit: 'day',
+      leftExpressionType: 'simple',
+      timePeriod: 'daily',
       valueType: 'number',
-      valueField: 'rsi',
-      valueTimePeriod: 'today',
-      valueTimeUnit: 'day',
       indicatorType: 'parameterized',
       indicatorName: 'rsi',
-      indicatorParams: ['14'],
-      valueIndicatorType: 'parameterized',
-      valueIndicatorName: 'rsi',
-      valueIndicatorParams: ['14']
-    });
+      indicatorParams: ['14']
+    };
+    
+    this.conditions.push(newCondition);
+    
+    // Initialize the condition's field settings
+    this.onFieldChange(newCondition);
   }
 
   removeCondition(id: number) {
@@ -206,32 +314,46 @@ export class App implements OnInit {
 
   buildQuery(): string {
     return this.conditions.map((condition, index) => {
-      // Build left side
-      let field = this.buildFieldString(condition.field, condition.indicatorType, condition.indicatorName, condition.indicatorParams);
+      let field: string;
       
-      const daysAgo = this.getTimePeriodDays(condition.timePeriod, condition.customDaysAgo);
-      if (daysAgo > 0) {
-        let unit = condition.timeUnit;
-        const plural = daysAgo === 1 ? unit : unit + 's';
-        field = `${daysAgo} ${plural} ago ${field}`;
+      // Build left side based on expression type
+      if (condition.leftExpressionType === 'complex' || condition.leftExpressionType === 'avg') {
+        // Build complex expression
+        if (condition.leftExpression) {
+          field = this.buildComplexExpressionString(condition.leftExpression);
+        } else {
+          field = ''; // Fallback
+        }
+      } else {
+        // Build simple field with dynamic key
+        const leftKey = this.generateIndicatorKey(condition.field, condition.timePeriod, condition.indicatorParams);
+        field = this.buildFieldStringWithKey(leftKey, condition.field, condition.indicatorType, condition.indicatorName, condition.indicatorParams);
+        
+        // Handle time period for left side
+        const timeOffset = this.getTimeOffset(condition.timePeriod, condition.customDaysAgo, condition.customWeeksAgo, condition.customMonthsAgo);
+        if (timeOffset) {
+          field = `${timeOffset} ${field}`;
+        }
       }
       
       // Build right side
       let value = condition.value;
       if (condition.valueType === 'field' && condition.valueField) {
-        value = this.buildFieldString(condition.valueField, condition.valueIndicatorType, condition.valueIndicatorName, condition.valueIndicatorParams);
+        const rightKey = this.generateIndicatorKey(condition.valueField, condition.valueTimePeriod || 'daily', condition.valueIndicatorParams);
+        value = this.buildFieldStringWithKey(rightKey, condition.valueField, condition.valueIndicatorType, condition.valueIndicatorName, condition.valueIndicatorParams);
         
-        const valueDaysAgo = this.getTimePeriodDays(condition.valueTimePeriod || 'today', condition.valueCustomDaysAgo);
-        if (valueDaysAgo > 0) {
-          let unit = condition.valueTimeUnit;
-          const plural = valueDaysAgo === 1 ? unit : unit + 's';
-          value = `${valueDaysAgo} ${plural} ago ${value}`;
+        const valueTimeOffset = this.getTimeOffset(condition.valueTimePeriod || 'daily', condition.valueCustomDaysAgo, condition.valueCustomWeeksAgo, condition.valueCustomMonthsAgo);
+        if (valueTimeOffset) {
+          value = `${valueTimeOffset} ${value}`;
         }
         
         // Add arithmetic operation if specified
         if (condition.arithmeticOperator && condition.arithmeticValue) {
           value = `${value} ${condition.arithmeticOperator} ${condition.arithmeticValue}`;
         }
+      } else if (condition.valueType === 'expression' && condition.arithmeticExpression) {
+        // Handle complex arithmetic expressions
+        value = this.buildArithmeticExpression(condition.arithmeticExpression);
       }
       
       const conditionStr = `${field} ${condition.operator} ${value}`;
@@ -240,6 +362,102 @@ export class App implements OnInit {
       }
       return `${condition.logicalOperator} ${conditionStr}`;
     }).join(' ');
+  }
+
+  // Build field string with dynamic key
+  buildFieldStringWithKey(key: string, field: string, indicatorType?: string, indicatorName?: string, params?: string[]): string {
+    if (indicatorType === 'parameterized' && indicatorName && params) {
+      // Use the dynamic key for the indicator
+      return key;
+    }
+    // For simple fields, also use the key which includes timeframe
+    return key;
+  }
+
+  // Get time offset string based on time period
+  getTimeOffset(timePeriod: string, customDays?: number, customWeeks?: number, customMonths?: number): string {
+    if (timePeriod === 'daily' || timePeriod === 'weekly' || timePeriod === 'monthly') {
+      return ''; // No offset for current period
+    }
+    
+    // Handle days
+    if (timePeriod.includes('day')) {
+      if (timePeriod === 'n-days' && customDays) {
+        const plural = customDays === 1 ? 'day' : 'days';
+        return `${customDays} ${plural} ago`;
+      }
+      const match = timePeriod.match(/(\d+)-day/);
+      if (match) {
+        const days = parseInt(match[1]);
+        const plural = days === 1 ? 'day' : 'days';
+        return `${days} ${plural} ago`;
+      }
+    }
+    
+    // Handle weeks
+    if (timePeriod.includes('week')) {
+      if (timePeriod === 'n-weeks' && customWeeks) {
+        const plural = customWeeks === 1 ? 'week' : 'weeks';
+        return `${customWeeks} ${plural} ago`;
+      }
+      const match = timePeriod.match(/(\d+)-week/);
+      if (match) {
+        const weeks = parseInt(match[1]);
+        const plural = weeks === 1 ? 'week' : 'weeks';
+        return `${weeks} ${plural} ago`;
+      }
+    }
+    
+    // Handle months
+    if (timePeriod.includes('month')) {
+      if (timePeriod === 'n-months' && customMonths) {
+        const plural = customMonths === 1 ? 'month' : 'months';
+        return `${customMonths} ${plural} ago`;
+      }
+      const match = timePeriod.match(/(\d+)-month/);
+      if (match) {
+        const months = parseInt(match[1]);
+        const plural = months === 1 ? 'month' : 'months';
+        return `${months} ${plural} ago`;
+      }
+    }
+    
+    return '';
+  }
+
+  // Build arithmetic expression (for complex expressions)
+  buildArithmeticExpression(expr: ArithmeticExpression): string {
+    if (!expr) return '';
+    
+    switch (expr.type) {
+      case 'number':
+        return expr.value || '0';
+      
+      case 'field':
+        if (expr.field && expr.timePeriod) {
+          const key = this.generateIndicatorKey(expr.field, expr.timePeriod, expr.indicatorParams);
+          return key;
+        }
+        return expr.field || '';
+      
+      case 'function':
+        if (expr.operator === 'avg' && expr.operands) {
+          const operandStrings = expr.operands.map(op => this.buildArithmeticExpression(op));
+          return `avg(${operandStrings.join(', ')})`;
+        }
+        return '';
+      
+      case 'operator':
+        if (expr.operator && expr.operands && expr.operands.length >= 2) {
+          const left = this.buildArithmeticExpression(expr.operands[0]);
+          const right = this.buildArithmeticExpression(expr.operands[1]);
+          return `(${left} ${expr.operator} ${right})`;
+        }
+        return '';
+      
+      default:
+        return '';
+    }
   }
 
   generateQuery() {
@@ -258,7 +476,7 @@ export class App implements OnInit {
     this.groupedResults.clear();
     this.showProgress = true;
     this.progressPhase = 'initializing';
-    this.progressMessage = 'Starting scan...';
+    this.progressMessage = 'Starting latest day scan...';
     this.progressProcessed = 0;
     this.progressTotal = 100;
     this.progressMatches = undefined;
@@ -269,7 +487,59 @@ export class App implements OnInit {
     // Start polling for progress updates
     this.startProgressPolling();
 
-    // Send query
+    // Send query to latest day endpoint
+    this.http.post<QueryResult>(`${this.apiUrl}/query/latest`, { query })
+      .subscribe({
+        next: (response) => {
+          this.loading = false;
+          this.results = response;
+          this.groupByDate(response.matches);
+          
+          // Show completion in progress bar
+          this.progressPhase = 'completed';
+          this.progressMessage = `Found ${response.totalMatches} matches for latest day!`;
+          this.progressProcessed = this.progressTotal;
+          
+          // Hide progress after delay
+          setTimeout(() => {
+            this.showProgress = false;
+            this.stopProgressPolling();
+          }, 2000);
+        },
+        error: (error) => {
+          this.loading = false;
+          this.showProgress = false;
+          this.error = error.error?.error || 'An error occurred while fetching results';
+          console.error('Error:', error);
+          this.stopProgressPolling();
+        }
+      });
+  }
+
+  runBacktest() {
+    if (this.conditions.length === 0 || !this.conditions.every(c => c.value)) {
+      this.error = 'Please fill all condition values';
+      return;
+    }
+
+    this.loading = true;
+    this.error = null;
+    this.results = null;
+    this.groupedResults.clear();
+    this.showProgress = true;
+    this.progressPhase = 'initializing';
+    this.progressMessage = 'Starting backtest...';
+    this.progressProcessed = 0;
+    this.progressTotal = 100;
+    this.progressMatches = undefined;
+
+    const query = this.buildQuery();
+    this.queryString = query;
+    
+    // Start polling for progress updates
+    this.startProgressPolling();
+
+    // Send query to original endpoint for full backtest
     this.http.post<QueryResult>(`${this.apiUrl}/query`, { query })
       .subscribe({
         next: (response) => {
@@ -279,7 +549,7 @@ export class App implements OnInit {
           
           // Show completion in progress bar
           this.progressPhase = 'completed';
-          this.progressMessage = `Found ${response.totalMatches} matches!`;
+          this.progressMessage = `Backtest completed! Found ${response.totalMatches} matches!`;
           this.progressProcessed = this.progressTotal;
           
           // Hide progress after delay
@@ -402,14 +672,15 @@ export class App implements OnInit {
           operator: '>',
           value: '',
           logicalOperator: 'and',
+          leftExpressionType: 'simple',
           timePeriod: '1-day',
-          timeUnit: 'day',
           valueType: 'field',
           valueField: 'volume',
-          valueTimePeriod: '1-day',
-          valueTimeUnit: 'week',
+          valueTimePeriod: '1-week',
           arithmeticOperator: '*',
-          arithmeticValue: '1.2'
+          arithmeticValue: '1.2',
+          indicatorType: 'simple',
+          valueIndicatorType: 'simple'
         });
         break;
       case 'price-breakout':
@@ -419,14 +690,17 @@ export class App implements OnInit {
           operator: '>',
           value: '',
           logicalOperator: 'and',
-          timePeriod: 'today',
-          timeUnit: 'day',
+          leftExpressionType: 'simple',
+          timePeriod: 'daily',
           valueType: 'field',
           valueField: 'sma',
-          valueTimePeriod: 'today',
-          valueTimeUnit: 'day',
+          valueTimePeriod: 'daily',
           arithmeticOperator: '*',
-          arithmeticValue: '1.05'
+          arithmeticValue: '1.05',
+          indicatorType: 'simple',
+          valueIndicatorType: 'parameterized',
+          valueIndicatorName: 'sma',
+          valueIndicatorParams: ['20']
         });
         break;
       case 'trend-reversal':
@@ -436,12 +710,11 @@ export class App implements OnInit {
           operator: '>',
           value: '',
           logicalOperator: 'and',
+          leftExpressionType: 'simple',
           timePeriod: '1-day',
-          timeUnit: 'day',
           valueType: 'field',
           valueField: 'supertrend',
-          valueTimePeriod: 'today',
-          valueTimeUnit: 'day',
+          valueTimePeriod: 'daily',
           indicatorType: 'parameterized',
           indicatorName: 'supertrend',
           indicatorParams: ['10', '3'],
@@ -457,8 +730,8 @@ export class App implements OnInit {
           operator: '<',
           value: '30',
           logicalOperator: 'and',
-          timePeriod: 'today',
-          timeUnit: 'day',
+          leftExpressionType: 'simple',
+          timePeriod: 'daily',
           valueType: 'number',
           indicatorType: 'parameterized',
           indicatorName: 'rsi',
@@ -498,12 +771,27 @@ export class App implements OnInit {
   
   
   getIndicatorParamLabels(indicatorName: string): string[] {
+    if (!indicatorName) {
+      return ['Period'];
+    }
+    
     const labels: { [key: string]: string[] } = {
       'rsi': ['Period'],
       'sma': ['Period'],
       'ema': ['Period'],
+      'wma': ['Period'],
       'bb': ['Period', 'Std Dev'],
-      'supertrend': ['Period', 'Multiplier']
+      'supertrend': ['Period', 'Multiplier'],
+      'macd': ['Fast', 'Slow', 'Signal'],
+      'stochastic': ['%K Period', '%D Period', 'Smooth'],
+      'cci': ['Period'],
+      'mfi': ['Period'],
+      'roc': ['Period'],
+      'atr': ['Period'],
+      'keltner': ['Period', 'Multiplier'],
+      'adx': ['Period'],
+      'psar': ['Start', 'Max'],
+      'ichimoku': ['Tenkan', 'Kijun', 'Senkou']
     };
     return labels[indicatorName] || ['Period'];
   }
@@ -557,13 +845,6 @@ export class App implements OnInit {
     URL.revokeObjectURL(url);
   }
   
-  clearAll() {
-    if (confirm('Are you sure you want to clear all conditions?')) {
-      this.conditions = [];
-      this.clearResults();
-    }
-  }
-  
   copyQuery() {
     navigator.clipboard.writeText(this.queryString);
     
@@ -576,16 +857,6 @@ export class App implements OnInit {
         btn.textContent = originalText;
       }, 2000);
     }
-  }
-  
-  formatDate(dateStr: string): string {
-    const date = new Date(parseInt(dateStr));
-    return date.toLocaleDateString('en-IN', { 
-      weekday: 'long', 
-      year: 'numeric', 
-      month: 'long', 
-      day: 'numeric' 
-    });
   }
   
   formatNumber(value: string): string {
@@ -601,5 +872,131 @@ export class App implements OnInit {
   formatChange(match: any): string {
     const change = this.getChange(match);
     return (change > 0 ? '+' : '') + change.toFixed(2);
+  }
+
+  showGuide() {
+    // Open guide or show modal with instructions
+    alert('Scanner Guide:\n\n' +
+          '1. Select time period (Today, 1 day ago, etc.)\n' +
+          '2. Choose an indicator or field\n' +
+          '3. Select comparison operator\n' +
+          '4. Enter a value or compare with another field\n' +
+          '5. Add more conditions as needed\n' +
+          '6. Click "Run Scan" for latest day or "Run Full Backtest" for historical data');
+  }
+
+  clearAll() {
+    if (confirm('Are you sure you want to clear all conditions and results?')) {
+      this.conditions = [{
+        id: 1,
+        field: 'close',
+        operator: '>',
+        value: '',
+        logicalOperator: 'and',
+        leftExpressionType: 'simple',
+        timePeriod: 'daily',
+        valueType: 'number'
+      }];
+      this.clearResults();
+      this.queryString = '';
+    }
+  }
+
+  formatDate(timestamp: string): string {
+    const date = new Date(timestamp);
+    return date.toLocaleDateString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric'
+    });
+  }
+
+  getGroupedResults(): any[] {
+    // Return all results as a flat array for table display
+    return this.results?.matches || [];
+  }
+  
+  // Complex expression methods
+  initializeComplexExpression(condition: Condition, type: 'arithmetic' | 'avg') {
+    condition.leftExpression = {
+      type: type,
+      terms: [{
+        field: condition.field || 'close',
+        timePeriod: condition.timePeriod || 'daily',
+        indicatorType: condition.indicatorType,
+        indicatorName: condition.indicatorName,
+        indicatorParams: condition.indicatorParams ? [...condition.indicatorParams] : undefined
+      }],
+      operator: type === 'arithmetic' ? '+' : undefined
+    };
+    
+    // Add a second term for arithmetic expressions
+    if (type === 'arithmetic') {
+      condition.leftExpression.terms.push({
+        field: 'open',
+        timePeriod: 'daily',
+        indicatorType: 'simple'
+      });
+    }
+  }
+  
+  addExpressionTerm(condition: Condition) {
+    if (!condition.leftExpression) return;
+    
+    condition.leftExpression.terms.push({
+      field: 'close',
+      timePeriod: 'daily',
+      indicatorType: 'simple'
+    });
+  }
+  
+  removeExpressionTerm(condition: Condition, index: number) {
+    if (!condition.leftExpression) return;
+    
+    if (condition.leftExpression.terms.length > 1) {
+      condition.leftExpression.terms.splice(index, 1);
+    }
+  }
+  
+  onExpressionTypeChange(condition: Condition) {
+    if (condition.leftExpressionType === 'simple') {
+      condition.leftExpression = undefined;
+    } else if (condition.leftExpressionType === 'complex' || condition.leftExpressionType === 'avg') {
+      this.initializeComplexExpression(condition, condition.leftExpressionType === 'avg' ? 'avg' : 'arithmetic');
+    }
+  }
+  
+  onExpressionFieldChange(term: ExpressionTerm) {
+    // Update indicator type based on field selection
+    if (this.parameterizedIndicators.includes(term.field)) {
+      term.indicatorType = 'parameterized';
+      term.indicatorName = term.field;
+      term.indicatorParams = [...(this.indicatorDefaults[term.field] || ['14'])];
+    } else {
+      term.indicatorType = 'simple';
+      term.indicatorName = undefined;
+      term.indicatorParams = undefined;
+    }
+  }
+  
+  buildComplexExpressionString(expr: ComplexExpression): string {
+    if (!expr || !expr.terms || expr.terms.length === 0) return '';
+    
+    if (expr.type === 'avg') {
+      const termStrings = expr.terms.map(term => {
+        const key = this.generateIndicatorKey(term.field, term.timePeriod, term.indicatorParams);
+        return key;
+      });
+      return `avg(${termStrings.join(', ')})`;
+    } else if (expr.type === 'arithmetic' && expr.operator) {
+      const termStrings = expr.terms.map(term => {
+        const key = this.generateIndicatorKey(term.field, term.timePeriod, term.indicatorParams);
+        return key;
+      });
+      // Add parentheses for complex expressions
+      return `(${termStrings.join(` ${expr.operator} `)})`;
+    }
+    
+    return '';
   }
 }

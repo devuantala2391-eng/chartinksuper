@@ -1,6 +1,6 @@
 // services/queryService.js
 
-const { calculateAllIndicators } = require('./indicatorCalculator');
+const { calculateAllIndicators, calculateAllIndicatorsWithTimeframes } = require('./indicatorCalculator');
 const { isCached, markAsCached } = require('./indicatorCache');
 const { sanitizeCandleArray, sanitizeNumericValue } = require('./dataUtils');
 const fs = require('fs');
@@ -167,11 +167,66 @@ function parseField(fieldStr) {
     }
   }
   
+  // Check for new dynamic key format (e.g., "daily_rsi_14", "weekly_sma_20", "monthly_rsi_14")
+  const dynamicKeyPattern = /^(daily|weekly|monthly)_([a-zA-Z]+)_(.+)$/;
+  const dynamicKeyMatch = fieldStr.match(dynamicKeyPattern);
+  
+  if (dynamicKeyMatch) {
+    const timeframe = dynamicKeyMatch[1];
+    const indicatorName = dynamicKeyMatch[2];
+    const paramsStr = dynamicKeyMatch[3];
+    const params = paramsStr.split('_');
+    
+    return {
+      type: 'dynamic_indicator',
+      timeframe: timeframe,
+      name: indicatorName,
+      params: params,
+      fieldKey: fieldStr,
+      originalString: fieldStr
+    };
+  }
+  
+  // Check for complex expressions with avg and arithmetic (e.g., "avg(...) + 10")
+  const complexExprPattern = /^(avg\s*\([^)]+\))\s*([+\-*\/])\s*(\d+(?:\.\d+)?)$/;
+  const complexExprMatch = fieldStr.match(complexExprPattern);
+  
+  if (complexExprMatch) {
+    const avgPart = complexExprMatch[1];
+    const operator = complexExprMatch[2];
+    const rightValue = parseFloat(complexExprMatch[3]);
+    
+    const avgParsed = parseField(avgPart);
+    return {
+      type: 'arithmetic_expression',
+      leftOperand: avgParsed,
+      operator: operator,
+      rightOperand: { type: 'value', value: rightValue },
+      originalString: fieldStr
+    };
+  }
+  
+  // Check for avg function FIRST (e.g., "avg(daily_rsi_14, weekly_rsi_14, monthly_rsi_20)")
+  const avgPattern = /^avg\s*\(([^)]+)\)$/;
+  const avgMatch = fieldStr.match(avgPattern);
+  
+  if (avgMatch) {
+    const operandsStr = avgMatch[1];
+    const operands = operandsStr.split(',').map(op => op.trim()).map(op => parseField(op));
+    
+    return {
+      type: 'avg_function',
+      operands: operands,
+      originalString: fieldStr
+    };
+  }
+  
   // Check for indicator with parameters (e.g., "rsi(14)", "sma(20)", "bb(20, 2)")
+  // But skip if it's "avg" which is handled above
   const indicatorPattern = /^([a-zA-Z]+)\(([^)]+)\)$/;
   const indicatorMatch = fieldStr.match(indicatorPattern);
   
-  if (indicatorMatch) {
+  if (indicatorMatch && indicatorMatch[1].toLowerCase() !== 'avg') {
     const indicatorName = indicatorMatch[1].toLowerCase();
     const params = indicatorMatch[2].split(',').map(p => p.trim());
     
@@ -179,6 +234,24 @@ function parseField(fieldStr) {
       type: 'indicator',
       name: indicatorName,
       params: params,
+      originalString: fieldStr
+    };
+  }
+  
+  // Check for arithmetic expressions with operators (e.g., "(daily_rsi_14 + weekly_rsi_14)")
+  const arithPattern = /^\((.+?)\s*([+\-*\/])\s*(.+?)\)$/;
+  const arithMatch = fieldStr.match(arithPattern);
+  
+  if (arithMatch) {
+    const leftOperand = parseField(arithMatch[1].trim());
+    const operator = arithMatch[2];
+    const rightOperand = parseField(arithMatch[3].trim());
+    
+    return {
+      type: 'arithmetic_expression',
+      leftOperand: leftOperand,
+      operator: operator,
+      rightOperand: rightOperand,
       originalString: fieldStr
     };
   }
@@ -372,9 +445,37 @@ function parseField(fieldStr) {
 // Extract indicators from parsed query
 function extractIndicatorsFromQuery(parsedQuery) {
   const indicators = new Set();
+  const timeframes = new Set(['daily']); // Always include daily
   
   function extractFromField(field) {
-    if (field.type === 'indicator') {
+    if (field.type === 'dynamic_indicator') {
+      // Handle new dynamic indicator format
+      const period = parseInt(field.params[0]) || getDefaultPeriod(field.name);
+      const params = {};
+      
+      // Add the timeframe
+      timeframes.add(field.timeframe);
+      
+      // Parse additional parameters based on indicator type
+      if (field.name === 'bb' || field.name === 'bollinger') {
+        params.stdDev = field.params[1] ? parseFloat(field.params[1]) : 2;
+      } else if (field.name === 'supertrend') {
+        params.multiplier = field.params[1] ? parseFloat(field.params[1]) : 3;
+      } else if (field.name === 'macd') {
+        params.fast = field.params[0] ? parseInt(field.params[0]) : 12;
+        params.slow = field.params[1] ? parseInt(field.params[1]) : 26;
+        params.signal = field.params[2] ? parseInt(field.params[2]) : 9;
+      } else if (field.name === 'stochastic') {
+        params.k = field.params[0] ? parseInt(field.params[0]) : 14;
+        params.d = field.params[1] ? parseInt(field.params[1]) : 3;
+      }
+      
+      indicators.add(JSON.stringify({
+        name: field.name,
+        period: period,
+        params: params
+      }));
+    } else if (field.type === 'indicator') {
       const period = parseInt(field.params[0]) || getDefaultPeriod(field.name);
       const params = {};
       
@@ -421,6 +522,15 @@ function extractIndicatorsFromQuery(parsedQuery) {
       if (field.field) {
         extractFromField(field.field);
       }
+    } else if (field.type === 'avg_function') {
+      // Extract indicators from avg function operands
+      if (field.operands) {
+        field.operands.forEach(operand => extractFromField(operand));
+      }
+    } else if (field.type === 'arithmetic_expression') {
+      // Extract indicators from arithmetic expression operands
+      if (field.leftOperand) extractFromField(field.leftOperand);
+      if (field.rightOperand) extractFromField(field.rightOperand);
     }
   }
   
@@ -439,7 +549,10 @@ function extractIndicatorsFromQuery(parsedQuery) {
     }));
   }
   
-  return Array.from(indicators).map(ind => JSON.parse(ind));
+  return {
+    indicators: Array.from(indicators).map(ind => JSON.parse(ind)),
+    timeframes: Array.from(timeframes)
+  };
 }
 
 // Get default period for indicators
@@ -490,7 +603,19 @@ function generateIndicatorFieldName(indicator) {
 }
 
 // Process all stocks and store in memory (NEW - replaces file-based storage)
-async function processStocksWithIndicatorsInMemory(indicators, stockList = null) {
+async function processStocksWithIndicatorsInMemory(indicatorsData, stockList = null) {
+  // Handle both old format (array) and new format (object with indicators and timeframes)
+  let indicators, timeframes;
+  if (Array.isArray(indicatorsData)) {
+    // Old format - backward compatibility
+    indicators = indicatorsData;
+    timeframes = ['daily'];
+  } else {
+    // New format with timeframes
+    indicators = indicatorsData.indicators;
+    timeframes = indicatorsData.timeframes || ['daily'];
+  }
+  
   // Helper function to send progress updates
   const sendProgressUpdate = (processed, total, message) => {
     if (global.updateProgress) {
@@ -518,7 +643,9 @@ async function processStocksWithIndicatorsInMemory(indicators, stockList = null)
     stockFiles = fs.readdirSync(dbPath).filter(file => file.endsWith('.json'));
   }
   
-  console.log(`Processing ${stockFiles.length} stocks with indicators in memory:`, indicators.map(i => `${i.name}(${i.period})`));
+  console.log(`Processing ${stockFiles.length} stocks with indicators:`, indicators.map(i => `${i.name}(${i.period})`));
+  console.log(`Using timeframes:`, timeframes);
+  console.log(`Using timeframes:`, timeframes);
   
   const processedCount = { success: 0, failed: 0 };
   const batchSize = 50; // Process 50 stocks at a time
@@ -544,8 +671,8 @@ async function processStocksWithIndicatorsInMemory(indicators, stockList = null)
         // Sanitize the candle data to handle infinity values
         const sanitizedCandles = sanitizeCandleArray(stockData.data);
         
-        // Calculate indicators
-        const processedCandles = calculateAllIndicators(sanitizedCandles, indicators);
+        // Calculate indicators with timeframe support
+        const processedCandles = calculateAllIndicatorsWithTimeframes(sanitizedCandles, indicators, timeframes);
         
         // Store in memory instead of file
         if (global.setInMemoryData) {
@@ -577,7 +704,19 @@ async function processStocksWithIndicatorsInMemory(indicators, stockList = null)
 
 // COMMENTED OUT - OLD FILE-BASED FUNCTION (kept for potential revert)
 // Process all stocks and generate mapperStorage
-async function processStocksWithIndicators(indicators, stockList = null) {
+async function processStocksWithIndicators(indicatorsData, stockList = null) {
+  // Handle both old format (array) and new format (object with indicators and timeframes)
+  let indicators, timeframes;
+  if (Array.isArray(indicatorsData)) {
+    // Old format - backward compatibility
+    indicators = indicatorsData;
+    timeframes = ['daily'];
+  } else {
+    // New format with timeframes
+    indicators = indicatorsData.indicators;
+    timeframes = indicatorsData.timeframes || ['daily'];
+  }
+  
   // Helper function to send progress updates
   const sendProgressUpdate = (processed, total, message) => {
     if (global.updateProgress) {
@@ -636,6 +775,7 @@ async function processStocksWithIndicators(indicators, stockList = null) {
   }
   
   console.log(`Processing ${stockFiles.length} stocks with indicators:`, indicators.map(i => `${i.name}(${i.period})`));
+  console.log(`Using timeframes:`, timeframes);
   
   const processedCount = { success: 0, failed: 0 };
   const batchSize = 50; // Process 50 stocks at a time
@@ -661,8 +801,8 @@ async function processStocksWithIndicators(indicators, stockList = null) {
         // Sanitize the candle data to handle infinity values
         const sanitizedCandles = sanitizeCandleArray(stockData.data);
         
-        // Calculate indicators
-        const processedCandles = calculateAllIndicators(sanitizedCandles, indicators);
+        // Calculate indicators with timeframe support
+        const processedCandles = calculateAllIndicatorsWithTimeframes(sanitizedCandles, indicators, timeframes);
         
         // Save to mapperStorage
         const outputPath = path.join(mapperStoragePath, `${stockSymbol}_piped.json`);
@@ -873,7 +1013,31 @@ function getMonthlyAggregatedValue(candles, currentIndex, field, monthsAgo) {
 }
 
 function evaluateExpression(expr, candle, prevCandle, candles, currentIndex) {
-  if (expr.type === 'expression') {
+  if (expr.type === 'avg_function') {
+    // Handle avg function
+    const values = expr.operands.map(operand => 
+      evaluateExpression(operand, candle, prevCandle, candles, currentIndex)
+    ).filter(v => v !== null);
+    
+    if (values.length === 0) return null;
+    
+    const sum = values.reduce((acc, val) => acc + val, 0);
+    return sum / values.length;
+  } else if (expr.type === 'arithmetic_expression') {
+    // Handle arithmetic expressions with two operands
+    const leftValue = evaluateExpression(expr.leftOperand, candle, prevCandle, candles, currentIndex);
+    const rightValue = evaluateExpression(expr.rightOperand, candle, prevCandle, candles, currentIndex);
+    
+    if (leftValue === null || rightValue === null) return null;
+    
+    switch (expr.operator) {
+      case '+': return leftValue + rightValue;
+      case '-': return leftValue - rightValue;
+      case '*': return leftValue * rightValue;
+      case '/': return rightValue !== 0 ? leftValue / rightValue : null;
+      default: return null;
+    }
+  } else if (expr.type === 'expression') {
     // Get the base field value
     const baseValue = evaluateExpression(expr.field, candle, prevCandle, candles, currentIndex);
     if (baseValue === null) return null;
@@ -883,6 +1047,17 @@ function evaluateExpression(expr, candle, prevCandle, candles, currentIndex) {
       return baseValue * expr.multiplier;
     } else if (expr.operator === '/') {
       return baseValue / expr.multiplier;
+    }
+  } else if (expr.type === 'dynamic_indicator') {
+    // Handle new dynamic indicator format with timeframe prefix
+    const fieldName = expr.fieldKey; // e.g., "daily_rsi_14", "weekly_sma_20"
+    
+    if (expr.daysAgo) {
+      // Historical indicator value
+      return getHistoricalFieldValue(candles, currentIndex, fieldName, expr.daysAgo);
+    } else {
+      // Current indicator value
+      return getFieldValue(candle, prevCandle, fieldName, candles, currentIndex);
     }
   } else if (expr.type === 'indicator') {
     // Handle indicator fields

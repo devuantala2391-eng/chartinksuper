@@ -1,259 +1,431 @@
-<div class="container">
-  <header class="header">
-    <h1>📈 Stock Screener</h1>
-    <p class="subtitle">Scan stocks using simple conditions</p>
+<div class="screener-container">
+  <!-- Header -->
+  <header class="screener-header">
+    <div class="header-content">
+      <h1 class="main-title">Stock Screener</h1>
+      <div class="header-actions">
+        <button class="btn-guide" (click)="showGuide()">
+          <i class="icon-help"></i> Scanner Guide
+        </button>
+      </div>
+    </div>
   </header>
 
-  <div class="filter-section">
-    <div class="section-header">
-      <h2>🔍 MAGIC FILTERS</h2>
-      <div class="query-display" *ngIf="queryString">
-        <span class="query-label">Query:</span>
-        <code>{{ queryString }}</code>
-      </div>
-    </div>
-    
-    <div class="help-text">
-      <p>💡 <strong>Tips:</strong></p>
-      <ul>
-        <li><strong>Time Period:</strong> Choose from "Today's", "1 day ago", "2 days ago", etc. or "n days ago" for custom periods</li>
-        <li><strong>Value Type:</strong> Choose "Number" for fixed values or "Field" to compare with another indicator</li>
-        <li><strong>Field comparisons:</strong> Compare indicators like "1 day ago volume > 1 week ago volume + 1000"</li>
-        <li><strong>Arithmetic Operations:</strong> Use +, -, ×, ÷ for calculations on the right side</li>
-        <li><strong>Indicator Parameters:</strong> Use parameterized indicators like "rsi(14)", "sma(20)", "bb(20, 2)"</li>
-      </ul>
-      <div class="preset-buttons">
-        <span>Try presets:</span>
-        <button class="preset-btn" (click)="loadPreset('volume-surge')" title="Find stocks where yesterday's volume was 20% higher than a week ago">
-          📊 Volume Surge
-        </button>
-        <button class="preset-btn" (click)="loadPreset('price-breakout')" title="Find stocks trading 5% above SMA">
-          📈 Price Breakout
-        </button>
-        <button class="preset-btn" (click)="loadPreset('trend-reversal')" title="Find stocks where SuperTrend(10,3) crossed above">
-          🔄 Trend Reversal
-        </button>
-        <button class="preset-btn" (click)="loadPreset('rsi-oversold')" title="Find stocks with RSI(14) below 30">
-          💹 RSI Oversold
-        </button>
-      </div>
-    </div>
-
-    <div class="conditions-container">
-      <div class="condition-row" *ngFor="let condition of conditions; let i = index">
-        <div class="logical-operator" *ngIf="i > 0">
-          <select [(ngModel)]="condition.logicalOperator" class="operator-select">
-            <option value="and">AND</option>
-            <option value="or">OR</option>
+  <!-- Main Content -->
+  <div class="screener-content">
+    <!-- Conditions Section -->
+    <div class="conditions-section">
+      <div class="section-title">
+        <h2>Create Your Scan</h2>
+        <div class="preset-selector">
+          <label>Quick Presets:</label>
+          <select #presetSelect (change)="loadPreset(presetSelect.value); presetSelect.value=''" class="preset-dropdown">
+            <option value="">Select a preset...</option>
+            <option value="volume-surge">Volume Surge</option>
+            <option value="price-breakout">Price Breakout</option>
+            <option value="trend-reversal">Trend Reversal</option>
+            <option value="rsi-oversold">RSI Oversold</option>
           </select>
         </div>
+      </div>
 
-        <div class="condition-inputs">
-          <div class="left-field-group">
-            <!-- Simplified Time Period Dropdown -->
-            <select [(ngModel)]="condition.timePeriod" class="time-period-select" title="Time period">
-              <option *ngFor="let period of timePeriodOptions" [value]="period.value">
-                {{ period.label }}
-              </option>
+      <!-- Condition Builder -->
+      <div class="condition-builder">
+        <div class="condition-wrapper" *ngFor="let condition of conditions; let i = index">
+          <!-- AND/OR Operator (shown between conditions) -->
+          <div class="logical-operator-row" *ngIf="i > 0">
+            <div class="operator-line"></div>
+            <select [(ngModel)]="condition.logicalOperator" class="logical-operator">
+              <option value="and">AND</option>
+              <option value="or">OR</option>
             </select>
-            
-            <!-- Custom days input (only show when n-days is selected) -->
-            <input 
-              *ngIf="condition.timePeriod === 'n-days'"
-              type="number" 
-              [(ngModel)]="condition.customDaysAgo" 
-              placeholder="Enter days"
-              class="custom-days-input"
-              min="1"
-              title="Enter number of days ago"
-            />
-            
-            <!-- Time Unit -->
-            <select [(ngModel)]="condition.timeUnit" class="time-unit-select" title="Time unit">
-              <option value="day">day(s)</option>
-              <option value="week">week(s)</option>
-              <option value="month">month(s)</option>
-            </select>
-
-            <select [(ngModel)]="condition.field" class="field-select" (change)="onFieldChange(condition)">
-              <option *ngFor="let field of fields" [value]="field.value">
-                {{ field.label }}
-              </option>
-            </select>
-            
-            <!-- Indicator Parameters -->
-            <div class="indicator-params" *ngIf="condition.indicatorType === 'parameterized' && condition.indicatorName && condition.indicatorParams">
-              <div class="param-group" *ngFor="let param of condition.indicatorParams; let i = index">
-                <span class="param-label">{{ getIndicatorParamLabels(condition.indicatorName)[i] }}:</span>
-                <input 
-                  type="text" 
-                  [(ngModel)]="condition.indicatorParams[i]"
-                  class="param-input"
-                  [placeholder]="getIndicatorParamLabels(condition.indicatorName)[i]"
-                />
-              </div>
-            </div>
+            <div class="operator-line"></div>
           </div>
 
-          <select [(ngModel)]="condition.operator" class="operator-select">
-            <option *ngFor="let op of operators" [value]="op.value">
-              {{ op.label }}
-            </option>
-          </select>
-
-          <select [(ngModel)]="condition.valueType" class="value-type-select" title="Choose between fixed number or field comparison">
-            <option value="number">Number</option>
-            <option value="field">Field</option>
-          </select>
-
-          <!-- Number input -->
-          <div class="value-group number-value" *ngIf="condition.valueType === 'number'">
-            <input 
-              type="text" 
-              [(ngModel)]="condition.value" 
-              placeholder="Enter value"
-              class="value-input"
-              title="Enter a numeric value"
-            />
-          </div>
-
-          <!-- Field comparison inputs -->
-          <div class="value-group field-value" *ngIf="condition.valueType === 'field'">
-            <!-- Time Period for Value Field -->
-            <select [(ngModel)]="condition.valueTimePeriod" class="time-period-select" title="Value time period">
-              <option *ngFor="let period of timePeriodOptions" [value]="period.value">
-                {{ period.label }}
-              </option>
-            </select>
-            
-            <!-- Custom days input for value field -->
-            <input 
-              *ngIf="condition.valueTimePeriod === 'n-days'"
-              type="number" 
-              [(ngModel)]="condition.valueCustomDaysAgo" 
-              placeholder="Enter days"
-              class="custom-days-input"
-              min="1"
-              title="Enter number of days ago for value field"
-            />
-            
-            <!-- Value Time Unit -->
-            <select [(ngModel)]="condition.valueTimeUnit" class="time-unit-select" title="Value time unit">
-              <option value="day">day(s)</option>
-              <option value="week">week(s)</option>
-              <option value="month">month(s)</option>
-            </select>
-            
-            <select [(ngModel)]="condition.valueField" class="field-select" (change)="onValueFieldChange(condition)">
-              <option *ngFor="let field of fields" [value]="field.value">
-                {{ field.label }}
-              </option>
-            </select>
-            
-            <!-- Value Indicator Parameters -->
-            <div class="indicator-params" *ngIf="condition.valueIndicatorType === 'parameterized' && condition.valueIndicatorName && condition.valueIndicatorParams">
-              <div class="param-group" *ngFor="let param of condition.valueIndicatorParams; let i = index">
-                <span class="param-label">{{ getIndicatorParamLabels(condition.valueIndicatorName)[i] }}:</span>
-                <input 
-                  type="text" 
-                  [(ngModel)]="condition.valueIndicatorParams[i]"
-                  class="param-input"
-                  [placeholder]="getIndicatorParamLabels(condition.valueIndicatorName)[i]"
-                />
-              </div>
-            </div>
-            
-            <!-- Arithmetic Operations -->
-            <div class="arithmetic-operations">
-              <select [(ngModel)]="condition.arithmeticOperator" class="arithmetic-operator-select" title="Arithmetic operation">
-                <option value="">Select operation</option>
-                <option *ngFor="let op of arithmeticOperators" [value]="op.value">
-                  {{ op.label }}
-                </option>
+          <!-- Condition Row -->
+          <div class="condition-row">
+            <!-- Left Side - Field Selection -->
+            <div class="condition-field">
+              <!-- Expression Type Selector -->
+              <select [(ngModel)]="condition.leftExpressionType" class="input-field expression-type" (change)="onExpressionTypeChange(condition)">
+                <option value="simple">Simple Field</option>
+                <option value="complex">Arithmetic Expression</option>
+                <option value="avg">Average Function</option>
               </select>
               
-              <input 
-                *ngIf="condition.arithmeticOperator"
-                type="text" 
-                [(ngModel)]="condition.arithmeticValue" 
-                placeholder="Enter value"
-                class="arithmetic-value-input"
-                title="Enter arithmetic value"
-              />
+              <!-- Simple Field Selection (shown when leftExpressionType === 'simple') -->
+              <div class="simple-field-selection" *ngIf="condition.leftExpressionType === 'simple'">
+                <!-- Time Period -->
+                <select [(ngModel)]="condition.timePeriod" class="input-field time-period">
+                  <option *ngFor="let period of timePeriodOptions" [value]="period.value">
+                    {{ period.label }}
+                  </option>
+                </select>
+                
+                <!-- Custom days input -->
+                <input 
+                  *ngIf="condition.timePeriod === 'n-days'"
+                  type="number" 
+                  [(ngModel)]="condition.customDaysAgo" 
+                  placeholder="days"
+                  class="input-field custom-days"
+                  min="1"
+                />
+                
+                <!-- Custom weeks input -->
+                <input 
+                  *ngIf="condition.timePeriod === 'n-weeks'"
+                  type="number" 
+                  [(ngModel)]="condition.customWeeksAgo" 
+                  placeholder="weeks"
+                  class="input-field custom-days"
+                  min="1"
+                />
+                
+                <!-- Custom months input -->
+                <input 
+                  *ngIf="condition.timePeriod === 'n-months'"
+                  type="number" 
+                  [(ngModel)]="condition.customMonthsAgo" 
+                  placeholder="months"
+                  class="input-field custom-days"
+                  min="1"
+                />
+                
+                <!-- Indicator/Field Selection -->
+                <select [(ngModel)]="condition.field" class="input-field indicator-select" (change)="onFieldChange(condition)">
+                  <optgroup label="Price & Volume">
+                    <option value="open">Open</option>
+                    <option value="high">High</option>
+                    <option value="low">Low</option>
+                    <option value="close">Close</option>
+                    <option value="volume">Volume</option>
+                  </optgroup>
+                  <optgroup label="Moving Averages">
+                    <option value="sma">SMA</option>
+                    <option value="ema">EMA</option>
+                    <option value="wma">WMA</option>
+                    <option value="vwap">VWAP</option>
+                  </optgroup>
+                  <optgroup label="Momentum Indicators">
+                    <option value="rsi">RSI</option>
+                    <option value="macd">MACD</option>
+                    <option value="stochastic">Stochastic</option>
+                    <option value="cci">CCI</option>
+                    <option value="mfi">MFI</option>
+                    <option value="roc">ROC</option>
+                  </optgroup>
+                  <optgroup label="Volatility Indicators">
+                    <option value="bb">Bollinger Bands</option>
+                    <option value="atr">ATR</option>
+                    <option value="keltner">Keltner Channel</option>
+                  </optgroup>
+                  <optgroup label="Trend Indicators">
+                    <option value="supertrend">SuperTrend</option>
+                    <option value="adx">ADX</option>
+                    <option value="psar">Parabolic SAR</option>
+                    <option value="ichimoku">Ichimoku</option>
+                  </optgroup>
+                  <optgroup label="Volume Indicators">
+                    <option value="obv">OBV</option>
+                    <option value="vpt">VPT</option>
+                    <option value="ad">A/D Line</option>
+                  </optgroup>
+                </select>
+                
+                <!-- Indicator Parameters -->
+                <div class="indicator-params" *ngIf="condition.indicatorType === 'parameterized'">
+                  <span class="param-bracket">(</span>
+                  <input 
+                    *ngFor="let param of condition.indicatorParams; let j = index"
+                    type="text" 
+                    [(ngModel)]="condition.indicatorParams![j]"
+                    class="param-input"
+                    [placeholder]="getIndicatorParamLabels(condition.indicatorName || '')[j]"
+                  />
+                  <span class="param-bracket">)</span>
+                </div>
+              </div>
+              
+              <!-- Complex Expression Builder (shown when leftExpressionType === 'complex' or 'avg') -->
+              <div class="complex-expression-builder" *ngIf="(condition.leftExpressionType === 'complex' || condition.leftExpressionType === 'avg') && condition.leftExpression">
+                <!-- Operator Selector for Arithmetic Expressions -->
+                <select *ngIf="condition.leftExpressionType === 'complex'" [(ngModel)]="condition.leftExpression.operator" class="input-field arithmetic-op">
+                  <option value="+">+</option>
+                  <option value="-">-</option>
+                  <option value="*">×</option>
+                  <option value="/">÷</option>
+                </select>
+                
+                <!-- Expression Terms -->
+                <div class="expression-terms">
+                  <div class="expression-term" *ngFor="let term of condition.leftExpression.terms; let termIndex = index">
+                    <!-- Time Period for Term -->
+                    <select [(ngModel)]="term.timePeriod" class="input-field time-period-small">
+                      <option *ngFor="let period of timePeriodOptions" [value]="period.value">
+                        {{ period.label }}
+                      </option>
+                    </select>
+                    
+                    <!-- Field Selection for Term -->
+                    <select [(ngModel)]="term.field" class="input-field indicator-select-small" (change)="onExpressionFieldChange(term)">
+                      <optgroup label="Price & Volume">
+                        <option value="open">Open</option>
+                        <option value="high">High</option>
+                        <option value="low">Low</option>
+                        <option value="close">Close</option>
+                        <option value="volume">Volume</option>
+                      </optgroup>
+                      <optgroup label="Indicators">
+                        <option *ngFor="let field of fields" [value]="field.value">
+                          {{ field.label }}
+                        </option>
+                      </optgroup>
+                    </select>
+                    
+                    <!-- Indicator Parameters for Term -->
+                    <div class="indicator-params" *ngIf="term.indicatorType === 'parameterized'">
+                      <span class="param-bracket">(</span>
+                      <input 
+                        *ngFor="let param of term.indicatorParams; let j = index"
+                        type="text" 
+                        [(ngModel)]="term.indicatorParams![j]"
+                        class="param-input"
+                        [placeholder]="getIndicatorParamLabels(term.indicatorName || '')[j]"
+                      />
+                      <span class="param-bracket">)</span>
+                    </div>
+                    
+                    <!-- Remove Term Button -->
+                    <button 
+                      class="btn-remove-term" 
+                      (click)="removeExpressionTerm(condition, termIndex)"
+                      *ngIf="condition.leftExpression.terms.length > 1"
+                      title="Remove term"
+                    >
+                      ×
+                    </button>
+                  </div>
+                  
+                  <!-- Add Term Button -->
+                  <button class="btn-add-term" (click)="addExpressionTerm(condition)">
+                    + Add Term
+                  </button>
+                </div>
+              </div>
             </div>
-          </div>
 
-          <button 
-            class="remove-btn" 
-            (click)="removeCondition(condition.id)"
-            *ngIf="conditions.length > 1"
-            title="Remove this condition"
-          >
-            ❌
+            <!-- Operator -->
+            <select [(ngModel)]="condition.operator" class="input-field operator">
+              <option value="crosses_above">crosses above</option>
+              <option value="crosses_below">crosses below</option>
+              <option value=">">greater than</option>
+              <option value="<">less than</option>
+              <option value=">=">greater or equal</option>
+              <option value="<=">less or equal</option>
+              <option value="=">equal to</option>
+              <option value="!=">not equal</option>
+              <option value="increased_by">increased by %</option>
+              <option value="decreased_by">decreased by %</option>
+            </select>
+
+            <!-- Right Side Value -->
+            <div class="condition-value">
+              <!-- Value Type Toggle -->
+              <div class="value-type-toggle">
+                <label class="toggle-option">
+                  <input type="radio" [(ngModel)]="condition.valueType" value="number" name="valueType{{i}}">
+                  <span>Number</span>
+                </label>
+                <label class="toggle-option">
+                  <input type="radio" [(ngModel)]="condition.valueType" value="field" name="valueType{{i}}">
+                  <span>Field</span>
+                </label>
+              </div>
+
+              <!-- Number Value -->
+              <input 
+                *ngIf="condition.valueType === 'number'"
+                type="text" 
+                [(ngModel)]="condition.value" 
+                placeholder="Value"
+                class="input-field value-input"
+              />
+
+              <!-- Field Value -->
+              <div class="field-value-group" *ngIf="condition.valueType === 'field'">
+                <select [(ngModel)]="condition.valueTimePeriod" class="input-field time-period">
+                  <option *ngFor="let period of timePeriodOptions" [value]="period.value">
+                    {{ period.label }}
+                  </option>
+                </select>
+                
+                <input 
+                  *ngIf="condition.valueTimePeriod === 'n-days'"
+                  type="number" 
+                  [(ngModel)]="condition.valueCustomDaysAgo" 
+                  placeholder="days"
+                  class="input-field custom-days"
+                  min="1"
+                />
+                
+                <!-- Custom weeks input for value -->
+                <input 
+                  *ngIf="condition.valueTimePeriod === 'n-weeks'"
+                  type="number" 
+                  [(ngModel)]="condition.valueCustomWeeksAgo" 
+                  placeholder="weeks"
+                  class="input-field custom-days"
+                  min="1"
+                />
+                
+                <!-- Custom months input for value -->
+                <input 
+                  *ngIf="condition.valueTimePeriod === 'n-months'"
+                  type="number" 
+                  [(ngModel)]="condition.valueCustomMonthsAgo" 
+                  placeholder="months"
+                  class="input-field custom-days"
+                  min="1"
+                />
+                
+                <select [(ngModel)]="condition.valueField" class="input-field indicator-select" (change)="onValueFieldChange(condition)">
+                  <optgroup label="Price & Volume">
+                    <option value="open">Open</option>
+                    <option value="high">High</option>
+                    <option value="low">Low</option>
+                    <option value="close">Close</option>
+                    <option value="volume">Volume</option>
+                  </optgroup>
+                  <optgroup label="Indicators">
+                    <option *ngFor="let field of fields" [value]="field.value">
+                      {{ field.label }}
+                    </option>
+                  </optgroup>
+                </select>
+                
+                <!-- Arithmetic Operation -->
+                <div class="arithmetic-group" *ngIf="condition.valueType === 'field'">
+                  <select [(ngModel)]="condition.arithmeticOperator" class="input-field arithmetic-op">
+                    <option value="">None</option>
+                    <option value="+">+</option>
+                    <option value="-">-</option>
+                    <option value="*">×</option>
+                    <option value="/">÷</option>
+                  </select>
+                  
+                  <input 
+                    *ngIf="condition.arithmeticOperator"
+                    type="text" 
+                    [(ngModel)]="condition.arithmeticValue" 
+                    placeholder="Value"
+                    class="input-field arithmetic-value"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <!-- Remove Button -->
+            <button 
+              class="btn-remove" 
+              (click)="removeCondition(condition.id)"
+              *ngIf="conditions.length > 1"
+              title="Remove condition"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+
+        <!-- Add Condition Button -->
+        <div class="add-condition-row">
+          <button class="btn-add-condition" (click)="addCondition()">
+            + Add another condition
           </button>
         </div>
       </div>
 
-      <button class="add-condition-btn" (click)="addCondition()">
-        ➕ Add Condition
-      </button>
+      <!-- Generated Query Display -->
+      <div class="query-display" *ngIf="queryString">
+        <div class="query-header">
+          <h3>Generated Query</h3>
+          <button class="btn-copy" (click)="copyScan()">Copy</button>
+        </div>
+        <code class="query-code">{{ queryString }}</code>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="action-buttons">
+        <button class="btn btn-primary btn-scan" (click)="runScan()" [disabled]="loading">
+          {{ loading ? 'Scanning...' : 'Run Scan' }}
+        </button>
+        <button class="btn btn-secondary btn-backtest" (click)="runBacktest()" [disabled]="loading">
+          {{ loading ? 'Running Backtest...' : 'Run Full Backtest' }}
+        </button>
+        <button class="btn btn-text" (click)="clearAll()">Clear All</button>
+      </div>
     </div>
 
-    <div class="action-buttons">
-      <button class="btn btn-primary" (click)="runScan()" [disabled]="loading">
-        🔍 {{ loading ? 'Scanning...' : 'Run Scan' }}
-      </button>
-      <button class="btn btn-secondary" (click)="generateQuery()">
-        📝 Generate Query
-      </button>
-      <button class="btn btn-secondary" (click)="copyScan()" *ngIf="queryString">
-        📋 Copy Query
-      </button>
-      <button class="btn btn-danger" (click)="clearResults()" *ngIf="results">
-        🗑️ Clear Results
-      </button>
-    </div>
-  </div>
+    <!-- Results Section -->
+    <div class="results-section" *ngIf="results || loading">
+      <!-- Progress Bar -->
+      <app-progress-bar
+        [show]="showProgress"
+        [phase]="progressPhase"
+        [message]="progressMessage"
+        [processed]="progressProcessed"
+        [total]="progressTotal"
+        [matches]="progressMatches"
+        [canClose]="progressPhase === 'completed'"
+      ></app-progress-bar>
 
-  <div class="error-message" *ngIf="error">
-    ⚠️ {{ error }}
-  </div>
-
-  <div class="results-section" *ngIf="results">
-    <div class="results-header">
-      <h2>📊 Results</h2>
-      <span class="match-count">Total Matches: {{ results.totalMatches }}</span>
-    </div>
-
-    <div class="results-container">
-      <div class="date-group" *ngFor="let date of getGroupedDates()">
-        <h3 class="date-header">📅 {{ date }}</h3>
-        <div class="stock-grid">
-          <div class="stock-card" *ngFor="let match of groupedResults.get(date)">
-            <div class="stock-symbol">{{ match.stock }}</div>
-            <div class="stock-details">
-              <span class="close-price">₹{{ match.close }}</span>
-              <span class="day">{{ match.day }}</span>
-            </div>
+      <!-- Results Display -->
+      <div class="results-container" *ngIf="results && !loading">
+        <div class="results-header">
+          <h2>Scan Results</h2>
+          <div class="results-summary">
+            <span class="match-count">{{ results.totalMatches }} matches found</span>
+            <span class="scan-type" *ngIf="results.scanType">
+              {{ results.scanType === 'latest_day' ? 'Latest Day Scan' : 'Full Backtest' }}
+            </span>
           </div>
+        </div>
+
+        <!-- Error Display -->
+        <div class="error-message" *ngIf="error">
+          <i class="icon-error"></i>
+          {{ error }}
+        </div>
+
+        <!-- Results Table -->
+        <div class="results-table" *ngIf="results.totalMatches > 0">
+          <table>
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Date</th>
+                <th>Day</th>
+                <th>Close Price</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let match of getGroupedResults()">
+                <td class="symbol">{{ match.stock }}</td>
+                <td class="date">{{ formatDate(match.timestamp) }}</td>
+                <td class="day">{{ match.day }}</td>
+                <td class="price">₹{{ match.close | number:'1.2-2' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- No Results Message -->
+        <div class="no-results" *ngIf="results.totalMatches === 0">
+          <i class="icon-info"></i>
+          <p>No stocks match your criteria</p>
+          <p class="hint">Try adjusting your conditions or time period</p>
         </div>
       </div>
     </div>
   </div>
-
-  <div class="loading-spinner" *ngIf="loading && !showProgress">
-    <div class="spinner"></div>
-    <p>Scanning stocks...</p>
-  </div>
-  
-  <!-- Progress Bar -->
-  <app-progress-bar
-    [show]="showProgress"
-    [phase]="progressPhase"
-    [message]="progressMessage"
-    [processed]="progressProcessed"
-    [total]="progressTotal"
-    [matches]="progressMatches"
-    [canClose]="progressPhase === 'completed'"
-  ></app-progress-bar>
 </div>
