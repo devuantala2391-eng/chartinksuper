@@ -568,6 +568,56 @@ export class App implements OnInit {
       });
   }
   
+  runSpecialQuery() {
+    // Hardcoded query as specified
+    const specialQuery = `weekly volume crossed above 1 week ago volume * 1.5 and weekly close crossed above weekly supertrend(10,2) and weekly close crossed above weekly sma(20)`;
+    
+    this.loading = true;
+    this.error = null;
+    this.results = null;
+    this.groupedResults.clear();
+    this.showProgress = true;
+    this.progressPhase = 'initializing';
+    this.progressMessage = 'Starting special query scan...';
+    this.progressProcessed = 0;
+    this.progressTotal = 100;
+    this.progressMatches = undefined;
+    
+    // Set the query string for display
+    this.queryString = specialQuery;
+    
+    // Start polling for progress updates
+    this.startProgressPolling();
+    
+    // Send query to full backtest endpoint
+    this.http.post<QueryResult>(`${this.apiUrl}/query`, { query: specialQuery })
+      .subscribe({
+        next: (response) => {
+          this.loading = false;
+          this.results = response;
+          this.groupByDate(response.matches);
+          
+          // Show completion in progress bar
+          this.progressPhase = 'completed';
+          this.progressMessage = `Found ${response.totalMatches} matches for special query!`;
+          this.progressProcessed = this.progressTotal;
+          
+          // Hide progress after delay
+          setTimeout(() => {
+            this.showProgress = false;
+            this.stopProgressPolling();
+          }, 2000);
+        },
+        error: (error) => {
+          this.loading = false;
+          this.showProgress = false;
+          this.error = error.error?.error || 'An error occurred while running special query';
+          console.error('Error:', error);
+          this.stopProgressPolling();
+        }
+      });
+  }
+  
   private startProgressPolling() {
     // Clear any existing interval
     this.stopProgressPolling();

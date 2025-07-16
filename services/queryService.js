@@ -52,12 +52,26 @@ const INDICATOR_MAPPINGS = {
   'weekly percent change': 'pctchg_weekly',
   'daily pct change': 'pctchg_daily',
   'weekly pct change': 'pctchg_weekly',
+  'daily % change': 'pctchg_daily',
+  'weekly % change': 'pctchg_weekly',
   
   // Special cases
   'current close': 'close',
   'yesterday\'s close': 'prev_close',
   'previous close': 'prev_close',
   'yesterdays close': 'prev_close',
+  
+  // Week volume mappings
+  'current week volume': 'current_week_volume',
+  'previous week volume': 'previous_week_volume',
+  'last week volume': 'previous_week_volume',
+  'weekly volume': 'weekly_volume',
+  
+  // Weekly price fields
+  'weekly open': 'open_weekly',
+  'weekly high': 'high_weekly',
+  'weekly low': 'low_weekly',
+  'weekly close': 'close_weekly',
 };
 
 // Additional field mappings for simplified names
@@ -72,6 +86,8 @@ const SIMPLE_FIELD_MAPPINGS = {
   'percent change': 'pctchg_daily',
   'pct change': 'pctchg_daily',
   '% change': 'pctchg_daily',
+  'bb': 'bb_daily',
+  'bollinger': 'bb_daily',
 };
 
 
@@ -84,6 +100,8 @@ const OPERATORS = {
   '==': (a, b) => a === b,
   '!=': (a, b) => a !== b,
   '<>': (a, b) => a !== b,
+  'crossed above': 'crossed_above', // Special operator, handled separately
+  'crossed below': 'crossed_below', // Special operator, handled separately
 };
 
 const LOGICAL_OPERATORS = ['and', 'or', '&&', '||'];
@@ -144,12 +162,18 @@ function parseCondition(conditionStr) {
   const leftField = parseField(leftSide);
   const rightField = parseField(rightSide);
   
-  return {
+  const result = {
     left: leftField,
     operator: operator,
-    right: rightField,
-    compareFn: OPERATORS[operator]
+    right: rightField
   };
+  
+  // Only add compareFn for regular operators, not crossed above/below
+  if (typeof OPERATORS[operator] === 'function') {
+    result.compareFn = OPERATORS[operator];
+  }
+  
+  return result;
 }
 
 function parseField(fieldStr) {
@@ -223,17 +247,65 @@ function parseField(fieldStr) {
   
   // Check for indicator with parameters (e.g., "rsi(14)", "sma(20)", "bb(20, 2)")
   // But skip if it's "avg" which is handled above
-  const indicatorPattern = /^([a-zA-Z]+)\(([^)]+)\)$/;
-  const indicatorMatch = fieldStr.match(indicatorPattern);
+  // Also handle "daily upper bollinger band(20,2)" style
+  let timeframePrefix = null;
+  let indicatorPattern = /^(?:(daily|weekly|monthly)\s+)?(?:upper\s+|lower\s+)?(bollinger\s+band|supertrend|super\s+trend|rsi|sma|ema|bb)\(([^)]+)\)$/i;
+  let indicatorMatch = fieldStr.match(indicatorPattern);
+  
+  if (indicatorMatch) {
+    timeframePrefix = indicatorMatch[1] || null;
+    // Shift matches if timeframe was captured
+    if (timeframePrefix) {
+      indicatorMatch = [indicatorMatch[0], indicatorMatch[2], indicatorMatch[3]];
+    }
+  } else {
+    // Try simpler pattern
+    indicatorPattern = /^([a-zA-Z]+)\(([^)]+)\)$/;
+    indicatorMatch = fieldStr.match(indicatorPattern);
+  }
   
   if (indicatorMatch && indicatorMatch[1].toLowerCase() !== 'avg') {
-    const indicatorName = indicatorMatch[1].toLowerCase();
+    let indicatorName = indicatorMatch[1].toLowerCase();
     const params = indicatorMatch[2].split(',').map(p => p.trim());
     
-    return {
+    // Normalize indicator names
+    if (indicatorName.includes('bollinger') || indicatorName === 'bb') {
+      indicatorName = 'bb';
+    } else if (indicatorName.includes('supertrend') || indicatorName.includes('super trend')) {
+      indicatorName = 'supertrend';
+    }
+    
+    const result = {
       type: 'indicator',
       name: indicatorName,
       params: params,
+      originalString: fieldStr
+    };
+    
+    if (timeframePrefix) {
+      result.timeframe = timeframePrefix;
+    }
+    
+    return result;
+  }
+  
+  // Check for bollinger band variations without parameters
+  if (fieldStr.includes('bollinger band')) {
+    // Default bollinger band parameters
+    return {
+      type: 'indicator',
+      name: 'bb',
+      params: ['20', '2'],
+      originalString: fieldStr
+    };
+  }
+  
+  // Check for supertrend without parameters
+  if (fieldStr === 'supertrend' || fieldStr === 'super trend') {
+    return {
+      type: 'indicator',
+      name: 'supertrend',
+      params: ['10', '3'],
       originalString: fieldStr
     };
   }
@@ -493,18 +565,65 @@ function extractIndicatorsFromQuery(parsedQuery) {
         params.d = field.params[1] ? parseInt(field.params[1]) : 3;
       }
       
+      // Add timeframe if specified
+      if (field.timeframe) {
+        timeframes.add(field.timeframe);
+      }
+      
       indicators.add(JSON.stringify({
         name: field.name,
         period: period,
         params: params
       }));
     } else if (field.type === 'field') {
-      // Add basic field as an indicator to ensure it gets processed
-      indicators.add(JSON.stringify({
-        name: field.field,
-        period: 1,
-        params: {}
-      }));
+      // Handle special fields that need indicator calculation
+      if (field.field === 'pctchg_daily') {
+        indicators.add(JSON.stringify({
+          name: 'pctchg',
+          period: 1,
+          params: {}
+        }));
+      } else if (field.field === 'pctchg_weekly') {
+        indicators.add(JSON.stringify({
+          name: 'pctchg',
+          period: 5,
+          params: {}
+        }));
+        timeframes.add('weekly');
+      } else if (field.field === 'bb_upper_daily' || field.field === 'bb_lower_daily' || field.field === 'bb_middle_daily') {
+        indicators.add(JSON.stringify({
+          name: 'bb',
+          period: 20,
+          params: { stdDev: 2 }
+        }));
+      } else if (field.field === 'bb_upper_weekly' || field.field === 'bb_lower_weekly' || field.field === 'bb_middle_weekly') {
+        indicators.add(JSON.stringify({
+          name: 'bb',
+          period: 20,
+          params: { stdDev: 2 }
+        }));
+        timeframes.add('weekly');
+      } else if (field.field === 'supertrend_daily') {
+        indicators.add(JSON.stringify({
+          name: 'supertrend',
+          period: 10,
+          params: { multiplier: 3 }
+        }));
+      } else if (field.field === 'supertrend_weekly') {
+        indicators.add(JSON.stringify({
+          name: 'supertrend',
+          period: 10,
+          params: { multiplier: 3 }
+        }));
+        timeframes.add('weekly');
+      } else {
+        // Add basic field as an indicator to ensure it gets processed
+        indicators.add(JSON.stringify({
+          name: field.field,
+          period: 1,
+          params: {}
+        }));
+      }
     } else if (field.type === 'expression') {
       // Handle time-based expressions like "1 day ago volume"
       if (field.daysAgo || field.weeksAgo || field.monthsAgo) {
@@ -549,6 +668,15 @@ function extractIndicatorsFromQuery(parsedQuery) {
     }));
   }
   
+  // If we need weekly timeframe, ensure volume is included for weekly volume aggregation
+  if (timeframes.has('weekly') && !Array.from(indicators).some(ind => JSON.parse(ind).name === 'volume')) {
+    indicators.add(JSON.stringify({
+      name: 'volume',
+      period: 1,
+      params: {}
+    }));
+  }
+  
   return {
     indicators: Array.from(indicators).map(ind => JSON.parse(ind)),
     timeframes: Array.from(timeframes)
@@ -566,7 +694,11 @@ function getDefaultPeriod(indicatorName) {
     'supertrend': 10,
     'macd': 12,
     'stochastic': 14,
-    'williamsr': 14
+    'williamsr': 14,
+    'pctchg': 1,
+    'percent_change': 1,
+    'pct_change': 1,
+    '%_change': 1
   };
   
   return defaults[indicatorName] || 14;
@@ -866,6 +998,34 @@ function getFieldValue(candle, prevCandle, field, candles, currentIndex) {
     return sanitizeNumericValue(prevCandle.close);
   }
   
+  // Handle current week volume
+  if (field === 'current_week_volume') {
+    return getCurrentWeekVolume(candles, currentIndex);
+  }
+  
+  // Handle previous week volume
+  if (field === 'previous_week_volume') {
+    return getPreviousWeekVolume(candles, currentIndex);
+  }
+  
+  // Handle weekly aggregated fields
+  if (field === 'open_weekly') {
+    return getWeeklyAggregatedValue(candles, currentIndex, 'open', 0);
+  }
+  if (field === 'high_weekly') {
+    return getWeeklyAggregatedValue(candles, currentIndex, 'high', 0);
+  }
+  if (field === 'low_weekly') {
+    return getWeeklyAggregatedValue(candles, currentIndex, 'low', 0);
+  }
+  if (field === 'close_weekly') {
+    return getWeeklyAggregatedValue(candles, currentIndex, 'close', 0);
+  }
+  if (field === 'weekly_volume') {
+    // Weekly volume is already calculated in the candle, just return it
+    return sanitizeNumericValue(candle.weekly_volume);
+  }
+  
   const value = candle[field];
   if (value === null || value === undefined) {
     return null;
@@ -937,10 +1097,18 @@ function getWeeklyAggregatedValue(candles, currentIndex, field, weeksAgo) {
     case 'close':
       return sanitizeNumericValue(weekCandles[weekCandles.length - 1].close); // Last candle's close
     case 'volume':
-      return weekCandles.reduce((sum, c) => {
-        const vol = sanitizeNumericValue(c.volume);
-        return sum + (vol !== null ? vol : 0);
-      }, 0);
+      // For historical weeks (n weeks ago), return the last day's volume of that week
+      // Sort weekCandles by date to ensure correct order
+      weekCandles.sort((a, b) => Number(a.date) - Number(b.date));
+      
+      // Get the last candle of the week
+      if (weekCandles.length > 0) {
+        const lastCandle = weekCandles[weekCandles.length - 1];
+        const vol = sanitizeNumericValue(lastCandle.volume);
+        return vol !== null ? vol : 0;
+      }
+      
+      return 0;
     default:
       // For other fields, return the last value of the week
       return sanitizeNumericValue(weekCandles[weekCandles.length - 1][field]);
@@ -957,6 +1125,70 @@ function getISOWeek(date) {
     tmp.setUTCMonth(0, 1 + ((4 - tmp.getUTCDay()) + 7) % 7);
   }
   return 1 + Math.ceil((firstThursday - tmp) / 604800000);
+}
+
+function getCurrentWeekVolume(candles, currentIndex) {
+  const currentDate = new Date(Number(candles[currentIndex].date));
+  const currentWeek = getISOWeek(currentDate);
+  const currentYear = currentDate.getUTCFullYear();
+  
+  // Calculate cumulative volume from Monday to current day
+  let totalVolume = 0;
+  
+  // Go backwards from current index to accumulate volume for the week
+  for (let i = currentIndex; i >= 0; i--) {
+    const candle = candles[i];
+    const candleDate = new Date(Number(candle.date));
+    const candleWeek = getISOWeek(candleDate);
+    const candleYear = candleDate.getUTCFullYear();
+    
+    // If we've gone to a different week, stop
+    if (candleYear !== currentYear || candleWeek !== currentWeek) {
+      break;
+    }
+    
+    const vol = sanitizeNumericValue(candle.volume);
+    if (vol !== null) {
+      totalVolume += vol;
+    }
+  }
+  
+  return totalVolume;
+}
+
+function getPreviousWeekVolume(candles, currentIndex) {
+  const currentDate = new Date(Number(candles[currentIndex].date));
+  const currentWeek = getISOWeek(currentDate);
+  const currentYear = currentDate.getUTCFullYear();
+  
+  // Calculate previous week and year
+  let prevWeek = currentWeek - 1;
+  let prevYear = currentYear;
+  
+  if (prevWeek <= 0) {
+    prevYear--;
+    // Get the last week of previous year
+    const lastDayOfPrevYear = new Date(Date.UTC(prevYear, 11, 31));
+    prevWeek = getISOWeek(lastDayOfPrevYear);
+  }
+  
+  // Find all candles in the previous week (entire week, not cumulative)
+  let totalVolume = 0;
+  for (let i = 0; i <= currentIndex; i++) {
+    const candle = candles[i];
+    const candleDate = new Date(Number(candle.date));
+    const candleWeek = getISOWeek(candleDate);
+    const candleYear = candleDate.getUTCFullYear();
+    
+    if (candleYear === prevYear && candleWeek === prevWeek) {
+      const vol = sanitizeNumericValue(candle.volume);
+      if (vol !== null) {
+        totalVolume += vol;
+      }
+    }
+  }
+  
+  return totalVolume;
 }
 
 function getMonthlyAggregatedValue(candles, currentIndex, field, monthsAgo) {
@@ -1149,6 +1381,27 @@ function parseIndicatorParams(indicatorName, params) {
 }
 
 function evaluateCondition(condition, candle, prevCandle, candles, currentIndex) {
+  // Handle crossed above/below operators
+  if (condition.operator === 'crossed above' || condition.operator === 'crossed below') {
+    // Get current values
+    const leftValue = evaluateExpression(condition.left, candle, prevCandle, candles, currentIndex);
+    const rightValue = evaluateExpression(condition.right, candle, prevCandle, candles, currentIndex);
+    
+    if (leftValue === null || rightValue === null || currentIndex === 0) return false;
+    
+    // Get previous values
+    const prevLeftValue = evaluateExpression(condition.left, prevCandle, candles[currentIndex - 2], candles, currentIndex - 1);
+    const prevRightValue = evaluateExpression(condition.right, prevCandle, candles[currentIndex - 2], candles, currentIndex - 1);
+    
+    if (prevLeftValue === null || prevRightValue === null) return false;
+    
+    if (condition.operator === 'crossed above') {
+      return prevLeftValue <= prevRightValue && leftValue > rightValue;
+    } else {
+      return prevLeftValue >= prevRightValue && leftValue < rightValue;
+    }
+  }
+  
   // Get left value
   const leftValue = evaluateExpression(condition.left, candle, prevCandle, candles, currentIndex);
   if (leftValue === null) return false;
@@ -1378,5 +1631,6 @@ module.exports = {
   extractIndicatorsFromQuery,
   processStocksWithIndicatorsInMemory,
   processStocksWithIndicators,
-  generateIndicatorFieldName
+  generateIndicatorFieldName,
+  evaluateAllConditions
 };

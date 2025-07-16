@@ -362,6 +362,9 @@
         <button class="btn btn-secondary btn-backtest" (click)="runBacktest()" [disabled]="loading">
           {{ loading ? 'Running Backtest...' : 'Run Full Backtest' }}
         </button>
+        <button class="btn btn-special" (click)="runSpecialQuery()" [disabled]="loading">
+          {{ loading ? 'Running...' : 'Run Special Query' }}
+        </button>
         <button class="btn btn-text" (click)="clearAll()">Clear All</button>
       </div>
     </div>

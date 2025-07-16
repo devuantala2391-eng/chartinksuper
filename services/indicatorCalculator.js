@@ -129,39 +129,88 @@ function calculateBollingerBands(data, period = 20, standardDeviations = 2) {
 function calculateSuperTrend(highs, lows, closes, period = 10, multiplier = 3) {
   const result = [];
   const trend = [];
+  const basicUpperBand = [];
+  const basicLowerBand = [];
+  const finalUpperBand = [];
+  const finalLowerBand = [];
   const atr = calculateATR(highs, lows, closes, period);
   
   for (let i = 0; i < closes.length; i++) {
     if (i < period - 1) {
       result.push(null);
       trend.push(null);
+      basicUpperBand.push(null);
+      basicLowerBand.push(null);
+      finalUpperBand.push(null);
+      finalLowerBand.push(null);
     } else {
-      const hl2 = (highs[i] + lows[i]) / 2;
-      const upperBand = hl2 + (multiplier * atr[i]);
-      const lowerBand = hl2 - (multiplier * atr[i]);
+      // Calculate basic bands
+      const hl2 = (sanitizeNumericValue(highs[i]) + sanitizeNumericValue(lows[i])) / 2;
+      const bub = hl2 + (multiplier * atr[i]);
+      const blb = hl2 - (multiplier * atr[i]);
       
-      let superTrend = null;
-      let currentTrend = null;
+      basicUpperBand.push(bub);
+      basicLowerBand.push(blb);
+      
+      // Calculate final bands
+      let fub, flb;
       
       if (i === period - 1) {
-        superTrend = lowerBand;
-        currentTrend = 1;
+        fub = bub;
+        flb = blb;
       } else {
-        const prevSuperTrend = result[i - 1];
-        const prevTrend = trend[i - 1];
+        // Final upper band
+        if (bub < finalUpperBand[i - 1] || sanitizeNumericValue(closes[i - 1]) > finalUpperBand[i - 1]) {
+          fub = bub;
+        } else {
+          fub = finalUpperBand[i - 1];
+        }
         
-        if (closes[i] > prevSuperTrend && prevTrend === 1) {
-          superTrend = lowerBand;
-          currentTrend = 1;
-        } else if (closes[i] < prevSuperTrend && prevTrend === -1) {
-          superTrend = upperBand;
-          currentTrend = -1;
-        } else if (closes[i] <= prevSuperTrend && prevTrend === 1) {
-          superTrend = upperBand;
+        // Final lower band
+        if (blb > finalLowerBand[i - 1] || sanitizeNumericValue(closes[i - 1]) < finalLowerBand[i - 1]) {
+          flb = blb;
+        } else {
+          flb = finalLowerBand[i - 1];
+        }
+      }
+      
+      finalUpperBand.push(fub);
+      finalLowerBand.push(flb);
+      
+      // Calculate SuperTrend
+      let superTrend;
+      let currentTrend;
+      
+      if (i === period - 1) {
+        if (sanitizeNumericValue(closes[i]) <= fub) {
+          superTrend = fub;
           currentTrend = -1;
         } else {
-          superTrend = lowerBand;
+          superTrend = flb;
           currentTrend = 1;
+        }
+      } else {
+        const prevST = result[i - 1];
+        const close = sanitizeNumericValue(closes[i]);
+        
+        if (prevST === finalUpperBand[i - 1]) {
+          // Previous was upper band (bearish)
+          if (close <= fub) {
+            superTrend = fub;
+            currentTrend = -1;
+          } else {
+            superTrend = flb;
+            currentTrend = 1;
+          }
+        } else {
+          // Previous was lower band (bullish)
+          if (close >= flb) {
+            superTrend = flb;
+            currentTrend = 1;
+          } else {
+            superTrend = fub;
+            currentTrend = -1;
+          }
         }
       }
       
@@ -270,6 +319,29 @@ function calculateWilliamsR(highs, lows, closes, period = 14) {
   return result;
 }
 
+// Percent Change
+function calculatePercentChange(closes, period = 1) {
+  const result = [];
+  
+  for (let i = 0; i < closes.length; i++) {
+    if (i < period) {
+      result.push(null);
+    } else {
+      const currentClose = sanitizeNumericValue(closes[i]);
+      const previousClose = sanitizeNumericValue(closes[i - period]);
+      
+      if (currentClose === null || previousClose === null || previousClose === 0) {
+        result.push(null);
+      } else {
+        const pctChange = ((currentClose - previousClose) / previousClose) * 100;
+        result.push(pctChange);
+      }
+    }
+  }
+  
+  return result;
+}
+
 // Calculate all indicators for a stock's candle data
 function calculateAllIndicators(candles, indicators) {
   const result = [...candles];
@@ -364,6 +436,17 @@ function calculateAllIndicators(candles, indicators) {
           const wrValues = calculateWilliamsR(highs, lows, closes, wrPeriod);
           result.forEach((candle, i) => {
             candle[`williamsr_${wrPeriod}`] = wrValues[i] !== null ? wrValues[i].toString() : null;
+          });
+          break;
+          
+        case 'pctchg':
+        case 'percent_change':
+        case 'pct_change':
+        case '%_change':
+          const pctPeriod = period || 1;
+          const pctValues = calculatePercentChange(closes, pctPeriod);
+          result.forEach((candle, i) => {
+            candle[`pctchg_${pctPeriod}`] = pctValues[i] !== null ? pctValues[i].toString() : null;
           });
           break;
       }

@@ -513,6 +513,15 @@
       }
     }
 
+    &.btn-special {
+      background-color: #28a745;
+      color: white;
+
+      &:hover:not(:disabled) {
+        background-color: #218838;
+      }
+    }
+
     &.btn-text {
       background-color: transparent;
       color: #6c757d;

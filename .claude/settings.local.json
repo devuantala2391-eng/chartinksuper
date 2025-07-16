@@ -32,7 +32,12 @@
       "Bash(ng test:*)",
       "Bash(npx tsc:*)",
       "Bash(kill:*)",
-      "WebFetch(domain:chartink.com)"
+      "WebFetch(domain:chartink.com)",
+      "Bash(find:*)",
+      "Bash(npm run dev:*)",
+      "Bash(npm run start:*)",
+      "Bash(dir:*)",
+      "Bash(del /Q mapperStorage*.json)"
     ],
     "deny": []
   }

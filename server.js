@@ -332,6 +332,7 @@ app.post('/query',  async (req, res) => {
     let indicatorsData = extractIndicatorsFromQuery(parsedQuery);
     let requiredIndicators = indicatorsData.indicators;
     let requiredTimeframes = indicatorsData.timeframes;
+    console.log('Parsed query conditions:', JSON.stringify(parsedQuery.conditions, null, 2));
     console.log('Required indicators:', requiredIndicators);
     console.log('Required timeframes:', requiredTimeframes);
     console.log('Number of required indicators:', requiredIndicators.length);
@@ -354,6 +355,27 @@ app.post('/query',  async (req, res) => {
         }
         if (condition.right.type === 'indicator') {
           requiredFields.add(condition.right.name);
+        }
+        // Handle dynamic_indicator type (e.g., daily_rsi_14)
+        if (condition.left.type === 'dynamic_indicator') {
+          requiredIndicators.push({
+            name: condition.left.name,
+            period: parseInt(condition.left.params[0]) || 14,
+            params: {}
+          });
+          if (!requiredTimeframes.includes(condition.left.timeframe)) {
+            requiredTimeframes.push(condition.left.timeframe);
+          }
+        }
+        if (condition.right.type === 'dynamic_indicator') {
+          requiredIndicators.push({
+            name: condition.right.name,
+            period: parseInt(condition.right.params[0]) || 14,
+            params: {}
+          });
+          if (!requiredTimeframes.includes(condition.right.timeframe)) {
+            requiredTimeframes.push(condition.right.timeframe);
+          }
         }
       }
       
@@ -608,6 +630,27 @@ app.post('/query/latest',  async (req, res) => {
         }
         if (condition.right.type === 'indicator') {
           requiredFields.add(condition.right.name);
+        }
+        // Handle dynamic_indicator type (e.g., daily_rsi_14)
+        if (condition.left.type === 'dynamic_indicator') {
+          requiredIndicators.push({
+            name: condition.left.name,
+            period: parseInt(condition.left.params[0]) || 14,
+            params: {}
+          });
+          if (!requiredTimeframes.includes(condition.left.timeframe)) {
+            requiredTimeframes.push(condition.left.timeframe);
+          }
+        }
+        if (condition.right.type === 'dynamic_indicator') {
+          requiredIndicators.push({
+            name: condition.right.name,
+            period: parseInt(condition.right.params[0]) || 14,
+            params: {}
+          });
+          if (!requiredTimeframes.includes(condition.right.timeframe)) {
+            requiredTimeframes.push(condition.right.timeframe);
+          }
         }
       }
       

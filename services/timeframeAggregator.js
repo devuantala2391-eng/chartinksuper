@@ -131,6 +131,9 @@ function getISOWeek(date) {
  * This allows us to access weekly/monthly indicators on any daily candle
  */
 function mapAggregatedIndicators(dailyCandles, weeklyCandles, monthlyCandles, indicators) {
+  const { calculateAllIndicators } = require('./indicatorCalculator');
+  const { calculateWeeklySMADaily, calculateWeeklyEMADaily, calculateWeeklyRSIDaily } = require('./weeklyIndicatorCalculator');
+  
   // Create maps for quick lookup
   const weeklyMap = new Map();
   const monthlyMap = new Map();
@@ -145,8 +148,27 @@ function mapAggregatedIndicators(dailyCandles, weeklyCandles, monthlyCandles, in
     monthlyMap.set(candle.monthKey, candle);
   });
   
+  // Calculate weekly indicators using the new daily-based calculation
+  const weeklyIndicatorValues = {};
+  
+  indicators.forEach(indicator => {
+    const { name, period, params } = indicator;
+    
+    switch (name.toLowerCase()) {
+      case 'sma':
+        weeklyIndicatorValues[`weekly_sma_${period}`] = calculateWeeklySMADaily(dailyCandles, period);
+        break;
+      case 'ema':
+        weeklyIndicatorValues[`weekly_ema_${period}`] = calculateWeeklyEMADaily(dailyCandles, period);
+        break;
+      case 'rsi':
+        weeklyIndicatorValues[`weekly_rsi_${period}`] = calculateWeeklyRSIDaily(dailyCandles, period || 14);
+        break;
+    }
+  });
+  
   // Map indicators to daily candles
-  dailyCandles.forEach(dailyCandle => {
+  dailyCandles.forEach((dailyCandle, index) => {
     const date = new Date(Number(dailyCandle.date));
     const weekKey = getISOWeekKey(date);
     const monthKey = `${date.getUTCFullYear()}-${date.getUTCMonth()}`;
@@ -154,13 +176,46 @@ function mapAggregatedIndicators(dailyCandles, weeklyCandles, monthlyCandles, in
     const weeklyCandle = weeklyMap.get(weekKey);
     const monthlyCandle = monthlyMap.get(monthKey);
     
-    // Map weekly indicators
+    // Calculate cumulative weekly volume from Monday to current day
+    let cumulativeWeeklyVolume = 0;
+    const currentWeekNumber = getISOWeek(date);
+    const currentYear = date.getUTCFullYear();
+    
+    // Go backwards from current candle to find all candles in the same week up to current day
+    for (let i = index; i >= 0; i--) {
+      const candleDate = new Date(Number(dailyCandles[i].date));
+      const candleWeek = getISOWeek(candleDate);
+      const candleYear = candleDate.getUTCFullYear();
+      
+      // If we've gone to a different week, stop
+      if (candleYear !== currentYear || candleWeek !== currentWeekNumber) {
+        break;
+      }
+      
+      // Add this candle's volume to cumulative total
+      const volume = sanitizeNumericValue(dailyCandles[i].volume);
+      if (volume !== null) {
+        cumulativeWeeklyVolume += volume;
+      }
+    }
+    
+    // Set the cumulative weekly volume
+    dailyCandle['weekly_volume'] = cumulativeWeeklyVolume;
+    
+    // Map the new daily-calculated weekly indicators
+    Object.keys(weeklyIndicatorValues).forEach(key => {
+      const value = weeklyIndicatorValues[key][index];
+      dailyCandle[key] = value !== null ? value.toString() : null;
+    });
+    
+    // For other weekly indicators not yet implemented in the new system, use the old approach
     if (weeklyCandle) {
       indicators.forEach(indicator => {
         const { name, period, params } = indicator;
-        // Map all weekly indicator fields to daily candle with weekly_ prefix
+        // Map weekly indicator fields that aren't already handled
         Object.keys(weeklyCandle).forEach(key => {
-          if (key.startsWith(`${name}_`) || key.startsWith('bb_') || key.startsWith('macd_') || key.startsWith('stoch_')) {
+          if ((key.startsWith('bb_') || key.startsWith('macd_') || key.startsWith('stoch_') || key.startsWith('supertrend_') || key.startsWith('pctchg_')) ||
+              (key.startsWith(`${name}_`) && !['sma', 'ema', 'rsi'].includes(name.toLowerCase()))) {
             dailyCandle[`weekly_${key}`] = weeklyCandle[key];
           }
         });
@@ -173,7 +228,7 @@ function mapAggregatedIndicators(dailyCandles, weeklyCandles, monthlyCandles, in
         const { name, period, params } = indicator;
         // Map all monthly indicator fields to daily candle with monthly_ prefix
         Object.keys(monthlyCandle).forEach(key => {
-          if (key.startsWith(`${name}_`) || key.startsWith('bb_') || key.startsWith('macd_') || key.startsWith('stoch_')) {
+          if (key.startsWith(`${name}_`) || key.startsWith('bb_') || key.startsWith('macd_') || key.startsWith('stoch_') || key.startsWith('supertrend_') || key.startsWith('pctchg_')) {
             dailyCandle[`monthly_${key}`] = monthlyCandle[key];
           }
         });
