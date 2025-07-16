@@ -97,11 +97,65 @@ for (let i = 1; i < period && targetWeekIndex + i < sortedWeeks.length; i++) {
 **Location**: `services/weeklyIndicatorCalculator.js` (lines 106-188)
 
 **Logic**:
-1. Calculate historical weekly EMA using Friday closes
-2. For current day: EMA = (Current Close - Previous Week EMA) × Multiplier + Previous Week EMA
-3. Multiplier = 2 / (period + 1)
+1. First, calculate historical weekly EMAs using last trading day of each week
+2. For each day, apply EMA formula using current day's close and previous week's EMA
+3. Formula: EMA = (Current Close - Previous Week EMA) × Multiplier + Previous Week EMA
+4. Multiplier = 2 / (period + 1)
 
-**Status**: Implemented but needs verification of expected values
+**Key Implementation Points**:
+- Uses same week grouping as SMA (Monday-based weeks)
+- Builds historical EMA map first using end-of-week closes
+- For current day, uses previous week's calculated EMA as base
+- First week uses close price as initial EMA
+
+**Validation Behavior** (for AAATECH.json):
+- Weekly EMA changes daily within the same week
+- More responsive to recent price changes than SMA
+- Starts showing values from first week (unlike SMA which needs 20 weeks)
+
+**Critical Code**:
+```javascript
+// Calculate EMA week by week first (using last trading day's close)
+const weeklyEMA = new Map();
+let lastEMA = null;
+
+sortedWeeks.forEach(weekKey => {
+  const weekCandles = weeklyData.get(weekKey);
+  if (weekCandles && weekCandles.length > 0) {
+    const lastCandle = weekCandles[weekCandles.length - 1];
+    const weekClose = sanitizeNumericValue(lastCandle.close);
+    
+    if (weekClose !== null) {
+      if (lastEMA === null) {
+        lastEMA = weekClose;
+      } else {
+        lastEMA = (weekClose - lastEMA) * multiplier + lastEMA;
+      }
+      weeklyEMA.set(weekKey, lastEMA);
+    }
+  }
+});
+
+// For each day, calculate EMA using current close and previous week's EMA
+if (weekIndex > 0 && currentClose !== null) {
+  const prevWeekKey = sortedWeeks[weekIndex - 1];
+  const prevWeekEMA = weeklyEMA.get(prevWeekKey);
+  
+  if (prevWeekEMA !== null) {
+    const currentEMA = (currentClose - prevWeekEMA) * multiplier + prevWeekEMA;
+    result.push(currentEMA);
+  }
+}
+```
+
+**Test Results** (last 5 days of AAATECH.json):
+- Thursday: Close=82.99, Weekly EMA=85.33
+- Friday: Close=81.95, Weekly EMA=85.23
+- Monday: Close=82.34, Weekly EMA=84.95
+- Tuesday: Close=92.47, Weekly EMA=85.92
+- Wednesday: Close=90.66, Weekly EMA=85.74
+
+**Status**: ✅ Fully implemented and working correctly
 
 ## Integration Point
 **Location**: `services/timeframeAggregator.js` (lines 151-168)
@@ -150,6 +204,11 @@ To verify weekly SMA implementation:
 2. **Index Filtering**: Must filter weekCandles to only include candles before current index
 3. **Null Handling**: Need exactly 20 values for valid SMA, otherwise return null
 4. **Date Objects**: Always create new Date objects to avoid mutation
+
+## Completed Indicators
+- [x] Weekly Volume (cumulative from Monday)
+- [x] Weekly SMA (current day + 19 previous Fridays)
+- [x] Weekly EMA (exponential smoothing with previous week's EMA)
 
 ## Future Indicators to Implement
 - [ ] Weekly RSI
