@@ -10,12 +10,41 @@ const INDICATOR_MAPPINGS = {
   // Bollinger Bands
   'daily upper bollinger band': 'bb_upper_daily',
   'daily lower bollinger band': 'bb_lower_daily',
+  'daily middle bollinger band': 'bb_middle_daily',
   'weekly upper bollinger band': 'bb_upper_weekly',
   'weekly lower bollinger band': 'bb_lower_weekly',
+  'weekly middle bollinger band': 'bb_middle_weekly',
+  'monthly upper bollinger band': 'bb_upper_monthly',
+  'monthly lower bollinger band': 'bb_lower_monthly',
+  'monthly middle bollinger band': 'bb_middle_monthly',
   'daily bb upper': 'bb_upper_daily',
   'daily bb lower': 'bb_lower_daily',
+  'daily bb middle': 'bb_middle_daily',
   'weekly bb upper': 'bb_upper_weekly',
   'weekly bb lower': 'bb_lower_weekly',
+  'weekly bb middle': 'bb_middle_weekly',
+  'monthly bb upper': 'bb_upper_monthly',
+  'monthly bb lower': 'bb_lower_monthly',
+  'monthly bb middle': 'bb_middle_monthly',
+  
+  // MACD components
+  'daily macd line': 'macd_daily',
+  'weekly macd line': 'macd_weekly',
+  'monthly macd line': 'macd_monthly',
+  'daily macd signal': 'macd_signal_daily',
+  'weekly macd signal': 'macd_signal_weekly',
+  'monthly macd signal': 'macd_signal_monthly',
+  'daily macd histogram': 'macd_histogram_daily',
+  'weekly macd histogram': 'macd_histogram_weekly',
+  'monthly macd histogram': 'macd_histogram_monthly',
+  
+  // Stochastic components
+  'daily stochastic k': 'stoch_k_daily',
+  'weekly stochastic k': 'stoch_k_weekly',
+  'monthly stochastic k': 'stoch_k_monthly',
+  'daily stochastic d': 'stoch_d_daily',
+  'weekly stochastic d': 'stoch_d_weekly',
+  'monthly stochastic d': 'stoch_d_monthly',
   
   // SMA
   'daily sma': 'sma_daily',
@@ -208,11 +237,31 @@ function parseField(fieldStr) {
     }
   }
   
-  // Check for new dynamic key format (e.g., "daily_rsi_14", "weekly_sma_20", "monthly_rsi_14")
+  // Check for new dynamic key format with component support (e.g., "daily_bb_upper_20_2", "weekly_macd_signal_12_26_9")
   const dynamicKeyPattern = /^(daily|weekly|monthly)_([a-zA-Z]+)_(.+)$/;
   const dynamicKeyMatch = fieldStr.match(dynamicKeyPattern);
   
-  if (dynamicKeyMatch) {
+  // Check for component-based indicators (e.g., "daily_bb_upper_20_2")
+  const componentPattern = /^(daily|weekly|monthly)_([a-zA-Z]+)_(upper|lower|middle|macd|signal|histogram|k|d)_(.+)$/;
+  const componentMatch = fieldStr.match(componentPattern);
+  
+  if (componentMatch) {
+    const timeframe = componentMatch[1];
+    const indicatorName = componentMatch[2];
+    const component = componentMatch[3];
+    const paramsStr = componentMatch[4];
+    const params = paramsStr.split('_');
+    
+    return {
+      type: 'dynamic_indicator',
+      timeframe: timeframe,
+      name: indicatorName,
+      component: component,
+      params: params,
+      fieldKey: fieldStr,
+      originalString: fieldStr
+    };
+  } else if (dynamicKeyMatch) {
     const timeframe = dynamicKeyMatch[1];
     const indicatorName = dynamicKeyMatch[2];
     const paramsStr = dynamicKeyMatch[3];
@@ -304,6 +353,13 @@ function parseField(fieldStr) {
     }
     
     return result;
+  }
+  
+  // First try to find exact matching indicator - check field mappings before generic patterns
+  for (const [pattern, key] of Object.entries(INDICATOR_MAPPINGS)) {
+    if (fieldStr === pattern) {
+      return { type: 'field', field: key };
+    }
   }
   
   // Check for bollinger band variations without parameters
@@ -566,11 +622,19 @@ function extractIndicatorsFromQuery(parsedQuery) {
         params.d = field.params[1] ? parseInt(field.params[1]) : 3;
       }
       
-      indicators.add(JSON.stringify({
+      // Include component information in the indicator
+      const indicatorDef = {
         name: field.name,
         period: period,
         params: params
-      }));
+      };
+      
+      // Add component if specified
+      if (field.component) {
+        indicatorDef.component = field.component;
+      }
+      
+      indicators.add(JSON.stringify(indicatorDef));
     } else if (field.type === 'indicator') {
       const period = parseInt(field.params[0]) || getDefaultPeriod(field.name);
       const params = {};
@@ -627,6 +691,13 @@ function extractIndicatorsFromQuery(parsedQuery) {
           params: { stdDev: 2 }
         }));
         timeframes.add('weekly');
+      } else if (field.field === 'bb_upper_monthly' || field.field === 'bb_lower_monthly' || field.field === 'bb_middle_monthly') {
+        indicators.add(JSON.stringify({
+          name: 'bb',
+          period: 20,
+          params: { stdDev: 2 }
+        }));
+        timeframes.add('monthly');
       } else if (field.field === 'supertrend_daily') {
         indicators.add(JSON.stringify({
           name: 'supertrend',

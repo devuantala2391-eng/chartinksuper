@@ -29,305 +29,198 @@
         </div>
       </div>
 
-      <!-- Condition Builder -->
-      <div class="condition-builder">
-        <div class="condition-wrapper" *ngFor="let condition of conditions; let i = index">
+      <!-- Compact Condition Builder -->
+      <div class="condition-builder-compact">
+        <div class="condition-wrapper-compact" *ngFor="let condition of conditions; let i = index">
           <!-- AND/OR Operator (shown between conditions) -->
-          <div class="logical-operator-row" *ngIf="i > 0">
-            <div class="operator-line"></div>
-            <select [(ngModel)]="condition.logicalOperator" class="logical-operator">
-              <option value="and">AND</option>
-              <option value="or">OR</option>
-            </select>
-            <div class="operator-line"></div>
+          <div class="logical-operator-compact" *ngIf="i > 0">
+            <span 
+              class="highlight-text logical-op" 
+              (click)="openPopup('logicalOperator', condition.id)"
+            >
+              {{ getDisplayText(condition.logicalOperator, 'logicalOperator') }}
+            </span>
           </div>
 
-          <!-- Condition Row -->
-          <div class="condition-row">
-            <!-- Left Side - Field Selection -->
-            <div class="condition-field">
-              <!-- Expression Type Selector -->
-              <select [(ngModel)]="condition.leftExpressionType" class="input-field expression-type" (change)="onExpressionTypeChange(condition)">
-                <option value="simple">Simple Field</option>
-                <option value="complex">Arithmetic Expression</option>
-                <option value="avg">Average Function</option>
-              </select>
-              
-              <!-- Simple Field Selection (shown when leftExpressionType === 'simple') -->
-              <div class="simple-field-selection" *ngIf="condition.leftExpressionType === 'simple'">
-                <!-- Time Period -->
-                <select [(ngModel)]="condition.timePeriod" class="input-field time-period">
-                  <option *ngFor="let period of timePeriodOptions" [value]="period.value">
-                    {{ period.label }}
-                  </option>
-                </select>
-                
-                <!-- Custom days input -->
-                <input 
-                  *ngIf="condition.timePeriod === 'n-days'"
-                  type="number" 
-                  [(ngModel)]="condition.customDaysAgo" 
-                  placeholder="days"
-                  class="input-field custom-days"
-                  min="1"
-                />
-                
-                <!-- Custom weeks input -->
-                <input 
-                  *ngIf="condition.timePeriod === 'n-weeks'"
-                  type="number" 
-                  [(ngModel)]="condition.customWeeksAgo" 
-                  placeholder="weeks"
-                  class="input-field custom-days"
-                  min="1"
-                />
-                
-                <!-- Custom months input -->
-                <input 
-                  *ngIf="condition.timePeriod === 'n-months'"
-                  type="number" 
-                  [(ngModel)]="condition.customMonthsAgo" 
-                  placeholder="months"
-                  class="input-field custom-days"
-                  min="1"
-                />
-                
-                <!-- Indicator/Field Selection -->
-                <select [(ngModel)]="condition.field" class="input-field indicator-select" (change)="onFieldChange(condition)">
-                  <optgroup label="Price & Volume">
-                    <option value="open">Open</option>
-                    <option value="high">High</option>
-                    <option value="low">Low</option>
-                    <option value="close">Close</option>
-                    <option value="volume">Volume</option>
-                  </optgroup>
-                  <optgroup label="Moving Averages">
-                    <option value="sma">SMA</option>
-                    <option value="ema">EMA</option>
-                    <option value="wma">WMA</option>
-                    <option value="vwap">VWAP</option>
-                  </optgroup>
-                  <optgroup label="Momentum Indicators">
-                    <option value="rsi">RSI</option>
-                    <option value="macd">MACD</option>
-                    <option value="stochastic">Stochastic</option>
-                    <option value="cci">CCI</option>
-                    <option value="mfi">MFI</option>
-                    <option value="roc">ROC</option>
-                  </optgroup>
-                  <optgroup label="Volatility Indicators">
-                    <option value="bb">Bollinger Bands</option>
-                    <option value="atr">ATR</option>
-                    <option value="keltner">Keltner Channel</option>
-                  </optgroup>
-                  <optgroup label="Trend Indicators">
-                    <option value="supertrend">SuperTrend</option>
-                    <option value="adx">ADX</option>
-                    <option value="psar">Parabolic SAR</option>
-                    <option value="ichimoku">Ichimoku</option>
-                  </optgroup>
-                  <optgroup label="Volume Indicators">
-                    <option value="obv">OBV</option>
-                    <option value="vpt">VPT</option>
-                    <option value="ad">A/D Line</option>
-                  </optgroup>
-                </select>
-                
-                <!-- Indicator Parameters -->
-                <div class="indicator-params" *ngIf="condition.indicatorType === 'parameterized'">
-                  <span class="param-bracket">(</span>
-                  <input 
-                    *ngFor="let param of condition.indicatorParams; let j = index"
-                    type="text" 
-                    [(ngModel)]="condition.indicatorParams![j]"
-                    class="param-input"
-                    [placeholder]="getIndicatorParamLabels(condition.indicatorName || '')[j]"
-                  />
-                  <span class="param-bracket">)</span>
-                </div>
-              </div>
-              
-              <!-- Complex Expression Builder (shown when leftExpressionType === 'complex' or 'avg') -->
-              <div class="complex-expression-builder" *ngIf="(condition.leftExpressionType === 'complex' || condition.leftExpressionType === 'avg') && condition.leftExpression">
-                <!-- Operator Selector for Arithmetic Expressions -->
-                <select *ngIf="condition.leftExpressionType === 'complex'" [(ngModel)]="condition.leftExpression.operator" class="input-field arithmetic-op">
-                  <option value="+">+</option>
-                  <option value="-">-</option>
-                  <option value="*">×</option>
-                  <option value="/">÷</option>
-                </select>
-                
-                <!-- Expression Terms -->
-                <div class="expression-terms">
-                  <div class="expression-term" *ngFor="let term of condition.leftExpression.terms; let termIndex = index">
-                    <!-- Time Period for Term -->
-                    <select [(ngModel)]="term.timePeriod" class="input-field time-period-small">
-                      <option *ngFor="let period of timePeriodOptions" [value]="period.value">
-                        {{ period.label }}
-                      </option>
-                    </select>
-                    
-                    <!-- Field Selection for Term -->
-                    <select [(ngModel)]="term.field" class="input-field indicator-select-small" (change)="onExpressionFieldChange(term)">
-                      <optgroup label="Price & Volume">
-                        <option value="open">Open</option>
-                        <option value="high">High</option>
-                        <option value="low">Low</option>
-                        <option value="close">Close</option>
-                        <option value="volume">Volume</option>
-                      </optgroup>
-                      <optgroup label="Indicators">
-                        <option *ngFor="let field of fields" [value]="field.value">
-                          {{ field.label }}
-                        </option>
-                      </optgroup>
-                    </select>
-                    
-                    <!-- Indicator Parameters for Term -->
-                    <div class="indicator-params" *ngIf="term.indicatorType === 'parameterized'">
-                      <span class="param-bracket">(</span>
-                      <input 
-                        *ngFor="let param of term.indicatorParams; let j = index"
-                        type="text" 
-                        [(ngModel)]="term.indicatorParams![j]"
-                        class="param-input"
-                        [placeholder]="getIndicatorParamLabels(term.indicatorName || '')[j]"
-                      />
-                      <span class="param-bracket">)</span>
-                    </div>
-                    
-                    <!-- Remove Term Button -->
-                    <button 
-                      class="btn-remove-term" 
-                      (click)="removeExpressionTerm(condition, termIndex)"
-                      *ngIf="condition.leftExpression.terms.length > 1"
-                      title="Remove term"
-                    >
-                      ×
-                    </button>
-                  </div>
-                  
-                  <!-- Add Term Button -->
-                  <button class="btn-add-term" (click)="addExpressionTerm(condition)">
-                    + Add Term
-                  </button>
-                </div>
-              </div>
-            </div>
+          <!-- Compact Condition Row -->
+          <div class="condition-row-compact">
+            <!-- Time Period -->
+            <span 
+              class="highlight-text time-period" 
+              (click)="openPopup('timePeriod', condition.id)"
+            >
+              {{ getDisplayText(condition.timePeriod, 'timePeriod') }}
+            </span>
+
+            <!-- Custom time input -->
+            <input 
+              *ngIf="condition.timePeriod === 'n-days'"
+              type="number" 
+              [(ngModel)]="condition.customDaysAgo" 
+              placeholder="days"
+              class="custom-input"
+              min="1"
+            />
+            <input 
+              *ngIf="condition.timePeriod === 'n-weeks'"
+              type="number" 
+              [(ngModel)]="condition.customWeeksAgo" 
+              placeholder="weeks"
+              class="custom-input"
+              min="1"
+            />
+            <input 
+              *ngIf="condition.timePeriod === 'n-months'"
+              type="number" 
+              [(ngModel)]="condition.customMonthsAgo" 
+              placeholder="months"
+              class="custom-input"
+              min="1"
+            />
+
+            <!-- Field -->
+            <span 
+              class="highlight-text field" 
+              (click)="openPopup('field', condition.id)"
+            >
+              {{ getDisplayText(condition.field, 'field') }}
+            </span>
+
+            <!-- Component Selection for Multi-Component Indicators -->
+            <span 
+              *ngIf="condition.indicatorType === 'parameterized' && multiComponentIndicators[condition.field]"
+              class="highlight-text component" 
+              (click)="openPopup('indicatorComponent', condition.id)"
+            >
+              {{ (condition.indicatorComponent || multiComponentIndicators[condition.field][0]) | titlecase }}
+            </span>
+
+            <!-- Indicator Parameters -->
+            <span class="params-group" *ngIf="condition.indicatorType === 'parameterized'">
+              <span class="param-bracket">(</span>
+              <span 
+                *ngFor="let param of condition.indicatorParams; let j = index"
+                class="highlight-text param-text"
+                (click)="openParameterPopup('indicatorParam', condition.id, j)"
+              >
+                {{ param }}
+              </span>
+              <span class="param-bracket">)</span>
+            </span>
 
             <!-- Operator -->
-            <select [(ngModel)]="condition.operator" class="input-field operator">
-              <option value="crosses_above">crosses above</option>
-              <option value="crosses_below">crosses below</option>
-              <option value=">">greater than</option>
-              <option value="<">less than</option>
-              <option value=">=">greater or equal</option>
-              <option value="<=">less or equal</option>
-              <option value="=">equal to</option>
-              <option value="!=">not equal</option>
-              <option value="increased_by">increased by %</option>
-              <option value="decreased_by">decreased by %</option>
-            </select>
+            <span 
+              class="highlight-text operator" 
+              (click)="openPopup('operator', condition.id)"
+            >
+              {{ getDisplayText(condition.operator, 'operator') }}
+            </span>
 
-            <!-- Right Side Value -->
-            <div class="condition-value">
-              <!-- Value Type Toggle -->
-              <div class="value-type-toggle">
-                <label class="toggle-option">
-                  <input type="radio" [(ngModel)]="condition.valueType" value="number" name="valueType{{i}}">
-                  <span>Number</span>
-                </label>
-                <label class="toggle-option">
-                  <input type="radio" [(ngModel)]="condition.valueType" value="field" name="valueType{{i}}">
-                  <span>Field</span>
-                </label>
-              </div>
+            <!-- Value Type Toggle -->
+            <span 
+              class="highlight-text value-type" 
+              (click)="openPopup('valueType', condition.id)"
+            >
+              {{ getDisplayText(condition.valueType, 'valueType') }}
+            </span>
 
-              <!-- Number Value -->
+            <!-- Number Value -->
+            <input 
+              *ngIf="condition.valueType === 'number'"
+              type="text" 
+              [(ngModel)]="condition.value" 
+              placeholder="Value"
+              class="value-input-compact"
+            />
+
+            <!-- Field Value -->
+            <ng-container *ngIf="condition.valueType === 'field'">
+              <!-- Value Time Period -->
+              <span 
+                class="highlight-text value-time-period" 
+                (click)="openPopup('valueTimePeriod', condition.id)"
+              >
+                {{ getDisplayText(condition.valueTimePeriod || 'daily', 'timePeriod') }}
+              </span>
+
+              <!-- Custom time inputs for value -->
               <input 
-                *ngIf="condition.valueType === 'number'"
-                type="text" 
-                [(ngModel)]="condition.value" 
-                placeholder="Value"
-                class="input-field value-input"
+                *ngIf="condition.valueTimePeriod === 'n-days'"
+                type="number" 
+                [(ngModel)]="condition.valueCustomDaysAgo" 
+                placeholder="days"
+                class="custom-input"
+                min="1"
+              />
+              <input 
+                *ngIf="condition.valueTimePeriod === 'n-weeks'"
+                type="number" 
+                [(ngModel)]="condition.valueCustomWeeksAgo" 
+                placeholder="weeks"
+                class="custom-input"
+                min="1"
+              />
+              <input 
+                *ngIf="condition.valueTimePeriod === 'n-months'"
+                type="number" 
+                [(ngModel)]="condition.valueCustomMonthsAgo" 
+                placeholder="months"
+                class="custom-input"
+                min="1"
               />
 
-              <!-- Field Value -->
-              <div class="field-value-group" *ngIf="condition.valueType === 'field'">
-                <select [(ngModel)]="condition.valueTimePeriod" class="input-field time-period">
-                  <option *ngFor="let period of timePeriodOptions" [value]="period.value">
-                    {{ period.label }}
-                  </option>
-                </select>
+              <!-- Value Field -->
+              <span 
+                class="highlight-text value-field" 
+                (click)="openPopup('valueField', condition.id)"
+              >
+                {{ getDisplayText(condition.valueField || 'close', 'field') }}
+              </span>
+
+              <!-- Value Field Component -->
+              <span 
+                *ngIf="condition.valueIndicatorType === 'parameterized' && condition.valueField && multiComponentIndicators[condition.valueField]"
+                class="highlight-text value-component" 
+                (click)="openPopup('valueIndicatorComponent', condition.id)"
+              >
+                {{ (condition.valueIndicatorComponent || multiComponentIndicators[condition.valueField][0]) | titlecase }}
+              </span>
+
+              <!-- Value Indicator Parameters -->
+              <span class="params-group" *ngIf="condition.valueIndicatorType === 'parameterized'">
+                <span class="param-bracket">(</span>
+                <span 
+                  *ngFor="let param of condition.valueIndicatorParams; let j = index"
+                  class="highlight-text param-text"
+                  (click)="openParameterPopup('valueIndicatorParam', condition.id, j)"
+                >
+                  {{ param }}
+                </span>
+                <span class="param-bracket">)</span>
+              </span>
+
+              <!-- Arithmetic Operation -->
+              <ng-container *ngIf="condition.valueType === 'field'">
+                <span 
+                  class="highlight-text arithmetic-op" 
+                  (click)="openPopup('arithmeticOperator', condition.id)"
+                >
+                  {{ getDisplayText(condition.arithmeticOperator, 'arithmeticOperator') }}
+                </span>
                 
                 <input 
-                  *ngIf="condition.valueTimePeriod === 'n-days'"
-                  type="number" 
-                  [(ngModel)]="condition.valueCustomDaysAgo" 
-                  placeholder="days"
-                  class="input-field custom-days"
-                  min="1"
+                  *ngIf="condition.arithmeticOperator"
+                  type="text" 
+                  [(ngModel)]="condition.arithmeticValue" 
+                  placeholder="Value"
+                  class="arithmetic-value-compact"
                 />
-                
-                <!-- Custom weeks input for value -->
-                <input 
-                  *ngIf="condition.valueTimePeriod === 'n-weeks'"
-                  type="number" 
-                  [(ngModel)]="condition.valueCustomWeeksAgo" 
-                  placeholder="weeks"
-                  class="input-field custom-days"
-                  min="1"
-                />
-                
-                <!-- Custom months input for value -->
-                <input 
-                  *ngIf="condition.valueTimePeriod === 'n-months'"
-                  type="number" 
-                  [(ngModel)]="condition.valueCustomMonthsAgo" 
-                  placeholder="months"
-                  class="input-field custom-days"
-                  min="1"
-                />
-                
-                <select [(ngModel)]="condition.valueField" class="input-field indicator-select" (change)="onValueFieldChange(condition)">
-                  <optgroup label="Price & Volume">
-                    <option value="open">Open</option>
-                    <option value="high">High</option>
-                    <option value="low">Low</option>
-                    <option value="close">Close</option>
-                    <option value="volume">Volume</option>
-                  </optgroup>
-                  <optgroup label="Indicators">
-                    <option *ngFor="let field of fields" [value]="field.value">
-                      {{ field.label }}
-                    </option>
-                  </optgroup>
-                </select>
-                
-                <!-- Arithmetic Operation -->
-                <div class="arithmetic-group" *ngIf="condition.valueType === 'field'">
-                  <select [(ngModel)]="condition.arithmeticOperator" class="input-field arithmetic-op">
-                    <option value="">None</option>
-                    <option value="+">+</option>
-                    <option value="-">-</option>
-                    <option value="*">×</option>
-                    <option value="/">÷</option>
-                  </select>
-                  
-                  <input 
-                    *ngIf="condition.arithmeticOperator"
-                    type="text" 
-                    [(ngModel)]="condition.arithmeticValue" 
-                    placeholder="Value"
-                    class="input-field arithmetic-value"
-                  />
-                </div>
-              </div>
-            </div>
+              </ng-container>
+            </ng-container>
 
             <!-- Remove Button -->
             <button 
-              class="btn-remove" 
+              class="btn-remove-compact" 
               (click)="removeCondition(condition.id)"
               *ngIf="conditions.length > 1"
               title="Remove condition"
@@ -338,34 +231,69 @@
         </div>
 
         <!-- Add Condition Button -->
-        <div class="add-condition-row">
-          <button class="btn-add-condition" (click)="addCondition()">
-            + Add another condition
+        <div class="add-condition-compact">
+          <button class="btn-add-condition-compact" (click)="addCondition()">
+            + Add Condition
           </button>
         </div>
       </div>
 
       <!-- Generated Query Display -->
-      <div class="query-display" *ngIf="queryString">
+      <div class="query-display">
         <div class="query-header">
           <h3>Generated Query</h3>
-          <button class="btn-copy" (click)="copyScan()">Copy</button>
+          <button class="btn-copy" (click)="copyScan()" [disabled]="!queryString">Copy</button>
         </div>
-        <code class="query-code">{{ queryString }}</code>
+        <code class="query-code">{{ queryString || 'Query will appear here...' }}</code>
+      </div>
+
+      <!-- Paste Query Section (moved below generated query) -->
+      <div class="paste-query-section-compact">
+        <div class="paste-query-header-compact">
+          <h4>Import Query</h4>
+          <button 
+            class="btn-paste-compact" 
+            (click)="pasteFromClipboard()"
+            title="Paste from clipboard"
+          >
+            📋 Paste
+          </button>
+        </div>
+        <div class="paste-query-input-compact">
+          <textarea 
+            [(ngModel)]="pasteQueryText"
+            placeholder="Paste your query here..."
+            class="paste-textarea-compact"
+            rows="2"
+          ></textarea>
+          <button 
+            class="btn-parse-query-compact" 
+            (click)="parseAndPopulateQuery()"
+            [disabled]="!pasteQueryText.trim()"
+            title="Parse query and populate fields"
+          >
+            Parse
+          </button>
+        </div>
+        <div class="paste-query-status-compact" *ngIf="pasteQueryStatus">
+          <span [ngClass]="{'success': pasteQuerySuccess, 'error': !pasteQuerySuccess}">
+            {{ pasteQueryStatus }}
+          </span>
+        </div>
       </div>
 
       <!-- Action Buttons -->
-      <div class="action-buttons">
-        <button class="btn btn-primary btn-scan" (click)="runScan()" [disabled]="loading">
+      <div class="action-buttons-compact">
+        <button class="btn btn-primary btn-scan-compact" (click)="runScan()" [disabled]="loading">
           {{ loading ? 'Scanning...' : 'Run Scan' }}
         </button>
-        <button class="btn btn-secondary btn-backtest" (click)="runBacktest()" [disabled]="loading">
-          {{ loading ? 'Running Backtest...' : 'Run Full Backtest' }}
+        <button class="btn btn-secondary btn-backtest-compact" (click)="runBacktest()" [disabled]="loading">
+          {{ loading ? 'Running...' : 'Backtest' }}
         </button>
-        <button class="btn btn-special" (click)="runSpecialQuery()" [disabled]="loading">
-          {{ loading ? 'Running...' : 'Run Special Query' }}
+        <button class="btn btn-special-compact" (click)="runSpecialQuery()" [disabled]="loading">
+          Special
         </button>
-        <button class="btn btn-text" (click)="clearAll()">Clear All</button>
+        <button class="btn btn-text-compact" (click)="clearAll()">Clear</button>
       </div>
     </div>
 
@@ -401,8 +329,8 @@
         </div>
 
         <!-- Results Table -->
-        <div class="results-table" *ngIf="results.totalMatches > 0">
-          <table>
+        <div class="results-table-container" *ngIf="results.totalMatches > 0">
+          <table class="results-table-responsive">
             <thead>
               <tr>
                 <th>Symbol</th>
@@ -427,6 +355,38 @@
           <i class="icon-info"></i>
           <p>No stocks match your criteria</p>
           <p class="hint">Try adjusting your conditions or time period</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Popup Selector -->
+  <div class="popup-overlay" *ngIf="activePopup" (click)="closePopup()">
+    <div class="popup-selector" (click)="$event.stopPropagation()">
+      <div class="popup-header">
+        <h4>Select {{ activePopup.type | titlecase }}</h4>
+        <button class="popup-close" (click)="closePopup()">×</button>
+      </div>
+      <div class="popup-options">
+        <div 
+          *ngFor="let option of getPopupOptions(activePopup.type)"
+          class="popup-option"
+          (click)="selectPopupValue(option.value)"
+        >
+          {{ option.label }}
+        </div>
+        <!-- Component options for multi-component indicators -->
+        <div 
+          *ngIf="activePopup.type === 'indicatorComponent' || activePopup.type === 'valueIndicatorComponent'"
+          class="popup-component-options"
+        >
+          <div 
+            *ngFor="let component of getComponentOptions(activePopup)"
+            class="popup-option"
+            (click)="selectPopupValue(component)"
+          >
+            {{ component | titlecase }}
+          </div>
         </div>
       </div>
     </div>

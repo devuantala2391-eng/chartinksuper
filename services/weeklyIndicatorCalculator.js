@@ -499,11 +499,203 @@ function calculateMonthlyEMADaily(candles, period) {
   return result;
 }
 
+// Calculate Weekly Bollinger Bands for each day
+function calculateWeeklyBollingerBandsDaily(candles, period = 20, standardDeviations = 2) {
+  const result = {
+    upper: [],
+    middle: [],
+    lower: []
+  };
+  
+  // Helper to get Monday of a week
+  function getMonday(d) {
+    d = new Date(d);
+    const day = d.getDay();
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+    return new Date(d.setDate(diff));
+  }
+  
+  // Group candles by week
+  const weeklyData = new Map();
+  
+  candles.forEach((candle, idx) => {
+    const date = new Date(Number(candle.date));
+    const monday = getMonday(date);
+    const weekKey = monday.toISOString().split('T')[0];
+    
+    if (!weeklyData.has(weekKey)) {
+      weeklyData.set(weekKey, []);
+    }
+    weeklyData.get(weekKey).push({ ...candle, index: idx });
+  });
+  
+  // For each day, calculate the weekly Bollinger Bands
+  candles.forEach((candle, index) => {
+    const targetDate = new Date(Number(candle.date));
+    const targetMonday = getMonday(targetDate);
+    const targetWeekKey = targetMonday.toISOString().split('T')[0];
+    
+    // Sort weeks in descending order (most recent first)
+    const sortedWeeks = Array.from(weeklyData.keys()).sort().reverse();
+    const targetWeekIndex = sortedWeeks.indexOf(targetWeekKey);
+    
+    // Check if we have enough data
+    if (targetWeekIndex === -1 || sortedWeeks.length - targetWeekIndex < period) {
+      result.upper.push(null);
+      result.middle.push(null);
+      result.lower.push(null);
+      return;
+    }
+    
+    // Collect values: current day + last trading day of previous weeks
+    const values = [];
+    
+    // Current day's close
+    values.push(sanitizeNumericValue(candle.close));
+    
+    // Previous weeks (going back in time)
+    for (let i = 1; i < period && targetWeekIndex + i < sortedWeeks.length; i++) {
+      const weekKey = sortedWeeks[targetWeekIndex + i];
+      const weekCandles = weeklyData.get(weekKey);
+      
+      if (weekCandles && weekCandles.length > 0) {
+        // Get last trading day of the week (but only if it's before our target date)
+        const validCandles = weekCandles.filter(c => c.index < index);
+        if (validCandles.length > 0) {
+          const lastCandle = validCandles[validCandles.length - 1];
+          values.push(sanitizeNumericValue(lastCandle.close));
+        }
+      }
+    }
+    
+    // Calculate Bollinger Bands if we have exactly 'period' values
+    if (values.length === period) {
+      // Calculate SMA (middle band)
+      const sum = values.reduce((a, b) => a + b, 0);
+      const sma = sum / period;
+      
+      // Calculate standard deviation
+      const variance = values.reduce((sum, val) => sum + Math.pow(val - sma, 2), 0) / period;
+      const stdDev = Math.sqrt(variance);
+      
+      // Calculate bands
+      const upper = sma + (standardDeviations * stdDev);
+      const lower = sma - (standardDeviations * stdDev);
+      
+      result.upper.push(upper);
+      result.middle.push(sma);
+      result.lower.push(lower);
+    } else {
+      result.upper.push(null);
+      result.middle.push(null);
+      result.lower.push(null);
+    }
+  });
+  
+  return result;
+}
+
+// Calculate Monthly Bollinger Bands for each day
+function calculateMonthlyBollingerBandsDaily(candles, period = 20, standardDeviations = 2) {
+  const result = {
+    upper: [],
+    middle: [],
+    lower: []
+  };
+  
+  // Helper to get first day of month
+  function getFirstDayOfMonth(d) {
+    const date = new Date(d);
+    return new Date(date.getFullYear(), date.getMonth(), 1);
+  }
+  
+  // Group candles by month
+  const monthlyData = new Map();
+  
+  candles.forEach((candle, idx) => {
+    const date = new Date(Number(candle.date));
+    const firstDay = getFirstDayOfMonth(date);
+    const monthKey = firstDay.toISOString().split('T')[0];
+    
+    if (!monthlyData.has(monthKey)) {
+      monthlyData.set(monthKey, []);
+    }
+    monthlyData.get(monthKey).push({ ...candle, index: idx });
+  });
+  
+  // For each day, calculate the monthly Bollinger Bands
+  candles.forEach((candle, index) => {
+    const targetDate = new Date(Number(candle.date));
+    const targetFirstDay = getFirstDayOfMonth(targetDate);
+    const targetMonthKey = targetFirstDay.toISOString().split('T')[0];
+    
+    // Sort months in descending order (most recent first)
+    const sortedMonths = Array.from(monthlyData.keys()).sort().reverse();
+    const targetMonthIndex = sortedMonths.indexOf(targetMonthKey);
+    
+    // Check if we have enough data
+    if (targetMonthIndex === -1 || sortedMonths.length - targetMonthIndex < period) {
+      result.upper.push(null);
+      result.middle.push(null);
+      result.lower.push(null);
+      return;
+    }
+    
+    // Collect values: current day + last trading day of previous months
+    const values = [];
+    
+    // Current day's close
+    values.push(sanitizeNumericValue(candle.close));
+    
+    // Previous months (going back in time)
+    for (let i = 1; i < period && targetMonthIndex + i < sortedMonths.length; i++) {
+      const monthKey = sortedMonths[targetMonthIndex + i];
+      const monthCandles = monthlyData.get(monthKey);
+      
+      if (monthCandles && monthCandles.length > 0) {
+        // Get last trading day of the month (but only if it's before our target date)
+        const validCandles = monthCandles.filter(c => c.index < index);
+        if (validCandles.length > 0) {
+          const lastCandle = validCandles[validCandles.length - 1];
+          values.push(sanitizeNumericValue(lastCandle.close));
+        }
+      }
+    }
+    
+    // Calculate Bollinger Bands if we have exactly 'period' values
+    if (values.length === period) {
+      // Calculate SMA (middle band)
+      const sum = values.reduce((a, b) => a + b, 0);
+      const sma = sum / period;
+      
+      // Calculate standard deviation
+      const variance = values.reduce((sum, val) => sum + Math.pow(val - sma, 2), 0) / period;
+      const stdDev = Math.sqrt(variance);
+      
+      // Calculate bands
+      const upper = sma + (standardDeviations * stdDev);
+      const lower = sma - (standardDeviations * stdDev);
+      
+      result.upper.push(upper);
+      result.middle.push(sma);
+      result.lower.push(lower);
+    } else {
+      result.upper.push(null);
+      result.middle.push(null);
+      result.lower.push(null);
+    }
+  });
+  
+  return result;
+}
+
 module.exports = {
   calculateWeeklySMADaily,
   calculateWeeklyEMADaily,
   calculateWeeklyRSIDaily,
   calculateWeeklyIndicatorsDaily,
   calculateMonthlySMADaily,
-  calculateMonthlyEMADaily
+  calculateMonthlyEMADaily,
+  calculateWeeklyBollingerBandsDaily,
+  calculateMonthlyBollingerBandsDaily
 };

@@ -38,9 +38,11 @@ interface Condition {
   indicatorType?: 'simple' | 'parameterized';
   indicatorName?: string;
   indicatorParams?: string[];
+  indicatorComponent?: string; // For multi-component indicators like BB (upper/middle/lower)
   valueIndicatorType?: 'simple' | 'parameterized';
   valueIndicatorName?: string;
   valueIndicatorParams?: string[];
+  valueIndicatorComponent?: string; // For multi-component indicators in value field
 }
 
 interface ComplexExpression {
@@ -55,6 +57,7 @@ interface ExpressionTerm {
   indicatorType?: 'simple' | 'parameterized';
   indicatorName?: string;
   indicatorParams?: string[];
+  indicatorComponent?: string; // For multi-component indicators
   customDaysAgo?: number;
   customWeeksAgo?: number;
   customMonthsAgo?: number;
@@ -130,6 +133,16 @@ export class App implements OnInit {
     'cci', 'mfi', 'roc', 'atr', 'keltner', 'adx', 'psar', 'ichimoku'
   ];
   
+  // Multi-component indicators - indicators that have multiple output values
+  multiComponentIndicators: { [key: string]: string[] } = {
+    'bb': ['upper', 'middle', 'lower'],
+    'bollinger': ['upper', 'middle', 'lower'],
+    'macd': ['macd', 'signal', 'histogram'],
+    'stochastic': ['k', 'd'],
+    'keltner': ['upper', 'middle', 'lower'],
+    'ichimoku': ['tenkan', 'kijun', 'senkou_a', 'senkou_b', 'chikou']
+  };
+
   // Default parameters for indicators
   indicatorDefaults: { [key: string]: string[] } = {
     'rsi': ['14'],
@@ -218,6 +231,14 @@ export class App implements OnInit {
   groupedResults: Map<string, any[]> = new Map();
   error: string | null = null;
   
+  // Paste query functionality
+  pasteQueryText = '';
+  pasteQueryStatus = '';
+  pasteQuerySuccess = false;
+  
+  // UI State for popup selectors
+  activePopup: { type: string; conditionId: number; field?: string } | null = null;
+  
   // Progress tracking
   showProgress = false;
   progressPhase = 'initializing';
@@ -239,6 +260,8 @@ export class App implements OnInit {
         this.onValueFieldChange(condition);
       }
     });
+    // Generate initial query
+    this.generateQuery();
   }
 
   // Helper method to get timeframe from time period
@@ -248,18 +271,32 @@ export class App implements OnInit {
     return 'daily';
   }
 
-  // Generate dynamic indicator key based on timeframe and parameters
-  generateIndicatorKey(field: string, timePeriod: string, params?: string[]): string {
+  // Generate dynamic indicator key based on timeframe, parameters, and component
+  generateIndicatorKey(field: string, timePeriod: string, params?: string[], component?: string): string {
     const timeframe = this.getTimeframe(timePeriod);
     const isIndicator = this.parameterizedIndicators.includes(field);
     
     if (isIndicator && params && params.length > 0) {
       // For indicators with parameters: timeframe_indicator_param1_param2
-      return `${timeframe}_${field}_${params.join('_')}`;
+      let baseKey = `${timeframe}_${field}_${params.join('_')}`;
+      
+      // Add component if it's a multi-component indicator
+      if (component && this.multiComponentIndicators[field]) {
+        baseKey = `${timeframe}_${field}_${component}_${params.join('_')}`;
+      }
+      
+      return baseKey;
     } else if (isIndicator) {
       // For indicators without specified params, use defaults
       const defaultParams = this.indicatorDefaults[field] || [];
-      return `${timeframe}_${field}_${defaultParams.join('_')}`;
+      let baseKey = `${timeframe}_${field}_${defaultParams.join('_')}`;
+      
+      // Add component if it's a multi-component indicator
+      if (component && this.multiComponentIndicators[field]) {
+        baseKey = `${timeframe}_${field}_${component}_${defaultParams.join('_')}`;
+      }
+      
+      return baseKey;
     } else {
       // For basic fields: timeframe_field
       return `${timeframe}_${field}`;
@@ -326,7 +363,7 @@ export class App implements OnInit {
         }
       } else {
         // Build simple field with dynamic key
-        const leftKey = this.generateIndicatorKey(condition.field, condition.timePeriod, condition.indicatorParams);
+        const leftKey = this.generateIndicatorKey(condition.field, condition.timePeriod, condition.indicatorParams, condition.indicatorComponent);
         field = this.buildFieldStringWithKey(leftKey, condition.field, condition.indicatorType, condition.indicatorName, condition.indicatorParams);
         
         // Handle time period for left side
@@ -339,7 +376,7 @@ export class App implements OnInit {
       // Build right side
       let value = condition.value;
       if (condition.valueType === 'field' && condition.valueField) {
-        const rightKey = this.generateIndicatorKey(condition.valueField, condition.valueTimePeriod || 'daily', condition.valueIndicatorParams);
+        const rightKey = this.generateIndicatorKey(condition.valueField, condition.valueTimePeriod || 'daily', condition.valueIndicatorParams, condition.valueIndicatorComponent);
         value = this.buildFieldStringWithKey(rightKey, condition.valueField, condition.valueIndicatorType, condition.valueIndicatorName, condition.valueIndicatorParams);
         
         const valueTimeOffset = this.getTimeOffset(condition.valueTimePeriod || 'daily', condition.valueCustomDaysAgo, condition.valueCustomWeeksAgo, condition.valueCustomMonthsAgo);
@@ -465,8 +502,8 @@ export class App implements OnInit {
   }
 
   runScan() {
-    if (this.conditions.length === 0 || !this.conditions.every(c => c.value)) {
-      this.error = 'Please fill all condition values';
+    if (this.conditions.length === 0 || !this.validateConditions()) {
+      this.error = 'Please complete all condition configurations';
       return;
     }
 
@@ -517,8 +554,8 @@ export class App implements OnInit {
   }
 
   runBacktest() {
-    if (this.conditions.length === 0 || !this.conditions.every(c => c.value)) {
-      this.error = 'Please fill all condition values';
+    if (this.conditions.length === 0 || !this.validateConditions()) {
+      this.error = 'Please complete all condition configurations';
       return;
     }
 
@@ -799,10 +836,18 @@ export class App implements OnInit {
       condition.indicatorType = 'parameterized';
       condition.indicatorName = condition.field;
       condition.indicatorParams = [...(this.indicatorDefaults[condition.field] || ['14'])];
+      
+      // Set default component for multi-component indicators
+      if (this.multiComponentIndicators[condition.field]) {
+        condition.indicatorComponent = this.multiComponentIndicators[condition.field][0]; // Default to first component
+      } else {
+        condition.indicatorComponent = undefined;
+      }
     } else {
       condition.indicatorType = 'simple';
       condition.indicatorName = undefined;
       condition.indicatorParams = undefined;
+      condition.indicatorComponent = undefined;
     }
   }
   
@@ -812,10 +857,18 @@ export class App implements OnInit {
       condition.valueIndicatorType = 'parameterized';
       condition.valueIndicatorName = condition.valueField;
       condition.valueIndicatorParams = [...(this.indicatorDefaults[condition.valueField] || ['14'])];
+      
+      // Set default component for multi-component indicators
+      if (this.multiComponentIndicators[condition.valueField]) {
+        condition.valueIndicatorComponent = this.multiComponentIndicators[condition.valueField][0]; // Default to first component
+      } else {
+        condition.valueIndicatorComponent = undefined;
+      }
     } else {
       condition.valueIndicatorType = 'simple';
       condition.valueIndicatorName = undefined;
       condition.valueIndicatorParams = undefined;
+      condition.valueIndicatorComponent = undefined;
     }
   }
   
@@ -1022,10 +1075,18 @@ export class App implements OnInit {
       term.indicatorType = 'parameterized';
       term.indicatorName = term.field;
       term.indicatorParams = [...(this.indicatorDefaults[term.field] || ['14'])];
+      
+      // Set default component for multi-component indicators
+      if (this.multiComponentIndicators[term.field]) {
+        term.indicatorComponent = this.multiComponentIndicators[term.field][0]; // Default to first component
+      } else {
+        term.indicatorComponent = undefined;
+      }
     } else {
       term.indicatorType = 'simple';
       term.indicatorName = undefined;
       term.indicatorParams = undefined;
+      term.indicatorComponent = undefined;
     }
   }
   
@@ -1034,13 +1095,13 @@ export class App implements OnInit {
     
     if (expr.type === 'avg') {
       const termStrings = expr.terms.map(term => {
-        const key = this.generateIndicatorKey(term.field, term.timePeriod, term.indicatorParams);
+        const key = this.generateIndicatorKey(term.field, term.timePeriod, term.indicatorParams, term.indicatorComponent);
         return key;
       });
       return `avg(${termStrings.join(', ')})`;
     } else if (expr.type === 'arithmetic' && expr.operator) {
       const termStrings = expr.terms.map(term => {
-        const key = this.generateIndicatorKey(term.field, term.timePeriod, term.indicatorParams);
+        const key = this.generateIndicatorKey(term.field, term.timePeriod, term.indicatorParams, term.indicatorComponent);
         return key;
       });
       // Add parentheses for complex expressions
@@ -1048,5 +1109,447 @@ export class App implements OnInit {
     }
     
     return '';
+  }
+
+  // Paste query functionality methods
+  async pasteFromClipboard() {
+    try {
+      const text = await navigator.clipboard.readText();
+      this.pasteQueryText = text;
+      this.pasteQueryStatus = 'Query pasted from clipboard';
+      this.pasteQuerySuccess = true;
+      
+      // Auto-clear status after 3 seconds
+      setTimeout(() => {
+        this.pasteQueryStatus = '';
+      }, 3000);
+    } catch (error) {
+      this.pasteQueryStatus = 'Failed to access clipboard. Please paste manually.';
+      this.pasteQuerySuccess = false;
+      
+      setTimeout(() => {
+        this.pasteQueryStatus = '';
+      }, 3000);
+    }
+  }
+
+  parseAndPopulateQuery() {
+    if (!this.pasteQueryText.trim()) {
+      this.pasteQueryStatus = 'Please enter a query to parse';
+      this.pasteQuerySuccess = false;
+      return;
+    }
+
+    try {
+      const parsedConditions = this.parseQueryText(this.pasteQueryText);
+      
+      if (parsedConditions.length === 0) {
+        this.pasteQueryStatus = 'No valid conditions found in query';
+        this.pasteQuerySuccess = false;
+        return;
+      }
+
+      // Replace current conditions with parsed ones
+      this.conditions = parsedConditions;
+      this.nextId = Math.max(...parsedConditions.map(c => c.id)) + 1;
+      
+      // Generate the query string
+      this.generateQuery();
+      
+      this.pasteQueryStatus = `Successfully parsed ${parsedConditions.length} condition(s)`;
+      this.pasteQuerySuccess = true;
+      
+      // Auto-clear the paste text and status after success
+      setTimeout(() => {
+        this.pasteQueryText = '';
+        this.pasteQueryStatus = '';
+      }, 3000);
+      
+    } catch (error) {
+      console.error('Error parsing query:', error);
+      this.pasteQueryStatus = 'Failed to parse query. Please check the format.';
+      this.pasteQuerySuccess = false;
+      
+      setTimeout(() => {
+        this.pasteQueryStatus = '';
+      }, 5000);
+    }
+  }
+
+  private parseQueryText(queryText: string): Condition[] {
+    const conditions: Condition[] = [];
+    let conditionId = 1;
+    
+    // Clean and normalize the query text
+    const cleanQuery = queryText.trim().toLowerCase();
+    
+    // Split by 'and' and 'or' to get individual conditions
+    const parts = cleanQuery.split(/\s+(and|or)\s+/);
+    
+    // Process each condition part
+    for (let i = 0; i < parts.length; i += 2) {
+      const conditionText = parts[i].trim();
+      const logicalOperator = (i + 1 < parts.length) ? (parts[i + 1] as 'and' | 'or') : 'and';
+      
+      const condition = this.parseConditionText(conditionText, conditionId++, logicalOperator);
+      if (condition) {
+        conditions.push(condition);
+      }
+    }
+    
+    return conditions;
+  }
+
+  private parseConditionText(conditionText: string, id: number, logicalOperator: 'and' | 'or'): Condition | null {
+    // Parse operators in order of precedence
+    const operators = ['crosses_above', 'crosses_below', '>=', '<=', '!=', '>', '<', '='];
+    
+    for (const operator of operators) {
+      const opPattern = operator.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(`(.+?)\\s+${opPattern}\\s+(.+)`);
+      const match = conditionText.match(regex);
+      
+      if (match) {
+        const leftSide = match[1].trim();
+        const rightSide = match[2].trim();
+        
+        const parsedCondition = this.buildConditionFromParts(leftSide, operator, rightSide, id, logicalOperator);
+        if (parsedCondition) {
+          return parsedCondition;
+        }
+      }
+    }
+    
+    return null;
+  }
+
+  private buildConditionFromParts(leftSide: string, operator: string, rightSide: string, id: number, logicalOperator: 'and' | 'or'): Condition | null {
+    // Parse the left side to extract field information
+    const leftFieldInfo = this.parseFieldExpression(leftSide);
+    if (!leftFieldInfo) return null;
+    
+    // Create base condition
+    const condition: Condition = {
+      id: id,
+      field: leftFieldInfo.field,
+      operator: operator,
+      value: rightSide,
+      logicalOperator: logicalOperator,
+      leftExpressionType: 'simple',
+      timePeriod: leftFieldInfo.timePeriod,
+      valueType: 'number',
+      indicatorType: leftFieldInfo.indicatorType,
+      indicatorName: leftFieldInfo.indicatorName,
+      indicatorParams: leftFieldInfo.indicatorParams,
+      indicatorComponent: leftFieldInfo.indicatorComponent
+    };
+    
+    // Parse the right side to determine if it's a field or number
+    const rightFieldInfo = this.parseFieldExpression(rightSide);
+    if (rightFieldInfo) {
+      // Right side is a field
+      condition.valueType = 'field';
+      condition.valueField = rightFieldInfo.field;
+      condition.valueTimePeriod = rightFieldInfo.timePeriod;
+      condition.valueIndicatorType = rightFieldInfo.indicatorType;
+      condition.valueIndicatorName = rightFieldInfo.indicatorName;
+      condition.valueIndicatorParams = rightFieldInfo.indicatorParams;
+      condition.valueIndicatorComponent = rightFieldInfo.indicatorComponent;
+      condition.value = ''; // Clear value since we're using a field
+    } else {
+      // Right side is a number
+      condition.valueType = 'number';
+      condition.value = rightSide;
+    }
+    
+    return condition;
+  }
+
+  private parseFieldExpression(expression: string): any {
+    // Remove time prefixes like "1 day ago", "2 weeks ago", etc.
+    const timePattern = /^(\d+\s+(day|week|month)s?\s+ago\s+)/;
+    const timeMatch = expression.match(timePattern);
+    let timePeriod = 'daily';
+    let cleanExpression = expression;
+    
+    if (timeMatch) {
+      const timePhrase = timeMatch[1].trim();
+      cleanExpression = expression.replace(timePattern, '').trim();
+      timePeriod = this.parseTimePeriod(timePhrase);
+    }
+    
+    // Parse component-based field format: timeframe_indicator_component_params
+    const componentPattern = /^(daily|weekly|monthly)_([a-z]+)_(upper|lower|middle|macd|signal|histogram|k|d)_(.+)$/;
+    const componentMatch = cleanExpression.match(componentPattern);
+    
+    if (componentMatch) {
+      const [, timeframe, indicator, component, paramsStr] = componentMatch;
+      const params = paramsStr.split('_');
+      
+      return {
+        field: indicator,
+        timePeriod: timeframe,
+        indicatorType: 'parameterized',
+        indicatorName: indicator,
+        indicatorParams: params,
+        indicatorComponent: component
+      };
+    }
+    
+    // Parse standard field format: timeframe_indicator_params
+    const standardPattern = /^(daily|weekly|monthly)_([a-z]+)_(.+)$/;
+    const standardMatch = cleanExpression.match(standardPattern);
+    
+    if (standardMatch) {
+      const [, timeframe, indicator, paramsStr] = standardMatch;
+      const params = paramsStr.split('_');
+      
+      return {
+        field: indicator,
+        timePeriod: timeframe,
+        indicatorType: 'parameterized',
+        indicatorName: indicator,
+        indicatorParams: params
+      };
+    }
+    
+    // Check for basic fields (open, high, low, close, volume)
+    const basicFields = ['open', 'high', 'low', 'close', 'volume'];
+    if (basicFields.includes(cleanExpression)) {
+      return {
+        field: cleanExpression,
+        timePeriod: timePeriod,
+        indicatorType: 'simple'
+      };
+    }
+    
+    // Check for parameterized indicators without timeframe prefix
+    if (this.parameterizedIndicators.includes(cleanExpression)) {
+      return {
+        field: cleanExpression,
+        timePeriod: timePeriod,
+        indicatorType: 'parameterized',
+        indicatorName: cleanExpression,
+        indicatorParams: this.indicatorDefaults[cleanExpression] || ['14']
+      };
+    }
+    
+    return null;
+  }
+
+  private parseTimePeriod(timePhrase: string): string {
+    const match = timePhrase.match(/(\d+)\s+(day|week|month)s?\s+ago/);
+    if (match) {
+      const number = parseInt(match[1]);
+      const unit = match[2];
+      
+      if (unit === 'day') {
+        if (number <= 5) {
+          return `${number}-day${number > 1 ? 's' : ''}`;
+        } else {
+          return 'n-days';
+        }
+      } else if (unit === 'week') {
+        if (number <= 3) {
+          return `${number}-week${number > 1 ? 's' : ''}`;
+        } else {
+          return 'n-weeks';
+        }
+      } else if (unit === 'month') {
+        if (number <= 3) {
+          return `${number}-month${number > 1 ? 's' : ''}`;
+        } else {
+          return 'n-months';
+        }
+      }
+    }
+    
+    return 'daily';
+  }
+
+  // Validation method for conditions
+  validateConditions(): boolean {
+    return this.conditions.every(condition => {
+      // Check if the condition has a valid operator and field
+      if (!condition.field || !condition.operator) {
+        return false;
+      }
+      
+      // For number value type, check if value is provided
+      if (condition.valueType === 'number') {
+        return condition.value && condition.value.trim() !== '';
+      }
+      
+      // For field value type, check if valueField is provided
+      if (condition.valueType === 'field') {
+        return condition.valueField && condition.valueField.trim() !== '';
+      }
+      
+      return true;
+    });
+  }
+
+  // Popup management methods
+  openPopup(type: string, conditionId: number, field?: string) {
+    this.activePopup = { type, conditionId, field };
+  }
+
+  closePopup() {
+    this.activePopup = null;
+  }
+
+  selectPopupValue(value: any, updateField?: string) {
+    if (!this.activePopup) return;
+    
+    const condition = this.conditions.find(c => c.id === this.activePopup!.conditionId);
+    if (!condition) return;
+
+    // Update the condition based on the popup type
+    switch (this.activePopup.type) {
+      case 'timePeriod':
+        condition.timePeriod = value;
+        break;
+      case 'field':
+        condition.field = value;
+        this.onFieldChange(condition);
+        break;
+      case 'operator':
+        condition.operator = value;
+        break;
+      case 'valueType':
+        condition.valueType = value;
+        break;
+      case 'valueField':
+        condition.valueField = value;
+        this.onValueFieldChange(condition);
+        break;
+      case 'valueTimePeriod':
+        condition.valueTimePeriod = value;
+        break;
+      case 'logicalOperator':
+        condition.logicalOperator = value;
+        break;
+      case 'indicatorComponent':
+        condition.indicatorComponent = value;
+        break;
+      case 'valueIndicatorComponent':
+        condition.valueIndicatorComponent = value;
+        break;
+      case 'arithmeticOperator':
+        condition.arithmeticOperator = value;
+        break;
+      case 'indicatorParam':
+        // Handle parameter changes
+        if (this.activePopup.field && condition.indicatorParams) {
+          const paramIndex = parseInt(this.activePopup.field);
+          condition.indicatorParams[paramIndex] = value.toString();
+        }
+        break;
+      case 'valueIndicatorParam':
+        // Handle value parameter changes
+        if (this.activePopup.field && condition.valueIndicatorParams) {
+          const paramIndex = parseInt(this.activePopup.field);
+          condition.valueIndicatorParams[paramIndex] = value.toString();
+        }
+        break;
+    }
+    
+    // Regenerate query after update
+    this.generateQuery();
+    this.closePopup();
+  }
+
+  // Helper methods for display text
+  getDisplayText(value: any, type: string): string {
+    switch (type) {
+      case 'timePeriod':
+        const period = this.timePeriodOptions.find(p => p.value === value);
+        return period ? period.label : value;
+      case 'field':
+        const field = this.fields.find(f => f.value === value);
+        return field ? field.label : value;
+      case 'operator':
+        const operator = this.operators.find(o => o.value === value);
+        return operator ? operator.label : value;
+      case 'valueType':
+        return value === 'number' ? 'Number' : 'Field';
+      case 'logicalOperator':
+        return value === 'and' ? 'AND' : 'OR';
+      case 'arithmeticOperator':
+        return value || 'None';
+      default:
+        return value || '';
+    }
+  }
+
+  // Helper to get options for popup
+  getPopupOptions(type: string): any[] {
+    switch (type) {
+      case 'timePeriod':
+      case 'valueTimePeriod':
+        return this.timePeriodOptions;
+      case 'field':
+      case 'valueField':
+        return this.fields;
+      case 'operator':
+        return this.operators;
+      case 'valueType':
+        return [
+          { value: 'number', label: 'Number' },
+          { value: 'field', label: 'Field' }
+        ];
+      case 'logicalOperator':
+        return [
+          { value: 'and', label: 'AND' },
+          { value: 'or', label: 'OR' }
+        ];
+      case 'arithmeticOperator':
+        return [
+          { value: '', label: 'None' },
+          { value: '+', label: '+' },
+          { value: '-', label: '-' },
+          { value: '*', label: '×' },
+          { value: '/', label: '÷' }
+        ];
+      case 'indicatorParam':
+      case 'valueIndicatorParam':
+        // Generate common parameter values
+        const commonValues = [5, 10, 14, 20, 21, 26, 50, 100, 200];
+        const options = commonValues.map(val => ({ 
+          value: val.toString(), 
+          label: val.toString() 
+        }));
+        // Add range 1-30 for other common values
+        for (let i = 1; i <= 30; i++) {
+          if (!commonValues.includes(i)) {
+            options.push({ value: i.toString(), label: i.toString() });
+          }
+        }
+        return options.sort((a, b) => parseInt(a.value) - parseInt(b.value));
+      default:
+        return [];
+    }
+  }
+
+  // Method to open parameter popup
+  openParameterPopup(type: 'indicatorParam' | 'valueIndicatorParam', conditionId: number, paramIndex: number) {
+    this.activePopup = { 
+      type: type, 
+      conditionId: conditionId, 
+      field: paramIndex.toString() 
+    };
+  }
+
+  // Helper to get component options for multi-component indicators
+  getComponentOptions(popup: any): string[] {
+    if (!popup) return [];
+    
+    const condition = this.conditions.find(c => c.id === popup.conditionId);
+    if (!condition) return [];
+    
+    const field = popup.type === 'valueIndicatorComponent' ? condition.valueField : condition.field;
+    if (!field || !this.multiComponentIndicators[field]) return [];
+    
+    return this.multiComponentIndicators[field];
   }
 }

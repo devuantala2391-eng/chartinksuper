@@ -1,6 +1,15 @@
 // services/timeframeAggregator.js
 
 const { sanitizeNumericValue } = require('./dataUtils');
+const { 
+  calculateWeeklySMADaily, 
+  calculateWeeklyEMADaily, 
+  calculateWeeklyRSIDaily,
+  calculateMonthlySMADaily,
+  calculateMonthlyEMADaily,
+  calculateWeeklyBollingerBandsDaily,
+  calculateMonthlyBollingerBandsDaily
+} = require('./weeklyIndicatorCalculator');
 
 /**
  * Aggregates daily candles into weekly candles
@@ -132,7 +141,6 @@ function getISOWeek(date) {
  */
 function mapAggregatedIndicators(dailyCandles, weeklyCandles, monthlyCandles, indicators) {
   const { calculateAllIndicators } = require('./indicatorCalculator');
-  const { calculateWeeklySMADaily, calculateWeeklyEMADaily, calculateWeeklyRSIDaily, calculateMonthlySMADaily, calculateMonthlyEMADaily } = require('./weeklyIndicatorCalculator');
   
   // Create maps for quick lookup
   const weeklyMap = new Map();
@@ -164,6 +172,13 @@ function mapAggregatedIndicators(dailyCandles, weeklyCandles, monthlyCandles, in
       case 'rsi':
         weeklyIndicatorValues[`weekly_rsi_${period}`] = calculateWeeklyRSIDaily(dailyCandles, period || 14);
         break;
+      case 'bb':
+      case 'bollinger':
+        const weeklyBB = calculateWeeklyBollingerBandsDaily(dailyCandles, period || 20, params?.stdDev || 2);
+        weeklyIndicatorValues[`weekly_bb_upper_${period || 20}_${params?.stdDev || 2}`] = weeklyBB.upper;
+        weeklyIndicatorValues[`weekly_bb_middle_${period || 20}_${params?.stdDev || 2}`] = weeklyBB.middle;
+        weeklyIndicatorValues[`weekly_bb_lower_${period || 20}_${params?.stdDev || 2}`] = weeklyBB.lower;
+        break;
     }
   });
   
@@ -179,6 +194,13 @@ function mapAggregatedIndicators(dailyCandles, weeklyCandles, monthlyCandles, in
         break;
       case 'ema':
         monthlyIndicatorValues[`monthly_ema_${period}`] = calculateMonthlyEMADaily(dailyCandles, period);
+        break;
+      case 'bb':
+      case 'bollinger':
+        const monthlyBB = calculateMonthlyBollingerBandsDaily(dailyCandles, period || 20, params?.stdDev || 2);
+        monthlyIndicatorValues[`monthly_bb_upper_${period || 20}_${params?.stdDev || 2}`] = monthlyBB.upper;
+        monthlyIndicatorValues[`monthly_bb_middle_${period || 20}_${params?.stdDev || 2}`] = monthlyBB.middle;
+        monthlyIndicatorValues[`monthly_bb_lower_${period || 20}_${params?.stdDev || 2}`] = monthlyBB.lower;
         break;
     }
   });
