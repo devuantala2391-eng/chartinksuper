@@ -1,8 +1,9 @@
 import { Component, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { HttpClient, HttpClientModule } from '@angular/common/http';
+import { HttpClient, HttpClientModule, HttpErrorResponse } from '@angular/common/http';
 import { ProgressBarComponent } from './progress-bar.component';
+import { Observable, retry, timer, catchError, throwError } from 'rxjs';
 
 interface Condition {
   id: number;
@@ -524,33 +525,34 @@ export class App implements OnInit {
     // Start polling for progress updates
     this.startProgressPolling();
 
-    // Send query to latest day endpoint
-    this.http.post<QueryResult>(`${this.apiUrl}/query/latest`, { query })
-      .subscribe({
-        next: (response) => {
-          this.loading = false;
-          this.results = response;
-          this.groupByDate(response.matches);
-          
-          // Show completion in progress bar
-          this.progressPhase = 'completed';
-          this.progressMessage = `Found ${response.totalMatches} matches for latest day!`;
-          this.progressProcessed = this.progressTotal;
-          
-          // Hide progress after delay
-          setTimeout(() => {
-            this.showProgress = false;
-            this.stopProgressPolling();
-          }, 2000);
-        },
-        error: (error) => {
-          this.loading = false;
+    // Send query to latest day endpoint with timeout and retry logic
+    this.makeHttpRequestWithRetry(() => 
+      this.http.post<QueryResult>(`${this.apiUrl}/query/latest`, { query })
+    ).subscribe({
+      next: (response) => {
+        this.loading = false;
+        this.results = response;
+        this.groupByDate(response.matches);
+        
+        // Show completion in progress bar
+        this.progressPhase = 'completed';
+        this.progressMessage = `Found ${response.totalMatches} matches for latest day!`;
+        this.progressProcessed = this.progressTotal;
+        
+        // Hide progress after delay
+        setTimeout(() => {
           this.showProgress = false;
-          this.error = error.error?.error || 'An error occurred while fetching results';
-          console.error('Error:', error);
           this.stopProgressPolling();
-        }
-      });
+        }, 2000);
+      },
+      error: (error) => {
+        this.loading = false;
+        this.showProgress = false;
+        this.error = this.getErrorMessage(error);
+        console.error('Error:', error);
+        this.stopProgressPolling();
+      }
+    });
   }
 
   runBacktest() {
@@ -576,33 +578,34 @@ export class App implements OnInit {
     // Start polling for progress updates
     this.startProgressPolling();
 
-    // Send query to original endpoint for full backtest
-    this.http.post<QueryResult>(`${this.apiUrl}/query`, { query })
-      .subscribe({
-        next: (response) => {
-          this.loading = false;
-          this.results = response;
-          this.groupByDate(response.matches);
-          
-          // Show completion in progress bar
-          this.progressPhase = 'completed';
-          this.progressMessage = `Backtest completed! Found ${response.totalMatches} matches!`;
-          this.progressProcessed = this.progressTotal;
-          
-          // Hide progress after delay
-          setTimeout(() => {
-            this.showProgress = false;
-            this.stopProgressPolling();
-          }, 2000);
-        },
-        error: (error) => {
-          this.loading = false;
+    // Send query to original endpoint for full backtest with retry logic
+    this.makeHttpRequestWithRetry(() => 
+      this.http.post<QueryResult>(`${this.apiUrl}/query`, { query })
+    ).subscribe({
+      next: (response) => {
+        this.loading = false;
+        this.results = response;
+        this.groupByDate(response.matches);
+        
+        // Show completion in progress bar
+        this.progressPhase = 'completed';
+        this.progressMessage = `Backtest completed! Found ${response.totalMatches} matches!`;
+        this.progressProcessed = this.progressTotal;
+        
+        // Hide progress after delay
+        setTimeout(() => {
           this.showProgress = false;
-          this.error = error.error?.error || 'An error occurred while fetching results';
-          console.error('Error:', error);
           this.stopProgressPolling();
-        }
-      });
+        }, 2000);
+      },
+      error: (error) => {
+        this.loading = false;
+        this.showProgress = false;
+        this.error = this.getErrorMessage(error);
+        console.error('Error:', error);
+        this.stopProgressPolling();
+      }
+    });
   }
   
   runSpecialQuery() {
@@ -626,33 +629,34 @@ export class App implements OnInit {
     // Start polling for progress updates
     this.startProgressPolling();
     
-    // Send query to full backtest endpoint
-    this.http.post<QueryResult>(`${this.apiUrl}/query`, { query: specialQuery })
-      .subscribe({
-        next: (response) => {
-          this.loading = false;
-          this.results = response;
-          this.groupByDate(response.matches);
-          
-          // Show completion in progress bar
-          this.progressPhase = 'completed';
-          this.progressMessage = `Found ${response.totalMatches} matches for special query!`;
-          this.progressProcessed = this.progressTotal;
-          
-          // Hide progress after delay
-          setTimeout(() => {
-            this.showProgress = false;
-            this.stopProgressPolling();
-          }, 2000);
-        },
-        error: (error) => {
-          this.loading = false;
+    // Send query to full backtest endpoint with retry logic
+    this.makeHttpRequestWithRetry(() => 
+      this.http.post<QueryResult>(`${this.apiUrl}/query`, { query: specialQuery })
+    ).subscribe({
+      next: (response) => {
+        this.loading = false;
+        this.results = response;
+        this.groupByDate(response.matches);
+        
+        // Show completion in progress bar
+        this.progressPhase = 'completed';
+        this.progressMessage = `Found ${response.totalMatches} matches for special query!`;
+        this.progressProcessed = this.progressTotal;
+        
+        // Hide progress after delay
+        setTimeout(() => {
           this.showProgress = false;
-          this.error = error.error?.error || 'An error occurred while running special query';
-          console.error('Error:', error);
           this.stopProgressPolling();
-        }
-      });
+        }, 2000);
+      },
+      error: (error) => {
+        this.loading = false;
+        this.showProgress = false;
+        this.error = this.getErrorMessage(error);
+        console.error('Error:', error);
+        this.stopProgressPolling();
+      }
+    });
   }
   
   private startProgressPolling() {
@@ -1551,5 +1555,64 @@ export class App implements OnInit {
     if (!field || !this.multiComponentIndicators[field]) return [];
     
     return this.multiComponentIndicators[field];
+  }
+
+  // HTTP request retry logic with exponential backoff
+  private makeHttpRequestWithRetry<T>(requestFn: () => Observable<T>, maxRetries: number = 3): Observable<T> {
+    return requestFn().pipe(
+      retry({
+        count: maxRetries,
+        delay: (error, retryCount) => {
+          // Only retry on network errors and server errors
+          if (this.isRetryableError(error)) {
+            const delay = Math.min(1000 * Math.pow(2, retryCount - 1), 10000);
+            console.log(`Retrying request (${retryCount}/${maxRetries}) after ${delay}ms for error:`, error.message);
+            return timer(delay);
+          }
+          return throwError(() => error);
+        }
+      }),
+      catchError((error) => {
+        console.error('Request failed after all retries:', error);
+        return throwError(() => error);
+      })
+    );
+  }
+
+  // Check if error is retryable
+  private isRetryableError(error: any): boolean {
+    if (error instanceof HttpErrorResponse) {
+      // Retry on network errors and 5xx server errors
+      return error.status === 0 || error.status >= 500;
+    }
+    // Retry on connection errors
+    return error.code === 'ECONNRESET' || 
+           error.code === 'ETIMEDOUT' || 
+           error.code === 'ECONNABORTED' ||
+           error.message?.includes('timeout') ||
+           error.message?.includes('connection');
+  }
+
+  // Get user-friendly error message
+  private getErrorMessage(error: any): string {
+    if (error instanceof HttpErrorResponse) {
+      if (error.status === 0) {
+        return 'Connection failed. Please check your internet connection and try again.';
+      }
+      if (error.status >= 500) {
+        return 'Server error occurred. The request will be retried automatically.';
+      }
+      return error.error?.error || error.message || 'An unexpected error occurred';
+    }
+    
+    if (error.code === 'ECONNRESET' || error.message?.includes('ECONNRESET')) {
+      return 'Connection was reset. Retrying automatically...';
+    }
+    
+    if (error.code === 'ETIMEDOUT' || error.message?.includes('timeout')) {
+      return 'Request timed out. Retrying with longer timeout...';
+    }
+    
+    return error.error?.error || error.message || 'An unexpected error occurred';
   }
 }

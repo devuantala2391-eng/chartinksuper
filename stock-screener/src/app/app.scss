@@ -21,9 +21,9 @@
   box-shadow: 0 2px 4px rgba(0,0,0,0.04);
 
   .header-content {
-    max-width: 1400px;
-    margin: 0 auto;
-    padding: 0 16px;
+    max-width: 100%;
+    margin: 0;
+    padding: 0 24px;
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -31,6 +31,7 @@
     @media (max-width: 768px) {
       flex-direction: column;
       gap: 8px;
+      padding: 0 16px;
     }
   }
 
@@ -64,15 +65,15 @@
 
 // Main Content
 .screener-content {
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 20px 16px;
-  display: grid;
-  grid-template-columns: 1fr;
+  max-width: 100%;
+  margin: 0;
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
   gap: 24px;
 
-  @media (min-width: 1200px) {
-    grid-template-columns: 1fr 400px;
+  @media (max-width: 768px) {
+    padding: 12px 16px;
   }
 }
 
@@ -81,12 +82,21 @@
   border-radius: 8px;
   padding: 24px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  width: 100%;
+  max-width: none;
 
   @media (max-width: 768px) {
     padding: 16px;
-    margin: 0 -8px;
-    border-radius: 0;
+    margin: 0;
+    border-radius: 8px;
   }
+}
+
+// Center-aligned sections with limited width
+.center-content {
+  max-width: 800px;
+  margin: 0 auto;
+  width: 100%;
 }
 
 .section-title {
@@ -155,16 +165,18 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 12px;
+  gap: 10px;
+  padding: 16px;
   background: #f8f9fa;
   border-radius: 6px;
   border: 1px solid #e9ecef;
   position: relative;
+  min-height: 50px;
 
   @media (max-width: 768px) {
-    padding: 8px;
-    gap: 6px;
+    padding: 12px;
+    gap: 8px;
+    min-height: 40px;
   }
 }
 
@@ -301,11 +313,12 @@
 
 // Query Display
 .query-display {
-  margin: 24px 0;
+  margin: 24px auto;
   background: #f8f9fa;
   border: 1px solid #dee2e6;
   border-radius: 6px;
   overflow: hidden;
+  max-width: 800px;
 
   .query-header {
     display: flex;
@@ -358,11 +371,12 @@
 
 // Paste Query Section (Compact)
 .paste-query-section-compact {
-  margin: 16px 0;
+  margin: 16px auto;
   background: #f8f9fa;
   border: 1px solid #dee2e6;
   border-radius: 6px;
   padding: 16px;
+  max-width: 800px;
 
   .paste-query-header-compact {
     display: flex;
@@ -446,20 +460,22 @@
 // Action Buttons
 .action-buttons-compact {
   display: flex;
-  gap: 12px;
-  margin-top: 24px;
+  gap: 16px;
+  margin: 32px auto 0;
   flex-wrap: wrap;
+  justify-content: center;
+  max-width: 600px;
 
   .btn {
-    padding: 12px 20px;
+    padding: 12px 24px;
     border: none;
     border-radius: 6px;
     font-size: 14px;
     font-weight: 500;
     cursor: pointer;
     transition: all 0.2s;
-    flex: 1;
-    min-width: 100px;
+    min-width: 120px;
+    white-space: nowrap;
 
     &:disabled {
       opacity: 0.6;
@@ -467,9 +483,10 @@
     }
 
     @media (max-width: 768px) {
-      padding: 10px 16px;
+      padding: 10px 20px;
       font-size: 13px;
-      min-width: 80px;
+      min-width: 100px;
+      flex: 1 1 calc(50% - 8px);
     }
   }
 
@@ -567,10 +584,13 @@
   border-radius: 8px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.08);
   overflow: hidden;
+  width: 100%;
+  max-width: none;
+  margin-top: 24px;
 
   @media (max-width: 768px) {
-    margin: 0 -8px;
-    border-radius: 0;
+    margin: 24px 0 0 0;
+    border-radius: 8px;
   }
 }
 
@@ -688,10 +708,6 @@
 
 // Responsive Utilities
 @media (max-width: 768px) {
-  .screener-content {
-    padding: 12px 8px;
-  }
-  
   .condition-row-compact {
     justify-content: flex-start;
   }

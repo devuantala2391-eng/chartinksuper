@@ -4,6 +4,55 @@ const fs = require('fs');
 const path = require('path');
 const cors = require('cors');
 const qs = require('qs');
+
+// Configure axios defaults for better connection handling
+axios.defaults.timeout = 45000; // 45 seconds default timeout
+axios.defaults.httpsAgent = new (require('https').Agent)({
+  keepAlive: true,
+  keepAliveMsecs: 1000,
+  maxSockets: 50,
+  maxFreeSockets: 10,
+  timeout: 60000, // active socket keepalive for 60 seconds
+  freeSocketTimeout: 30000, // free socket keepalive for 30 seconds
+});
+
+// Axios retry interceptor for handling connection resets
+axios.interceptors.response.use(
+  response => response,
+  async error => {
+    const config = error.config;
+    
+    // Check if this is a retryable error
+    const isRetryableError = 
+      error.code === 'ECONNRESET' ||
+      error.code === 'ETIMEDOUT' ||
+      error.code === 'ECONNABORTED' ||
+      error.code === 'ENOTFOUND' ||
+      error.code === 'EAI_AGAIN' ||
+      (error.response && error.response.status >= 500);
+    
+    // Set default retry count
+    config.__retryCount = config.__retryCount || 0;
+    const maxRetries = config.maxRetries || 3;
+    
+    if (isRetryableError && config.__retryCount < maxRetries) {
+      config.__retryCount++;
+      
+      // Calculate exponential backoff delay
+      const delay = Math.min(1000 * Math.pow(2, config.__retryCount - 1), 10000);
+      
+      console.log(`Retrying request (${config.__retryCount}/${maxRetries}) after ${delay}ms for error: ${error.code || error.message}`);
+      
+      // Wait for the delay
+      await new Promise(resolve => setTimeout(resolve, delay));
+      
+      // Retry the request
+      return axios(config);
+    }
+    
+    return Promise.reject(error);
+  }
+);
 const { parseQuery, findMatchingCandles, getQueryExamples, extractIndicatorsFromQuery, processStocksWithIndicators } = require('./services/queryService');
 const { STOCK_SYMBOLS, TOTAL_SYMBOLS } = require('./stockSymbols.constants');
 const { clearCache } = require('./services/indicatorCache');
@@ -107,7 +156,9 @@ app.post('/chartink-api', async (req, res) => {
             'sec-fetch-site': 'same-origin',
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
             'x-xsrf-token': 'eyJpdiI6IjVrL2dLek8rSVE4aGFTWWllazd6cHc9PSIsInZhbHVlIjoiQmVUcmlLb0Z2dk9uYVlPeUpJL3d1OTQ0MTdvcUpWZGt6V2tEaHpEeUJidGJVOENDeFpYbnJiaVgxV3NielhMbjBGUzlTVmNuektCaHhTb0V3MFVnS1VUbWZRVCtEYXFxYlhrYzZ4eWpnY2RuZjltSlJJd1NaUkE4dlFTbVA5aDkiLCJtYWMiOiJkYzM1YzY2YTIwOTM5NTQzODNjMzNkMDZiNWMwY2NkNzc5MDQ5OTFmOGJlMTgwMzJmYjM1NDdmNTFjNzAyOGY2IiwidGFnIjoiIn0=',
-          }
+          },
+          timeout: 45000, // 45 second timeout
+          maxRetries: 3, // Enable retries for this request
         });
         // Map the data as in the original logic, but with the required structure
         const groupData = response?.data?.groupData?.[0]?.results;
@@ -1159,121 +1210,159 @@ async function processSimpleRefreshInBackground(totalResults) {
   try {
     const dbPath = path.join(__dirname, 'db');
     
-    // Process in batches
-    const batchSize = 10;
-    const batches = [];
+    console.log(`🚀 Starting BULK processing for ${STOCK_SYMBOLS.length} symbols...`);
     
-    for (let i = 0; i < STOCK_SYMBOLS.length; i += batchSize) {
-      batches.push(STOCK_SYMBOLS.slice(i, i + batchSize));
-    }
-    
-    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-      // Check for cancellation
-      if (cancelToken.cancel) {
-        console.log('Refresh cancelled by user');
-        progress.status = 'cancelled';
-        progress.message = 'Refresh cancelled by user';
-        globalRefreshState.isRunning = false;
-        return;
-      }
-      
-      const batch = batches[batchIndex];
-      const batchPromises = batch.map(async (symbol) => {
-        try {
-          const queryString = "select high, low, open, close, volume";
-          const data = qs.stringify({
-            query: queryString,
-            use_live: 1,
-            limit: 1,
-            size: totalResults,
-            widget_id: -1,
-            end_time: -1,
-            timeframe: "Daily",
-            symbol: symbol,
-            scan_link: "scanlink:b6b0c6620714e44ab63d271d0ddbd498"
+    // Create a function to process a single symbol
+    const processSymbol = async (symbol) => {
+      try {
+        const queryString = "select high, low, open, close, volume";
+        const data = qs.stringify({
+          query: queryString,
+          use_live: 1,
+          limit: 1,
+          size: totalResults,
+          widget_id: -1,
+          end_time: -1,
+          timeframe: "Daily",
+          symbol: symbol,
+          scan_link: "scanlink:b6b0c6620714e44ab63d271d0ddbd498"
+        });
+        
+        const response = await axios.post('https://chartink.com/oapi', data, {
+          headers: {
+            'accept': 'application/json, text/plain, */*',
+            'accept-language': 'en-GB,en-US;q=0.9,en;q=0.8,la;q=0.7',
+            'content-type': 'application/x-www-form-urlencoded',
+            'cookie': '_ga=GA1.2.827081830.1738516382; _gid=GA1.2.158232909.1738612317; XSRF-TOKEN=eyJpdiI6IjVrL2dLek8rSVE4aGFTWWllazd6cHc9PSIsInZhbHVlIjoiQmVUcmlLb0Z2dk9uYVlPeUpJL3d1OTQ0MTdvcUpWZGt6V2tEaHpEeUJidGJVOENDeFpYbnJiaVgxV3NielhMbjBGUzlTVmNuektCaHhTb0V3MFVnS1VUbWZRVCtEYXFxYlhrYzZ4eWpnY2RuZjltSlJJd1NaUkE4dlFTbVA5aDkiLCJtYWMiOiJkYzM1YzY2YTIwOTM5NTQzODNjMzNkMDZiNWMwY2NkNzc5MDQ5OTFmOGJlMTgwMzJmYjM1NDdmNTFjNzAyOGY2IiwidGFnIjoiIn0%3D; ci_session=eyJpdiI6InVrKzF5dXE4b2lzazMxU2lQWkJMN0E9PSIsInZhbHVlIjoiTzdMOHNsZDFJZ1dYd0JxT2EyQ0NVZGIvNUZUdmJsOHFtSXZuc002bnBrck5RSmVpS1NIRTZUUTZjWU9NVTNOcmM0SmtOSnF5UVI0cGVlU2VrNGJCM3Y2NkhKdTBvdWJlVEZzS3k2VDdtNGRDbzJqemo5M3gzbVFWaXEzQWFkbjAiLCJtYWMiOiI2YjYzMzI5N2UwOTZmYTM3OTNlNWMwNzk1NmFjY2E4MTdlMzQxNGVjYzIxMDUxOWE1ODkyYTg1MTM1NTU2NjJjIiwidGFnIjoiIn0%3D',
+            'dnt': '1',
+            'origin': 'https://chartink.com',
+            'priority': 'u=1, i',
+            'referer': 'https://chartink.com/screener/copy-double-volume-563',
+            'sec-ch-ua': '"Not A(Brand";v="8", "Chromium";v="132", "Google Chrome";v="132"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'sec-fetch-dest': 'empty',
+            'sec-fetch-mode': 'cors',
+            'sec-fetch-site': 'same-origin',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
+            'x-xsrf-token': 'eyJpdiI6IjVrL2dLek8rSVE4aGFTWWllazd6cHc9PSIsInZhbHVlIjoiQmVUcmlLb0Z2dk9uYVlPeUpJL3d1OTQ0MTdvcUpWZGt6V2tEaHpEeUJidGJVOENDeFpYbnJiaVgxV3NielhMbjBGUzlTVmNuektCaHhTb0V3MFVnS1VUbWZRVCtEYXFxYlhrYzZ4eWpnY2RuZjltSlJJd1NaUkE4dlFTbVA5aDkiLCJtYWMiOiJkYzM1YzY2YTIwOTM5NTQzODNjMzNkMDZiNWMwY2NkNzc5MDQ5OTFmOGJlMTgwMzJmYjM1NDdmNTFjNzAyOGY2IiwidGFnIjoiIn0=',
+          },
+          timeout: 45000, // Increased timeout
+          maxRetries: 3 // Enable retries
+        });
+        
+        // Map the data
+        const groupData = response?.data?.groupData?.[0]?.results;
+        const metaData = response?.data?.metaData?.[0]?.tradeTimes;
+        let mappedData = [];
+        
+        if (groupData && metaData) {
+          const highs = groupData[0]?.high || [];
+          const lows = groupData[1]?.low || [];
+          const opens = groupData[2]?.open || [];
+          const closes = groupData[3]?.close || [];
+          const volumes = groupData[4]?.volume || [];
+          
+          highs.forEach((element, idx) => {
+            if(idx < metaData.length){
+              mappedData.push({
+                open: opens[idx] !== undefined && opens[idx] !== null ? String(opens[idx]) : '',
+                low: lows[idx] !== undefined && lows[idx] !== null ? String(lows[idx]) : '',
+                high: highs[idx] !== undefined && highs[idx] !== null ? String(highs[idx]) : '',
+                close: closes[idx] !== undefined && closes[idx] !== null ? String(closes[idx]) : '',
+                volume: volumes[idx] !== undefined && volumes[idx] !== null ? String(volumes[idx]) : null,
+                date: metaData[idx] !== undefined && metaData[idx] !== null ? String(getNextDayTimestamp(metaData[idx])) : '',
+                day: metaData[idx] !== undefined && metaData[idx] !== null ? getDayOfWeekName(getNextDayTimestamp(metaData[idx])) : '',
+              });
+            }
           });
-          
-          const response = await axios.post('https://chartink.com/oapi', data, {
-            headers: {
-              'accept': 'application/json, text/plain, */*',
-              'accept-language': 'en-GB,en-US;q=0.9,en;q=0.8,la;q=0.7',
-              'content-type': 'application/x-www-form-urlencoded',
-              'cookie': '_ga=GA1.2.827081830.1738516382; _gid=GA1.2.158232909.1738612317; XSRF-TOKEN=eyJpdiI6IjVrL2dLek8rSVE4aGFTWWllazd6cHc9PSIsInZhbHVlIjoiQmVUcmlLb0Z2dk9uYVlPeUpJL3d1OTQ0MTdvcUpWZGt6V2tEaHpEeUJidGJVOENDeFpYbnJiaVgxV3NielhMbjBGUzlTVmNuektCaHhTb0V3MFVnS1VUbWZRVCtEYXFxYlhrYzZ4eWpnY2RuZjltSlJJd1NaUkE4dlFTbVA5aDkiLCJtYWMiOiJkYzM1YzY2YTIwOTM5NTQzODNjMzNkMDZiNWMwY2NkNzc5MDQ5OTFmOGJlMTgwMzJmYjM1NDdmNTFjNzAyOGY2IiwidGFnIjoiIn0%3D; ci_session=eyJpdiI6InVrKzF5dXE4b2lzazMxU2lQWkJMN0E9PSIsInZhbHVlIjoiTzdMOHNsZDFJZ1dYd0JxT2EyQ0NVZGIvNUZUdmJsOHFtSXZuc002bnBrck5RSmVpS1NIRTZUUTZjWU9NVTNOcmM0SmtOSnF5UVI0cGVlU2VrNGJCM3Y2NkhKdTBvdWJlVEZzS3k2VDdtNGRDbzJqemo5M3gzbVFWaXEzQWFkbjAiLCJtYWMiOiI2YjYzMzI5N2UwOTZmYTM3OTNlNWMwNzk1NmFjY2E4MTdlMzQxNGVjYzIxMDUxOWE1ODkyYTg1MTM1NTU2NjJjIiwidGFnIjoiIn0%3D',
-              'dnt': '1',
-              'origin': 'https://chartink.com',
-              'priority': 'u=1, i',
-              'referer': 'https://chartink.com/screener/copy-double-volume-563',
-              'sec-ch-ua': '"Not A(Brand";v="8", "Chromium";v="132", "Google Chrome";v="132"',
-              'sec-ch-ua-mobile': '?0',
-              'sec-ch-ua-platform': '"Windows"',
-              'sec-fetch-dest': 'empty',
-              'sec-fetch-mode': 'cors',
-              'sec-fetch-site': 'same-origin',
-              'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
-              'x-xsrf-token': 'eyJpdiI6IjVrL2dLek8rSVE4aGFTWWllazd6cHc9PSIsInZhbHVlIjoiQmVUcmlLb0Z2dk9uYVlPeUpJL3d1OTQ0MTdvcUpWZGt6V2tEaHpEeUJidGJVOENDeFpYbnJiaVgxV3NielhMbjBGUzlTVmNuektCaHhTb0V3MFVnS1VUbWZRVCtEYXFxYlhrYzZ4eWpnY2RuZjltSlJJd1NaUkE4dlFTbVA5aDkiLCJtYWMiOiJkYzM1YzY2YTIwOTM5NTQzODNjMzNkMDZiNWMwY2NkNzc5MDQ5OTFmOGJlMTgwMzJmYjM1NDdmNTFjNzAyOGY2IiwidGFnIjoiIn0=',
-            },
-            timeout: 30000
-          });
-          
-          // Map the data
-          const groupData = response?.data?.groupData?.[0]?.results;
-          const metaData = response?.data?.metaData?.[0]?.tradeTimes;
-          let mappedData = [];
-          
-          if (groupData && metaData) {
-            const highs = groupData[0]?.high || [];
-            const lows = groupData[1]?.low || [];
-            const opens = groupData[2]?.open || [];
-            const closes = groupData[3]?.close || [];
-            const volumes = groupData[4]?.volume || [];
-            
-            highs.forEach((element, idx) => {
-              if(idx < metaData.length){
-                mappedData.push({
-                  open: opens[idx] !== undefined && opens[idx] !== null ? String(opens[idx]) : '',
-                  low: lows[idx] !== undefined && lows[idx] !== null ? String(lows[idx]) : '',
-                  high: highs[idx] !== undefined && highs[idx] !== null ? String(highs[idx]) : '',
-                  close: closes[idx] !== undefined && closes[idx] !== null ? String(closes[idx]) : '',
-                  volume: volumes[idx] !== undefined && volumes[idx] !== null ? String(volumes[idx]) : null,
-                  date: metaData[idx] !== undefined && metaData[idx] !== null ? String(getNextDayTimestamp(metaData[idx])) : '',
-                  day: metaData[idx] !== undefined && metaData[idx] !== null ? getDayOfWeekName(getNextDayTimestamp(metaData[idx])) : '',
-                });
-              }
-            });
-          }
-          
-          // Save to file
-          const fileName = `${symbol}.json`;
-          const filePath = path.join(dbPath, fileName);
-          fs.writeFileSync(filePath, JSON.stringify({ data: mappedData }, null, 2), 'utf8');
-          
-          progress.successful++;
-          console.log(`✓ ${symbol} - ${mappedData.length} records saved`);
-          
-        } catch (error) {
-          progress.failed++;
-          progress.errors.push({ symbol, error: error.message });
-          console.error(`✗ ${symbol} - Error: ${error.message}`);
         }
         
-        progress.processed++;
-        progress.percentage = Math.round((progress.processed / progress.total) * 100);
-        progress.currentSymbol = symbol;
-      });
-      
-      // Wait for batch to complete
-      await Promise.all(batchPromises);
-      
-      // Add delay between batches
-      if (batchIndex < batches.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        // Save to file
+        const fileName = `${symbol}.json`;
+        const filePath = path.join(dbPath, fileName);
+        fs.writeFileSync(filePath, JSON.stringify({ data: mappedData }, null, 2), 'utf8');
+        
+        return { symbol, success: true, records: mappedData.length };
+        
+      } catch (error) {
+        return { symbol, success: false, error: error.message };
       }
+    };
+
+    // SUPER FAST BULK PROCESSING with controlled concurrency
+    const CONCURRENT_LIMIT = process.env.CONCURRENT_LIMIT || 100; // Default 100 concurrent requests
+    console.log(`📡 Sending requests with ${CONCURRENT_LIMIT} concurrent limit for ${STOCK_SYMBOLS.length} symbols...`);
+    
+    // Function to process symbols with concurrency control
+    const processConcurrently = async (symbols, limit) => {
+      const results = [];
+      
+      for (let i = 0; i < symbols.length; i += limit) {
+        // Check for cancellation
+        if (cancelToken.cancel) {
+          throw new Error('Cancelled');
+        }
+        
+        const batch = symbols.slice(i, i + limit);
+        console.log(`🔄 Processing batch ${Math.floor(i/limit) + 1}/${Math.ceil(symbols.length/limit)} (${batch.length} symbols)`);
+        
+        const batchPromises = batch.map(async (symbol) => {
+          const result = await processSymbol(symbol);
+          
+          // Update progress atomically
+          if (result.success) {
+            progress.successful++;
+            console.log(`✓ ${result.symbol} - ${result.records} records saved`);
+          } else {
+            progress.failed++;
+            progress.errors.push({ symbol: result.symbol, error: result.error });
+            console.error(`✗ ${result.symbol} - Error: ${result.error}`);
+          }
+          
+          progress.processed++;
+          progress.percentage = Math.round((progress.processed / progress.total) * 100);
+          progress.currentSymbol = result.symbol;
+          
+          return result;
+        });
+        
+        const batchResults = await Promise.allSettled(batchPromises);
+        results.push(...batchResults);
+        
+        // Small delay between batches to prevent overwhelming the API
+        if (i + limit < symbols.length) {
+          await new Promise(resolve => setTimeout(resolve, 100)); // 100ms delay
+        }
+      }
+      
+      return results;
+    };
+    
+    // Process with controlled concurrency
+    console.log(`⏳ Processing all ${STOCK_SYMBOLS.length} requests with ${CONCURRENT_LIMIT} concurrent limit...`);
+    const results = await processConcurrently(STOCK_SYMBOLS, CONCURRENT_LIMIT);
+    
+    // Check for cancellation
+    if (cancelToken.cancel) {
+      console.log('Refresh cancelled by user');
+      progress.status = 'cancelled';
+      progress.message = 'Refresh cancelled by user';
+      globalRefreshState.isRunning = false;
+      return;
     }
     
+    // Calculate final stats
+    const fulfilled = results.filter(r => r.status === 'fulfilled').length;
+    const rejected = results.filter(r => r.status === 'rejected').length;
+    
     progress.status = 'completed';
-    progress.message = `Database refresh completed. ${progress.successful} symbols updated successfully.`;
+    progress.message = `🎉 BULK refresh completed! ${progress.successful} symbols updated successfully in record time!`;
     globalRefreshState.isRunning = false;
-    console.log(`Database refresh completed! Processed: ${progress.processed}, Successful: ${progress.successful}, Failed: ${progress.failed}`);
+    
+    console.log(`🎯 BULK Database refresh completed!`);
+    console.log(`📊 Stats: Processed: ${progress.processed}, Successful: ${progress.successful}, Failed: ${progress.failed}`);
+    console.log(`⚡ Performance: ${fulfilled} fulfilled, ${rejected} rejected promises`);
     
   } catch (error) {
     progress.status = 'error';
