@@ -2449,7 +2449,7 @@
 // ];
 
 const STOCK_SYMBOLS = [
-  "AAATECH"
+  "RELIANCE"
 ];
 
 const TOTAL_SYMBOLS = STOCK_SYMBOLS.length;

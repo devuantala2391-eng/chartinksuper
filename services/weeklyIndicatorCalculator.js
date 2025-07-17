@@ -344,9 +344,166 @@ function calculateWeeklyIndicatorsDaily(candles, indicators) {
   return result;
 }
 
+// Calculate Monthly SMA for each day
+function calculateMonthlySMADaily(candles, period) {
+  const result = [];
+  
+  // Helper to get first day of month
+  function getFirstDayOfMonth(d) {
+    const date = new Date(d);
+    return new Date(date.getFullYear(), date.getMonth(), 1);
+  }
+  
+  // Group candles by month
+  const monthlyData = new Map();
+  
+  candles.forEach((candle, idx) => {
+    const date = new Date(Number(candle.date));
+    const firstDay = getFirstDayOfMonth(date);
+    const monthKey = firstDay.toISOString().split('T')[0];
+    
+    if (!monthlyData.has(monthKey)) {
+      monthlyData.set(monthKey, []);
+    }
+    monthlyData.get(monthKey).push({ ...candle, index: idx });
+  });
+  
+  // For each day, calculate the monthly SMA
+  candles.forEach((candle, index) => {
+    const targetDate = new Date(Number(candle.date));
+    const targetFirstDay = getFirstDayOfMonth(targetDate);
+    const targetMonthKey = targetFirstDay.toISOString().split('T')[0];
+    
+    // Sort months in descending order (most recent first)
+    const sortedMonths = Array.from(monthlyData.keys()).sort().reverse();
+    const targetMonthIndex = sortedMonths.indexOf(targetMonthKey);
+    
+    // Check if we have enough data
+    if (targetMonthIndex === -1 || sortedMonths.length - targetMonthIndex < period) {
+      result.push(null);
+      return;
+    }
+    
+    // Collect values: current day + last trading day of previous months
+    const values = [];
+    
+    // Current day's close
+    values.push(sanitizeNumericValue(candle.close));
+    
+    // Previous months (going back in time)
+    for (let i = 1; i < period && targetMonthIndex + i < sortedMonths.length; i++) {
+      const monthKey = sortedMonths[targetMonthIndex + i];
+      const monthCandles = monthlyData.get(monthKey);
+      
+      if (monthCandles && monthCandles.length > 0) {
+        // Get last trading day of the month (but only if it's before our target date)
+        const validCandles = monthCandles.filter(c => c.index < index);
+        if (validCandles.length > 0) {
+          const lastCandle = validCandles[validCandles.length - 1];
+          values.push(sanitizeNumericValue(lastCandle.close));
+        }
+      }
+    }
+    
+    // Calculate SMA if we have exactly 'period' values
+    if (values.length === period) {
+      const sum = values.reduce((a, b) => a + b, 0);
+      result.push(sum / period);
+    } else {
+      result.push(null);
+    }
+  });
+  
+  return result;
+}
+
+// Calculate Monthly EMA for each day
+function calculateMonthlyEMADaily(candles, period) {
+  const result = [];
+  const multiplier = 2 / (period + 1);
+  
+  // Helper to get first day of month
+  function getFirstDayOfMonth(d) {
+    const date = new Date(d);
+    return new Date(date.getFullYear(), date.getMonth(), 1);
+  }
+  
+  // Group candles by month
+  const monthlyData = new Map();
+  
+  candles.forEach((candle, idx) => {
+    const date = new Date(Number(candle.date));
+    const firstDay = getFirstDayOfMonth(date);
+    const monthKey = firstDay.toISOString().split('T')[0];
+    
+    if (!monthlyData.has(monthKey)) {
+      monthlyData.set(monthKey, []);
+    }
+    monthlyData.get(monthKey).push({ ...candle, index: idx });
+  });
+  
+  // Sort months chronologically
+  const sortedMonths = Array.from(monthlyData.keys()).sort();
+  
+  // Calculate EMA month by month first (using last trading day's close)
+  const monthlyEMA = new Map();
+  let lastEMA = null;
+  
+  sortedMonths.forEach(monthKey => {
+    const monthCandles = monthlyData.get(monthKey);
+    if (monthCandles && monthCandles.length > 0) {
+      const lastCandle = monthCandles[monthCandles.length - 1];
+      const monthClose = sanitizeNumericValue(lastCandle.close);
+      
+      if (monthClose !== null) {
+        if (lastEMA === null) {
+          lastEMA = monthClose;
+        } else {
+          lastEMA = (monthClose - lastEMA) * multiplier + lastEMA;
+        }
+        monthlyEMA.set(monthKey, lastEMA);
+      }
+    }
+  });
+  
+  // Now for each day, calculate the EMA including current day
+  candles.forEach((candle, index) => {
+    const currentDate = new Date(Number(candle.date));
+    const currentFirstDay = getFirstDayOfMonth(currentDate);
+    const currentMonthKey = currentFirstDay.toISOString().split('T')[0];
+    const currentClose = sanitizeNumericValue(candle.close);
+    
+    // Find the index of current month
+    const monthIndex = sortedMonths.indexOf(currentMonthKey);
+    
+    if (monthIndex > 0 && currentClose !== null) {
+      // Get EMA from the previous month
+      const prevMonthKey = sortedMonths[monthIndex - 1];
+      const prevMonthEMA = monthlyEMA.get(prevMonthKey);
+      
+      if (prevMonthEMA !== null) {
+        // Calculate EMA using current day's close and previous month's EMA
+        const currentEMA = (currentClose - prevMonthEMA) * multiplier + prevMonthEMA;
+        result.push(currentEMA);
+      } else {
+        result.push(null);
+      }
+    } else if (monthIndex === 0 && currentClose !== null) {
+      // First month - use the close price as initial EMA
+      result.push(currentClose);
+    } else {
+      result.push(null);
+    }
+  });
+  
+  return result;
+}
+
 module.exports = {
   calculateWeeklySMADaily,
   calculateWeeklyEMADaily,
   calculateWeeklyRSIDaily,
-  calculateWeeklyIndicatorsDaily
+  calculateWeeklyIndicatorsDaily,
+  calculateMonthlySMADaily,
+  calculateMonthlyEMADaily
 };

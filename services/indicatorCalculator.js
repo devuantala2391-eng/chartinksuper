@@ -501,6 +501,17 @@ function calculateAllIndicatorsWithTimeframes(candles, indicators, timeframes = 
     result = mapAggregatedIndicators(result, [], monthlyWithIndicators, indicators);
   }
   
+  // Add human-readable date field in dd/mm/yy format
+  result.forEach(candle => {
+    if (candle.date) {
+      const date = new Date(parseInt(candle.date));
+      const day = date.getDate().toString().padStart(2, '0');
+      const month = (date.getMonth() + 1).toString().padStart(2, '0');
+      const year = date.getFullYear().toString().slice(-2);
+      candle.formatted_date = `${day}/${month}/${year}`;
+    }
+  });
+  
   return result;
 }
 

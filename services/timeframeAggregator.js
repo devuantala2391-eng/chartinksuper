@@ -132,7 +132,7 @@ function getISOWeek(date) {
  */
 function mapAggregatedIndicators(dailyCandles, weeklyCandles, monthlyCandles, indicators) {
   const { calculateAllIndicators } = require('./indicatorCalculator');
-  const { calculateWeeklySMADaily, calculateWeeklyEMADaily, calculateWeeklyRSIDaily } = require('./weeklyIndicatorCalculator');
+  const { calculateWeeklySMADaily, calculateWeeklyEMADaily, calculateWeeklyRSIDaily, calculateMonthlySMADaily, calculateMonthlyEMADaily } = require('./weeklyIndicatorCalculator');
   
   // Create maps for quick lookup
   const weeklyMap = new Map();
@@ -163,6 +163,22 @@ function mapAggregatedIndicators(dailyCandles, weeklyCandles, monthlyCandles, in
         break;
       case 'rsi':
         weeklyIndicatorValues[`weekly_rsi_${period}`] = calculateWeeklyRSIDaily(dailyCandles, period || 14);
+        break;
+    }
+  });
+  
+  // Calculate monthly indicators using the new daily-based calculation
+  const monthlyIndicatorValues = {};
+  
+  indicators.forEach(indicator => {
+    const { name, period, params } = indicator;
+    
+    switch (name.toLowerCase()) {
+      case 'sma':
+        monthlyIndicatorValues[`monthly_sma_${period}`] = calculateMonthlySMADaily(dailyCandles, period);
+        break;
+      case 'ema':
+        monthlyIndicatorValues[`monthly_ema_${period}`] = calculateMonthlyEMADaily(dailyCandles, period);
         break;
     }
   });
@@ -202,9 +218,41 @@ function mapAggregatedIndicators(dailyCandles, weeklyCandles, monthlyCandles, in
     // Set the cumulative weekly volume
     dailyCandle['weekly_volume'] = cumulativeWeeklyVolume;
     
+    // Calculate cumulative monthly volume from 1st to current day
+    let cumulativeMonthlyVolume = 0;
+    const currentMonth = date.getUTCMonth();
+    const currentMonthYear = date.getUTCFullYear();
+    
+    // Go backwards from current candle to find all candles in the same month
+    for (let i = index; i >= 0; i--) {
+      const candleDate = new Date(Number(dailyCandles[i].date));
+      const candleMonth = candleDate.getUTCMonth();
+      const candleYear = candleDate.getUTCFullYear();
+      
+      // If we've gone to a different month, stop
+      if (candleYear !== currentMonthYear || candleMonth !== currentMonth) {
+        break;
+      }
+      
+      // Add this candle's volume to cumulative total
+      const volume = sanitizeNumericValue(dailyCandles[i].volume);
+      if (volume !== null) {
+        cumulativeMonthlyVolume += volume;
+      }
+    }
+    
+    // Set the cumulative monthly volume
+    dailyCandle['monthly_volume'] = cumulativeMonthlyVolume;
+    
     // Map the new daily-calculated weekly indicators
     Object.keys(weeklyIndicatorValues).forEach(key => {
       const value = weeklyIndicatorValues[key][index];
+      dailyCandle[key] = value !== null ? value.toString() : null;
+    });
+    
+    // Map the new daily-calculated monthly indicators
+    Object.keys(monthlyIndicatorValues).forEach(key => {
+      const value = monthlyIndicatorValues[key][index];
       dailyCandle[key] = value !== null ? value.toString() : null;
     });
     

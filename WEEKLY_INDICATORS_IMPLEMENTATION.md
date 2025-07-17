@@ -206,15 +206,74 @@ To verify weekly SMA implementation:
 4. **Date Objects**: Always create new Date objects to avoid mutation
 
 ## Completed Indicators
+
+### Weekly Indicators
 - [x] Weekly Volume (cumulative from Monday)
 - [x] Weekly SMA (current day + 19 previous Fridays)
 - [x] Weekly EMA (exponential smoothing with previous week's EMA)
 
+### Monthly Indicators
+- [x] Monthly Volume (cumulative from 1st of month)
+- [x] Monthly SMA (current day + 19 previous month-ends)
+- [x] Monthly EMA (exponential smoothing with previous month's EMA)
+
 ## Future Indicators to Implement
+
+### Weekly Indicators
 - [ ] Weekly RSI
 - [ ] Weekly Bollinger Bands
 - [ ] Weekly MACD
 - [ ] Weekly Stochastic
 - [ ] Weekly SuperTrend
 
-Each should follow the same pattern: current day's data + previous weeks' end-of-week data.
+### Monthly Indicators
+- [ ] Monthly RSI
+- [ ] Monthly Bollinger Bands
+- [ ] Monthly MACD
+- [ ] Monthly Stochastic
+- [ ] Monthly SuperTrend
+
+Each should follow the same pattern: current day's data + previous periods' end-of-period data.
+
+## Monthly Indicators Implementation Details
+
+### Monthly Volume
+**Location**: `services/timeframeAggregator.js` (lines 221-245)
+
+**Logic**:
+- Cumulative volume from 1st of month to current day within the same month
+- Resets every month
+- For each day, sum all volumes from 1st of month up to and including current day
+
+### Monthly SMA
+**Location**: `services/weeklyIndicatorCalculator.js` (lines 347-417)
+
+**Logic**:
+1. Group all candles by calendar month
+2. For each day, collect values using the same pattern as weekly:
+   - Current day's close
+   - Previous months' last trading day closes
+3. Calculate average of these values
+4. Returns null if less than required months of data available
+
+### Monthly EMA
+**Location**: `services/weeklyIndicatorCalculator.js` (lines 420-500)
+
+**Logic**:
+1. Calculate historical monthly EMAs using last trading day of each month
+2. For each day, apply EMA formula using current day's close and previous month's EMA
+3. Formula: EMA = (Current Close - Previous Month EMA) × Multiplier + Previous Month EMA
+4. Multiplier = 2 / (period + 1)
+
+**Usage Examples**:
+```javascript
+// Query examples
+"monthly sma > close"
+"monthly ema(20) < close"
+"monthly volume > 1000000"
+```
+
+**Field Mappings**:
+- `monthly sma` → `sma_monthly`
+- `monthly ema` → `ema_monthly`  
+- `monthly volume` → `monthly_volume`

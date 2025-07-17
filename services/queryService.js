@@ -20,14 +20,17 @@ const INDICATOR_MAPPINGS = {
   // SMA
   'daily sma': 'sma_daily',
   'weekly sma': 'sma_weekly',
+  'monthly sma': 'sma_monthly',
   
   // EMA
   'daily ema': 'ema_daily',
   'weekly ema': 'ema_weekly',
+  'monthly ema': 'ema_monthly',
   
   // RSI
   'daily rsi': 'rsi_daily',
   'weekly rsi': 'rsi_weekly',
+  'monthly rsi': 'rsi_monthly',
   
   // SuperTrend
   'daily supertrend': 'supertrend_daily',
@@ -44,8 +47,16 @@ const INDICATOR_MAPPINGS = {
   'volume': 'volume',
   
   // Volume fields
+  'daily volume': 'volume',
   'weekly volume': 'volume_weekly',
   'week volume': 'volume_weekly',
+  'monthly volume': 'volume_monthly',
+  'month volume': 'volume_monthly',
+  
+  // Volume fields with underscores
+  'daily_volume': 'volume',
+  'weekly_volume': 'weekly_volume',
+  'monthly_volume': 'monthly_volume',
   
   // Percent change
   'daily percent change': 'pctchg_daily',
@@ -66,6 +77,12 @@ const INDICATOR_MAPPINGS = {
   'previous week volume': 'previous_week_volume',
   'last week volume': 'previous_week_volume',
   'weekly volume': 'weekly_volume',
+  
+  // Month volume mappings
+  'current month volume': 'current_month_volume',
+  'previous month volume': 'previous_month_volume',
+  'last month volume': 'previous_month_volume',
+  'monthly volume': 'monthly_volume',
   
   // Weekly price fields
   'weekly open': 'open_weekly',
@@ -497,7 +514,14 @@ function parseField(fieldStr) {
     };
   }
   
-  // Try to find a matching indicator
+  // Try to find a matching indicator - first check exact matches, then partial matches
+  for (const [pattern, key] of Object.entries(INDICATOR_MAPPINGS)) {
+    if (fieldStr === pattern) {
+      return { type: 'field', field: key };
+    }
+  }
+  
+  // Then check partial matches (for patterns like "daily rsi" in "daily rsi(14)")
   for (const [pattern, key] of Object.entries(INDICATOR_MAPPINGS)) {
     if (fieldStr.includes(pattern)) {
       return { type: 'field', field: key };
@@ -616,6 +640,20 @@ function extractIndicatorsFromQuery(parsedQuery) {
           params: { multiplier: 3 }
         }));
         timeframes.add('weekly');
+      } else if (field.field === 'weekly_volume') {
+        indicators.add(JSON.stringify({
+          name: 'volume',
+          period: 1,
+          params: {}
+        }));
+        timeframes.add('weekly');
+      } else if (field.field === 'monthly_volume') {
+        indicators.add(JSON.stringify({
+          name: 'volume',
+          period: 1,
+          params: {}
+        }));
+        timeframes.add('monthly');
       } else {
         // Add basic field as an indicator to ensure it gets processed
         indicators.add(JSON.stringify({
@@ -1024,6 +1062,12 @@ function getFieldValue(candle, prevCandle, field, candles, currentIndex) {
   if (field === 'weekly_volume') {
     // Weekly volume is already calculated in the candle, just return it
     return sanitizeNumericValue(candle.weekly_volume);
+  }
+  
+  // Handle monthly volume
+  if (field === 'monthly_volume') {
+    // Monthly volume is already calculated in the candle, just return it
+    return sanitizeNumericValue(candle.monthly_volume);
   }
   
   const value = candle[field];
