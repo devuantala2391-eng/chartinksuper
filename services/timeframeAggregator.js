@@ -205,6 +205,10 @@ function mapAggregatedIndicators(dailyCandles, weeklyCandles, monthlyCandles, in
     }
   });
   
+  // Check if volume is requested as an indicator
+  const hasWeeklyVolume = indicators.some(ind => ind.name === 'volume' && ind.timeframe === 'weekly');
+  const hasMonthlyVolume = indicators.some(ind => ind.name === 'volume' && ind.timeframe === 'monthly');
+  
   // Map indicators to daily candles
   dailyCandles.forEach((dailyCandle, index) => {
     const date = new Date(Number(dailyCandle.date));
@@ -214,57 +218,63 @@ function mapAggregatedIndicators(dailyCandles, weeklyCandles, monthlyCandles, in
     const weeklyCandle = weeklyMap.get(weekKey);
     const monthlyCandle = monthlyMap.get(monthKey);
     
-    // Calculate cumulative weekly volume from Monday to current day
-    let cumulativeWeeklyVolume = 0;
-    const currentWeekNumber = getISOWeek(date);
-    const currentYear = date.getUTCFullYear();
-    
-    // Go backwards from current candle to find all candles in the same week up to current day
-    for (let i = index; i >= 0; i--) {
-      const candleDate = new Date(Number(dailyCandles[i].date));
-      const candleWeek = getISOWeek(candleDate);
-      const candleYear = candleDate.getUTCFullYear();
+    // Only calculate weekly volume if requested
+    if (hasWeeklyVolume) {
+      // Calculate cumulative weekly volume from Monday to current day
+      let cumulativeWeeklyVolume = 0;
+      const currentWeekNumber = getISOWeek(date);
+      const currentYear = date.getUTCFullYear();
       
-      // If we've gone to a different week, stop
-      if (candleYear !== currentYear || candleWeek !== currentWeekNumber) {
-        break;
+      // Go backwards from current candle to find all candles in the same week up to current day
+      for (let i = index; i >= 0; i--) {
+        const candleDate = new Date(Number(dailyCandles[i].date));
+        const candleWeek = getISOWeek(candleDate);
+        const candleYear = candleDate.getUTCFullYear();
+        
+        // If we've gone to a different week, stop
+        if (candleYear !== currentYear || candleWeek !== currentWeekNumber) {
+          break;
+        }
+        
+        // Add this candle's volume to cumulative total
+        const volume = sanitizeNumericValue(dailyCandles[i].volume);
+        if (volume !== null) {
+          cumulativeWeeklyVolume += volume;
+        }
       }
       
-      // Add this candle's volume to cumulative total
-      const volume = sanitizeNumericValue(dailyCandles[i].volume);
-      if (volume !== null) {
-        cumulativeWeeklyVolume += volume;
-      }
+      // Set the cumulative weekly volume
+      dailyCandle['weekly_volume'] = cumulativeWeeklyVolume;
     }
     
-    // Set the cumulative weekly volume
-    dailyCandle['weekly_volume'] = cumulativeWeeklyVolume;
-    
-    // Calculate cumulative monthly volume from 1st to current day
-    let cumulativeMonthlyVolume = 0;
-    const currentMonth = date.getUTCMonth();
-    const currentMonthYear = date.getUTCFullYear();
-    
-    // Go backwards from current candle to find all candles in the same month
-    for (let i = index; i >= 0; i--) {
-      const candleDate = new Date(Number(dailyCandles[i].date));
-      const candleMonth = candleDate.getUTCMonth();
-      const candleYear = candleDate.getUTCFullYear();
+    // Only calculate monthly volume if requested
+    if (hasMonthlyVolume) {
+      // Calculate cumulative monthly volume from 1st to current day
+      let cumulativeMonthlyVolume = 0;
+      const currentMonth = date.getUTCMonth();
+      const currentMonthYear = date.getUTCFullYear();
       
-      // If we've gone to a different month, stop
-      if (candleYear !== currentMonthYear || candleMonth !== currentMonth) {
-        break;
+      // Go backwards from current candle to find all candles in the same month
+      for (let i = index; i >= 0; i--) {
+        const candleDate = new Date(Number(dailyCandles[i].date));
+        const candleMonth = candleDate.getUTCMonth();
+        const candleYear = candleDate.getUTCFullYear();
+        
+        // If we've gone to a different month, stop
+        if (candleYear !== currentMonthYear || candleMonth !== currentMonth) {
+          break;
+        }
+        
+        // Add this candle's volume to cumulative total
+        const volume = sanitizeNumericValue(dailyCandles[i].volume);
+        if (volume !== null) {
+          cumulativeMonthlyVolume += volume;
+        }
       }
       
-      // Add this candle's volume to cumulative total
-      const volume = sanitizeNumericValue(dailyCandles[i].volume);
-      if (volume !== null) {
-        cumulativeMonthlyVolume += volume;
-      }
+      // Set the cumulative monthly volume
+      dailyCandle['monthly_volume'] = cumulativeMonthlyVolume;
     }
-    
-    // Set the cumulative monthly volume
-    dailyCandle['monthly_volume'] = cumulativeMonthlyVolume;
     
     // Map the new daily-calculated weekly indicators
     Object.keys(weeklyIndicatorValues).forEach(key => {

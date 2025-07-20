@@ -1169,19 +1169,22 @@ async function processPrecalculatedIndicators(indicators) {
           return {
             name: 'sma',
             period: params.period || 20,
-            params: {}
+            params: {},
+            timeframe: indicator.timeframe
           };
         case 'ema':
           return {
             name: 'ema', 
             period: params.period || 20,
-            params: {}
+            params: {},
+            timeframe: indicator.timeframe
           };
         case 'rsi':
           return {
             name: 'rsi',
             period: params.period || 14,
-            params: {}
+            params: {},
+            timeframe: indicator.timeframe
           };
         case 'bollinger':
         case 'bb':
@@ -1190,19 +1193,22 @@ async function processPrecalculatedIndicators(indicators) {
             period: params.period || 20,
             params: {
               stdDev: params.stdDev || 2
-            }
+            },
+            timeframe: indicator.timeframe
           };
         case 'volume':
           return {
             name: 'volume',
             period: 1,
-            params: {}
+            params: {},
+            timeframe: indicator.timeframe
           };
         default:
           return {
             name: indicator.name,
             period: params.period || 14,
-            params: params
+            params: params,
+            timeframe: indicator.timeframe
           };
       }
     });

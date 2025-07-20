@@ -2,12 +2,42 @@
   "indicators": [
     {
       "timeframe": "daily",
-      "name": "rsi",
+      "name": "bb",
       "params": {
-        "period": 14
-      }
+        "period": 20,
+        "stdDev": 2
+      },
+      "id": "1753032153656",
+      "description": "Daily Bollinger Bands 20,2"
+    },
+    {
+      "timeframe": "weekly",
+      "name": "bb",
+      "params": {
+        "period": 20,
+        "stdDev": 2
+      },
+      "id": "1753032160690",
+      "description": "Weekly Bollinger Bands 20,2"
+    },
+    {
+      "timeframe": "monthly",
+      "name": "bb",
+      "params": {
+        "period": 20,
+        "stdDev": 2
+      },
+      "id": "1753032169158",
+      "description": "Monthly Bollinger Bands 20,2"
+    },
+    {
+      "timeframe": "weekly",
+      "name": "volume",
+      "params": {},
+      "id": "1753033827319",
+      "description": "Weekly Volume"
     }
   ],
-  "lastUpdated": "2025-07-20T16:24:22.018Z",
+  "lastUpdated": "2025-07-20T17:52:09.436Z",
   "status": "completed"
 }
