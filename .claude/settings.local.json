@@ -37,7 +37,21 @@
       "Bash(npm run dev:*)",
       "Bash(npm run start:*)",
       "Bash(dir:*)",
-      "Bash(del /Q mapperStorage*.json)"
+      "Bash(del /Q mapperStorage*.json)",
+      "Bash(true)",
+      "Bash(wmic process where:*)",
+      "Bash(tskill:*)",
+      "Bash(cmd //c:*)",
+      "Bash(TASKKILL /F /PID 15660)",
+      "Bash(TASKKILL /F /PID 19160)",
+      "Bash(TASKKILL /F /PID 6140)",
+      "Bash(TASKKILL /F /PID 21544)",
+      "Bash(TASKKILL /F /PID 19832)",
+      "Bash(TASKKILL:*)",
+      "Bash(cmd.exe:*)",
+      "Bash(head:*)",
+      "Bash(npm run lint)",
+      "Bash(npm uninstall:*)"
     ],
     "deny": []
   }

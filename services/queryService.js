@@ -768,7 +768,7 @@ function extractIndicatorsFromQuery(parsedQuery) {
   }
   
   // Always ensure basic calculations are included
-  // This ensures mapperStorage is always generated for any query
+  // This ensures precalculatedStorage is always generated for any query
   if (indicators.size === 0) {
     indicators.add(JSON.stringify({
       name: 'volume',
@@ -889,7 +889,7 @@ async function processStocksWithIndicatorsInMemory(indicatorsData, stockList = n
   console.log(`Using timeframes:`, timeframes);
   
   const processedCount = { success: 0, failed: 0 };
-  const batchSize = 50; // Process 50 stocks at a time
+  const batchSize = 10; // Process 10 stocks at a time for better responsiveness
   
   // Send initial progress
   sendProgressUpdate(0, stockFiles.length, 'Starting indicator processing...');
@@ -944,7 +944,7 @@ async function processStocksWithIndicatorsInMemory(indicatorsData, stockList = n
 }
 
 // COMMENTED OUT - OLD FILE-BASED FUNCTION (kept for potential revert)
-// Process all stocks and generate mapperStorage
+// Process all stocks and generate precalculatedStorage
 async function processStocksWithIndicators(indicatorsData, stockList = null) {
   // Handle both old format (array) and new format (object with indicators and timeframes)
   let indicators, timeframes;
@@ -974,32 +974,32 @@ async function processStocksWithIndicators(indicatorsData, stockList = null) {
   // NOTE: Cache is now cleared for each new query to ensure fresh data
   if (!stockList && isCached(indicators)) {
     console.log('Using cached indicator calculations');
-    const mapperStoragePath = path.join(__dirname, '..', 'mapperStorage');
-    const files = fs.readdirSync(mapperStoragePath).filter(f => f.endsWith('_piped.json'));
+    const precalculatedStoragePath = path.join(__dirname, '..', 'precalculatedStorage');
+    const files = fs.readdirSync(precalculatedStoragePath).filter(f => f.endsWith('_piped.json'));
     return { success: files.length, failed: 0, cached: true };
   }
   
   const dbPath = path.join(__dirname, '..', 'db');
-  const mapperStoragePath = path.join(__dirname, '..', 'mapperStorage');
+  const precalculatedStoragePath = path.join(__dirname, '..', 'precalculatedStorage');
   
-  // Clear existing mapperStorage
+  // Clear existing precalculatedStorage
   if (stockList && stockList.length > 0) {
-    // If processing specific stocks, only delete their mapper files
-    if (!fs.existsSync(mapperStoragePath)) {
-      fs.mkdirSync(mapperStoragePath, { recursive: true });
+    // If processing specific stocks, only delete their precalculated files
+    if (!fs.existsSync(precalculatedStoragePath)) {
+      fs.mkdirSync(precalculatedStoragePath, { recursive: true });
     }
     stockList.forEach(symbol => {
-      const mapperFile = path.join(mapperStoragePath, `${symbol}_piped.json`);
-      if (fs.existsSync(mapperFile)) {
-        fs.unlinkSync(mapperFile);
+      const precalculatedFile = path.join(precalculatedStoragePath, `${symbol}_piped.json`);
+      if (fs.existsSync(precalculatedFile)) {
+        fs.unlinkSync(precalculatedFile);
       }
     });
   } else {
     // Processing all stocks - clear everything
-    if (fs.existsSync(mapperStoragePath)) {
-      fs.rmSync(mapperStoragePath, { recursive: true, force: true });
+    if (fs.existsSync(precalculatedStoragePath)) {
+      fs.rmSync(precalculatedStoragePath, { recursive: true, force: true });
     }
-    fs.mkdirSync(mapperStoragePath, { recursive: true });
+    fs.mkdirSync(precalculatedStoragePath, { recursive: true });
   }
   
   // Get stock files to process
@@ -1019,7 +1019,7 @@ async function processStocksWithIndicators(indicatorsData, stockList = null) {
   console.log(`Using timeframes:`, timeframes);
   
   const processedCount = { success: 0, failed: 0 };
-  const batchSize = 50; // Process 50 stocks at a time
+  const batchSize = 10; // Process 10 stocks at a time for better responsiveness
   
   // Send initial progress
   sendProgressUpdate(0, stockFiles.length, 'Starting indicator processing...');
@@ -1045,8 +1045,8 @@ async function processStocksWithIndicators(indicatorsData, stockList = null) {
         // Calculate indicators with timeframe support
         const processedCandles = calculateAllIndicatorsWithTimeframes(sanitizedCandles, indicators, timeframes);
         
-        // Save to mapperStorage
-        const outputPath = path.join(mapperStoragePath, `${stockSymbol}_piped.json`);
+        // Save to precalculatedStorage
+        const outputPath = path.join(precalculatedStoragePath, `${stockSymbol}_piped.json`);
         fs.writeFileSync(outputPath, JSON.stringify({ data: processedCandles }));
         
         processedCount.success++;
@@ -1057,11 +1057,16 @@ async function processStocksWithIndicators(indicatorsData, stockList = null) {
       }
     }));
     
-    if ((i + batch.length) % 200 === 0 || i + batch.length >= stockFiles.length) {
+    // Send progress update after each batch for real-time updates
+    sendProgressUpdate(i + batch.length, stockFiles.length, 
+      `Processing indicators: ${i + batch.length}/${stockFiles.length} stocks`);
+    
+    if ((i + batch.length) % 100 === 0 || i + batch.length >= stockFiles.length) {
       console.log(`Processed ${i + batch.length}/${stockFiles.length} stocks...`);
-      sendProgressUpdate(i + batch.length, stockFiles.length, 
-        `Processing indicators: ${i + batch.length}/${stockFiles.length} stocks`);
     }
+    
+    // Yield control to event loop to prevent blocking
+    await new Promise(resolve => setImmediate(resolve));
   }
   
   console.log(`Stock processing completed. Success: ${processedCount.success}, Failed: ${processedCount.failed}`);
@@ -1565,13 +1570,67 @@ function findMatchingCandles(candles, parsedQuery, stockSymbol = 'UNKNOWN') {
     
     try {
       if (evaluateAllConditions(parsedQuery, candle, prevCandle, candles, i)) {
+        // Extract all calculated indicator values for tooltip display
+        const indicatorValues = {};
+        
+        // Get all fields used in the query conditions
+        const allFields = new Set();
+        function extractFields(conditions) {
+          if (Array.isArray(conditions)) {
+            conditions.forEach(condition => {
+              // Extract field from left side if it's a field type
+              if (condition.left && condition.left.type === 'field') {
+                allFields.add(condition.left.fieldKey || condition.left.name);
+              } else if (condition.left && condition.left.type === 'dynamic_indicator') {
+                allFields.add(condition.left.fieldKey);
+              }
+              
+              // Extract field from right side if it's a field type
+              if (condition.right && condition.right.type === 'field') {
+                allFields.add(condition.right.fieldKey || condition.right.name);
+              } else if (condition.right && condition.right.type === 'dynamic_indicator') {
+                allFields.add(condition.right.fieldKey);
+              }
+              
+              // Recursively check nested conditions
+              if (condition.conditions) extractFields(condition.conditions);
+            });
+          }
+        }
+        extractFields(parsedQuery.conditions);
+        
+        // Add all indicator values that exist in the candle data
+        for (const field of allFields) {
+          if (candle[field] !== undefined && candle[field] !== null) {
+            indicatorValues[field] = candle[field];
+          }
+        }
+        
+        
+        // Also include common indicators that might be used
+        const commonIndicators = [
+          'daily_rsi_14', 'weekly_rsi_14', 'monthly_rsi_14',
+          'daily_sma_20', 'weekly_sma_20', 'monthly_sma_20',
+          'daily_ema_20', 'weekly_ema_20', 'monthly_ema_20',
+          'daily_bb_upper_20_2', 'daily_bb_middle_20_2', 'daily_bb_lower_20_2',
+          'daily_supertrend_10_3', 'weekly_supertrend_10_3',
+          'daily_macd_12_26_9', 'daily_volume', 'weekly_volume', 'monthly_volume'
+        ];
+        
+        commonIndicators.forEach(indicator => {
+          if (candle[indicator] !== undefined && candle[indicator] !== null) {
+            indicatorValues[indicator] = candle[indicator];
+          }
+        });
+
         matches.push({
           date: candle.date,
           day: candle.day,
           timestamp: new Date(parseInt(candle.date)).toISOString(),
           stock: stockSymbol,
           close: candle.close,
-          matchedConditions: parsedQuery.originalQuery
+          matchedConditions: parsedQuery.originalQuery,
+          indicators: indicatorValues // Include actual calculated values
         });
       }
     } catch (error) {

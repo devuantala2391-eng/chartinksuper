@@ -215,37 +215,6 @@ let currentProgress = {
 let currentQueryAbortController = null;
 let isQueryAborted = false;
 
-// Function to clear mapperStorage directory
-function clearMapperStorage() {
-  try {
-    const mapperStorageDir = path.join(__dirname, 'mapperStorage');
-    if (fs.existsSync(mapperStorageDir)) {
-      const files = fs.readdirSync(mapperStorageDir);
-      files.forEach(file => {
-        const filePath = path.join(mapperStorageDir, file);
-        fs.unlinkSync(filePath);
-      });
-      console.log(`🗑️  Cleared ${files.length} files from mapperStorage`);
-    } else {
-      console.log('🗑️  MapperStorage directory does not exist - nothing to clear');
-    }
-  } catch (error) {
-    console.error('Error clearing mapperStorage:', error);
-  }
-}
-
-// Function to create mapperStorage directory
-function createMapperStorageDir() {
-  try {
-    const mapperStorageDir = path.join(__dirname, 'mapperStorage');
-    if (!fs.existsSync(mapperStorageDir)) {
-      fs.mkdirSync(mapperStorageDir, { recursive: true });
-      console.log('Created mapperStorage directory');
-    }
-  } catch (error) {
-    console.error('Error creating mapperStorage directory:', error);
-  }
-}
 
 // Test endpoint
 app.get('/test', (req, res) => {
@@ -280,12 +249,27 @@ app.get('/query/progress', async (req, res) => {
   }
 });
 
+// Store SSE connections for progress updates
+const sseConnections = new Set();
+
 // Helper function to update progress
 function updateProgress(updates) {
   currentProgress = { ...currentProgress, ...updates };
   
   // Don't auto-calculate percentage here - it's calculated in the progress endpoint
   // using the formula: 22 stocks = 1%
+  
+  // Send progress updates to all SSE connections
+  const progressData = {
+    ...currentProgress,
+    percentage: currentProgress.total > 0 ? 
+      Math.floor((currentProgress.processed / currentProgress.total) * 100) : 0
+  };
+  
+  const message = `data: ${JSON.stringify(progressData)}\n\n`;
+  sseConnections.forEach(res => {
+    res.write(message);
+  });
 }
 
 // Make updateProgress globally accessible for queryService
@@ -329,6 +313,50 @@ async function generateStockJSON(stock, requiredIndicators, requiredTimeframes =
 }
 
 
+// Function to check if indicators are precalculated
+function checkPrecalculatedIndicators(requiredIndicators, requiredTimeframes) {
+  if (precalculatedIndicators.status !== 'completed') {
+    return {
+      available: false,
+      reason: `Precalculated indicators status: ${precalculatedIndicators.status}`,
+      missing: requiredIndicators.map(i => `${requiredTimeframes[0] || 'daily'}_${i.name}_${i.period}`)
+    };
+  }
+  
+  // Check if all required indicators are available in precalculated storage
+  const missing = [];
+  const precalculatedDir = path.join(__dirname, 'precalculatedStorage');
+  
+  if (!fs.existsSync(precalculatedDir)) {
+    return {
+      available: false,
+      reason: 'Precalculated storage directory not found',
+      missing: requiredIndicators.map(i => `${requiredTimeframes[0] || 'daily'}_${i.name}_${i.period}`)
+    };
+  }
+  
+  // Check if precalculated indicators include all required ones
+  for (const indicator of requiredIndicators) {
+    for (const timeframe of requiredTimeframes) {
+      const indicatorKey = `${timeframe}_${indicator.name}_${indicator.period}`;
+      const found = precalculatedIndicators.indicators.some(pi => {
+        const piKey = `${pi.timeframe}_${pi.name}_${pi.params.period || 14}`;
+        return piKey === indicatorKey;
+      });
+      
+      if (!found) {
+        missing.push(indicatorKey);
+      }
+    }
+  }
+  
+  return {
+    available: missing.length === 0,
+    reason: missing.length === 0 ? 'All indicators available' : 'Some indicators missing',
+    missing: missing
+  };
+}
+
 // Query endpoint for searching stocks based on conditions
 app.post('/query',  async (req, res) => {
   try {
@@ -340,14 +368,6 @@ app.post('/query',  async (req, res) => {
 
     // Abort any existing query
     abortCurrentQuery();
-    
-    // Clear mapperStorage directory and create it fresh
-    clearMapperStorage();
-    createMapperStorageDir();
-    
-    // Clear indicator cache to ensure fresh processing for new queries
-    console.log('🧹 Clearing indicator cache for new query...');
-    clearCache();
     
     // Create new abort controller for this query
     currentQueryAbortController = new AbortController();
@@ -388,7 +408,7 @@ app.post('/query',  async (req, res) => {
     console.log('Required timeframes:', requiredTimeframes);
     console.log('Number of required indicators:', requiredIndicators.length);
     
-    // Ensure we always have indicators for mapperStorage generation
+    // Ensure we always have indicators for precalculatedStorage generation
     if (requiredIndicators.length === 0) {
       console.log('No indicators found by extraction, manually parsing query conditions...');
       
@@ -441,6 +461,21 @@ app.post('/query',  async (req, res) => {
       console.log('Manually extracted indicators:', requiredIndicators);
     }
     
+    // Check if indicators are precalculated
+    const precalculatedCheck = checkPrecalculatedIndicators(requiredIndicators, requiredTimeframes);
+    
+    if (!precalculatedCheck.available) {
+      updateProgress({ isRunning: false, phase: 'error', message: 'Missing precalculated indicators' });
+      return res.status(400).json({ 
+        error: 'Missing precalculated indicators', 
+        details: precalculatedCheck.reason,
+        missingIndicators: precalculatedCheck.missing,
+        hint: 'Please go to the precalculated indicators screen and add the missing indicators, then regenerate before running this query.'
+      });
+    }
+    
+    console.log('✅ All required indicators are precalculated, proceeding with query...');
+    
     // Process stocks with real-time progress tracking
     const allMatches = [];
     const errors = [];
@@ -483,20 +518,18 @@ app.post('/query',  async (req, res) => {
           continue;
         }
         
-        // Always generate mapperStorage files for any query (includes basic fields and indicators)
-        console.log(`Generating mapperStorage for ${stock} with indicators:`, requiredIndicators);
-        console.log(`Using timeframes:`, requiredTimeframes);
-        await generateStockJSON(stock, requiredIndicators, requiredTimeframes);
+        // Use precalculated storage instead of generating new indicators
+        console.log(`Using precalculated indicators for ${stock}`);
         
-        // Read the generated mapped data from mapperStorage
-        const mapperFilePath = path.join(__dirname, 'mapperStorage', `${stock}_piped.json`);
+        // Read the precalculated mapped data from precalculatedStorage
+        const precalculatedFilePath = path.join(__dirname, 'precalculatedStorage', `${stock}_piped.json`);
         let candles;
         
-        if (fs.existsSync(mapperFilePath)) {
-          const mappedData = JSON.parse(fs.readFileSync(mapperFilePath, 'utf8'));
+        if (fs.existsSync(precalculatedFilePath)) {
+          const mappedData = JSON.parse(fs.readFileSync(precalculatedFilePath, 'utf8'));
           candles = mappedData.data;
         } else {
-          errors.push({ stock, error: 'Mapped data not found in mapperStorage' });
+          errors.push({ stock, error: 'Precalculated data not found for this stock' });
           continue;
         }
         
@@ -565,7 +598,7 @@ app.post('/query',  async (req, res) => {
       isRunning: false
     });
     
-    // Note: We no longer delete the mapperStorage directory
+    // Note: We no longer delete the precalculatedStorage directory
     // Files are overwritten on each query for fresh calculations
     
     res.json({
@@ -596,7 +629,7 @@ app.post('/query',  async (req, res) => {
       isRunning: false
     });
     
-    // Note: We no longer delete the mapperStorage directory on error
+    // Note: We no longer delete the precalculatedStorage directory on error
     // Files are overwritten on each query for fresh calculations
     
     res.status(500).json({ 
@@ -617,14 +650,6 @@ app.post('/query/latest',  async (req, res) => {
 
     // Abort any existing query
     abortCurrentQuery();
-    
-    // Clear mapperStorage directory and create it fresh
-    clearMapperStorage();
-    createMapperStorageDir();
-    
-    // Clear indicator cache to ensure fresh processing for new queries
-    console.log('🧹 Clearing indicator cache for latest day scan...');
-    clearCache();
     
     // Create new abort controller for this query
     currentQueryAbortController = new AbortController();
@@ -663,7 +688,7 @@ app.post('/query/latest',  async (req, res) => {
     console.log('Required indicators for latest day scan:', requiredIndicators);
     console.log('Required timeframes:', requiredTimeframes);
     
-    // Ensure we always have indicators for mapperStorage generation
+    // Ensure we always have indicators for precalculatedStorage generation
     if (requiredIndicators.length === 0) {
       console.log('No indicators found by extraction, manually parsing query conditions...');
       
@@ -713,6 +738,21 @@ app.post('/query/latest',  async (req, res) => {
       }));
     }
     
+    // Check if indicators are precalculated
+    const precalculatedCheck = checkPrecalculatedIndicators(requiredIndicators, requiredTimeframes);
+    
+    if (!precalculatedCheck.available) {
+      updateProgress({ isRunning: false, phase: 'error', message: 'Missing precalculated indicators' });
+      return res.status(400).json({ 
+        error: 'Missing precalculated indicators', 
+        details: precalculatedCheck.reason,
+        missingIndicators: precalculatedCheck.missing,
+        hint: 'Please go to the precalculated indicators screen and add the missing indicators, then regenerate before running this query.'
+      });
+    }
+    
+    console.log('✅ All required indicators are precalculated, proceeding with latest day scan...');
+    
     // Process stocks for latest day only
     const allMatches = [];
     const errors = [];
@@ -755,18 +795,18 @@ app.post('/query/latest',  async (req, res) => {
           continue;
         }
         
-        // Generate mapperStorage files with indicators
-        await generateStockJSON(stock, requiredIndicators, requiredTimeframes);
+        // Use precalculated storage for latest day scan
+        console.log(`Using precalculated indicators for latest day scan: ${stock}`);
         
-        // Read the generated mapped data from mapperStorage
-        const mapperFilePath = path.join(__dirname, 'mapperStorage', `${stock}_piped.json`);
+        // Read the precalculated mapped data from precalculatedStorage
+        const precalculatedFilePath = path.join(__dirname, 'precalculatedStorage', `${stock}_piped.json`);
         let candles;
         
-        if (fs.existsSync(mapperFilePath)) {
-          const mappedData = JSON.parse(fs.readFileSync(mapperFilePath, 'utf8'));
+        if (fs.existsSync(precalculatedFilePath)) {
+          const mappedData = JSON.parse(fs.readFileSync(precalculatedFilePath, 'utf8'));
           candles = mappedData.data;
         } else {
-          errors.push({ stock, error: 'Mapped data not found in mapperStorage' });
+          errors.push({ stock, error: 'Precalculated data not found for this stock' });
           continue;
         }
         
@@ -781,13 +821,54 @@ app.post('/query/latest',  async (req, res) => {
               const { evaluateAllConditions } = require('./services/queryService');
               
               if (evaluateAllConditions(parsedQuery, latestCandle, prevCandle, candles, candles.length - 1)) {
+                // Extract indicator values for tooltip display
+                const indicatorValues = {};
+                
+                // Get all fields used in the query
+                const allFields = new Set();
+                function extractFields(conditions) {
+                  if (Array.isArray(conditions)) {
+                    conditions.forEach(condition => {
+                      if (condition.left && condition.left.fieldKey) {
+                        allFields.add(condition.left.fieldKey);
+                      }
+                      if (condition.right && condition.right.fieldKey) {
+                        allFields.add(condition.right.fieldKey);
+                      }
+                      if (condition.conditions) extractFields(condition.conditions);
+                    });
+                  }
+                }
+                extractFields(parsedQuery.conditions);
+                
+                // Add all indicator values that exist in the candle data
+                for (const field of allFields) {
+                  if (latestCandle[field] !== undefined && latestCandle[field] !== null) {
+                    indicatorValues[field] = latestCandle[field];
+                  }
+                }
+                
+                // Also include common indicators
+                const commonIndicators = [
+                  'daily_rsi_14', 'weekly_rsi_14', 'monthly_rsi_14',
+                  'daily_sma_20', 'weekly_sma_20', 'monthly_sma_20',
+                  'daily_ema_20', 'weekly_ema_20', 'monthly_ema_20'
+                ];
+                
+                commonIndicators.forEach(indicator => {
+                  if (latestCandle[indicator] !== undefined && latestCandle[indicator] !== null) {
+                    indicatorValues[indicator] = latestCandle[indicator];
+                  }
+                });
+                
                 allMatches.push({
                   date: latestCandle.date,
                   day: latestCandle.day,
                   timestamp: new Date(parseInt(latestCandle.date)).toISOString(),
                   stock: stock,
                   close: latestCandle.close,
-                  matchedConditions: query
+                  matchedConditions: query,
+                  indicators: indicatorValues // Include actual calculated values
                 });
               }
             } catch (error) {
@@ -900,6 +981,314 @@ app.get('/health', async (req, res) => {
 app.get('/query/examples', async (req, res) => {
   res.json(getQueryExamples());
 });
+
+// ==================== PRECALCULATED INDICATORS ENDPOINTS ====================
+
+// Precalculated indicators storage
+let precalculatedIndicators = {
+  indicators: [],
+  lastUpdated: null,
+  status: 'idle' // idle, processing, completed, error
+};
+
+// File path for persisting precalculated indicators configuration
+const PRECALCULATED_CONFIG_FILE = path.join(__dirname, 'precalculatedIndicators.json');
+
+// Function to load precalculated indicators from file
+function loadPrecalculatedIndicators() {
+  try {
+    if (fs.existsSync(PRECALCULATED_CONFIG_FILE)) {
+      const data = fs.readFileSync(PRECALCULATED_CONFIG_FILE, 'utf8');
+      const config = JSON.parse(data);
+      precalculatedIndicators = {
+        indicators: config.indicators || [],
+        lastUpdated: config.lastUpdated || null,
+        status: config.status || 'idle'
+      };
+      console.log(`📊 Loaded ${precalculatedIndicators.indicators.length} precalculated indicators from file`);
+    } else {
+      console.log('📊 No precalculated indicators file found, starting with empty configuration');
+    }
+  } catch (error) {
+    console.error('Error loading precalculated indicators:', error);
+    precalculatedIndicators = {
+      indicators: [],
+      lastUpdated: null,
+      status: 'idle'
+    };
+  }
+}
+
+// Function to save precalculated indicators to file
+function savePrecalculatedIndicators() {
+  try {
+    const data = JSON.stringify(precalculatedIndicators, null, 2);
+    fs.writeFileSync(PRECALCULATED_CONFIG_FILE, data, 'utf8');
+    console.log(`💾 Saved ${precalculatedIndicators.indicators.length} precalculated indicators to file`);
+  } catch (error) {
+    console.error('Error saving precalculated indicators:', error);
+  }
+}
+
+// Load precalculated indicators on server startup
+loadPrecalculatedIndicators();
+
+// POST /api/precalculate-indicators - Calculate and store indicators
+app.post('/api/precalculate-indicators', async (req, res) => {
+  try {
+    const { indicators } = req.body;
+    
+    if (!Array.isArray(indicators) || indicators.length === 0) {
+      return res.status(400).json({ 
+        error: 'Invalid indicators array. Expected array with at least one indicator configuration.' 
+      });
+    }
+    
+    // Validate indicator format
+    for (const indicator of indicators) {
+      if (!indicator.timeframe || !indicator.name || !indicator.params) {
+        return res.status(400).json({ 
+          error: 'Invalid indicator format. Each indicator must have timeframe, name, and params.' 
+        });
+      }
+    }
+    
+    console.log('🔄 Starting precalculation for indicators:', indicators);
+    
+    // Update status
+    precalculatedIndicators.status = 'processing';
+    precalculatedIndicators.indicators = indicators;
+    precalculatedIndicators.lastUpdated = new Date().toISOString();
+    
+    // Save to file
+    savePrecalculatedIndicators();
+    
+    // Send immediate response
+    res.json({
+      success: true,
+      message: 'Precalculation started',
+      indicators: indicators,
+      status: 'processing'
+    });
+    
+    // Initialize progress state for precalculation
+    updateProgress({
+      isRunning: true,
+      phase: 'processing_indicators',
+      message: 'Starting indicator processing...',
+      processed: 0,
+      total: 0,
+      matches: 0,
+      startTime: Date.now()
+    });
+    
+    // Process indicators in background
+    processPrecalculatedIndicators(indicators);
+    
+  } catch (error) {
+    console.error('Precalculate indicators error:', error);
+    precalculatedIndicators.status = 'error';
+    precalculatedIndicators.lastUpdated = new Date().toISOString();
+    
+    // Save to file
+    savePrecalculatedIndicators();
+    
+    res.status(500).json({ 
+      error: 'Internal server error', 
+      details: error.message 
+    });
+  }
+});
+
+// GET /api/get-precalculated-indicators - Get current precalculated indicators
+app.get('/api/get-precalculated-indicators', async (req, res) => {
+  try {
+    res.json({
+      success: true,
+      indicators: precalculatedIndicators.indicators,
+      status: precalculatedIndicators.status,
+      lastUpdated: precalculatedIndicators.lastUpdated
+    });
+  } catch (error) {
+    console.error('Get precalculated indicators error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error', 
+      details: error.message 
+    });
+  }
+});
+
+// SSE endpoint for real-time progress updates
+app.get('/api/progress-stream', (req, res) => {
+  // Set headers for SSE
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*'
+  });
+
+  // Send initial connection message
+  res.write('data: {"connected": true}\n\n');
+
+  // Add to active connections
+  sseConnections.add(res);
+
+  // Send current progress immediately
+  const progressData = {
+    ...currentProgress,
+    percentage: currentProgress.total > 0 ? 
+      Math.floor((currentProgress.processed / currentProgress.total) * 100) : 0
+  };
+  res.write(`data: ${JSON.stringify(progressData)}\n\n`);
+
+  // Handle client disconnect
+  req.on('close', () => {
+    sseConnections.delete(res);
+  });
+});
+
+// Background function to process precalculated indicators
+async function processPrecalculatedIndicators(indicators) {
+  try {
+    console.log('📊 Processing precalculated indicators for all stocks...');
+    
+    // Create dedicated precalculated storage directory
+    const precalculatedDir = path.join(__dirname, 'precalculatedStorage');
+    if (!fs.existsSync(precalculatedDir)) {
+      fs.mkdirSync(precalculatedDir, { recursive: true });
+    }
+    
+    // Convert indicators to the format expected by processStocksWithIndicators
+    const formattedIndicators = indicators.map(indicator => {
+      const params = indicator.params || {};
+      
+      // Handle different indicator types
+      switch(indicator.name.toLowerCase()) {
+        case 'sma':
+          return {
+            name: 'sma',
+            period: params.period || 20,
+            params: {}
+          };
+        case 'ema':
+          return {
+            name: 'ema', 
+            period: params.period || 20,
+            params: {}
+          };
+        case 'rsi':
+          return {
+            name: 'rsi',
+            period: params.period || 14,
+            params: {}
+          };
+        case 'bollinger':
+        case 'bb':
+          return {
+            name: 'bollinger',
+            period: params.period || 20,
+            params: {
+              stdDev: params.stdDev || 2
+            }
+          };
+        case 'volume':
+          return {
+            name: 'volume',
+            period: 1,
+            params: {}
+          };
+        default:
+          return {
+            name: indicator.name,
+            period: params.period || 14,
+            params: params
+          };
+      }
+    });
+    
+    // Extract unique timeframes
+    const timeframes = [...new Set(indicators.map(i => i.timeframe))];
+    
+    console.log(`Processing ${formattedIndicators.length} indicators across ${timeframes.length} timeframes for ${STOCK_SYMBOLS.length} stocks...`);
+    
+    // Process all stocks with the required indicators
+    await processStocksWithIndicators({
+      indicators: formattedIndicators,
+      timeframes: timeframes
+    }, STOCK_SYMBOLS);
+    
+    console.log(`✅ Processed ${formattedIndicators.length} indicator files directly to precalculatedStorage`);
+    console.log(`📂 Storage location: ${precalculatedDir}`);
+    
+    // Update status
+    precalculatedIndicators.status = 'completed';
+    precalculatedIndicators.lastUpdated = new Date().toISOString();
+    
+    // Save to file
+    savePrecalculatedIndicators();
+    
+    // Reset progress state
+    updateProgress({
+      isRunning: false,
+      phase: 'idle',
+      message: '',
+      processed: 0,
+      total: 0,
+      matches: 0,
+      percentage: 0,
+      startTime: null
+    });
+    
+    // Send completion status through SSE
+    const completionMessage = `data: ${JSON.stringify({
+      status: 'completed',
+      phase: 'completed',
+      isRunning: false,
+      percentage: 100,
+      message: 'Precalculation completed successfully'
+    })}\n\n`;
+    sseConnections.forEach(res => {
+      res.write(completionMessage);
+    });
+    
+    console.log('✅ Precalculated indicators processing completed successfully');
+    
+  } catch (error) {
+    console.error('Error processing precalculated indicators:', error);
+    precalculatedIndicators.status = 'error';
+    precalculatedIndicators.lastUpdated = new Date().toISOString();
+    
+    // Save to file
+    savePrecalculatedIndicators();
+    
+    // Reset progress state
+    updateProgress({
+      isRunning: false,
+      phase: 'idle',
+      message: '',
+      processed: 0,
+      total: 0,
+      matches: 0,
+      percentage: 0,
+      startTime: null
+    });
+    
+    // Send error status through SSE
+    const errorMessage = `data: ${JSON.stringify({
+      status: 'error',
+      phase: 'error',
+      isRunning: false,
+      percentage: 0,
+      message: 'Error processing indicators: ' + error.message
+    })}\n\n`;
+    sseConnections.forEach(res => {
+      res.write(errorMessage);
+    });
+  }
+}
+
+// ==================== END PRECALCULATED INDICATORS ENDPOINTS ====================
 
 // Refresh DB endpoint with progress streaming
 app.post('/refreshdb', async (req, res) => {

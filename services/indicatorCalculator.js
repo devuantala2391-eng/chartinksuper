@@ -465,9 +465,14 @@ function calculateAllIndicatorsWithTimeframes(candles, indicators, timeframes = 
   // First, calculate daily indicators with 'daily_' prefix
   let result = [...candles];
   
+  // Filter indicators by timeframe for proper calculation
+  const dailyIndicators = indicators.filter(ind => !ind.timeframe || ind.timeframe === 'daily');
+  const weeklyIndicators = indicators.filter(ind => ind.timeframe === 'weekly');
+  const monthlyIndicators = indicators.filter(ind => ind.timeframe === 'monthly');
+  
   // Calculate daily indicators
   if (timeframes.includes('daily')) {
-    const dailyResult = calculateAllIndicators(candles, indicators);
+    const dailyResult = calculateAllIndicators(candles, dailyIndicators);
     
     // Rename all indicator fields to have 'daily_' prefix
     dailyResult.forEach(candle => {
@@ -486,19 +491,19 @@ function calculateAllIndicatorsWithTimeframes(candles, indicators, timeframes = 
   // Calculate weekly indicators if requested
   if (timeframes.includes('weekly')) {
     const weeklyCandles = aggregateToWeekly(candles);
-    const weeklyWithIndicators = calculateAllIndicators(weeklyCandles, indicators);
+    const weeklyWithIndicators = calculateAllIndicators(weeklyCandles, weeklyIndicators);
     
     // Map weekly indicators back to daily candles with 'weekly_' prefix
-    result = mapAggregatedIndicators(result, weeklyWithIndicators, [], indicators);
+    result = mapAggregatedIndicators(result, weeklyWithIndicators, [], weeklyIndicators);
   }
   
   // Calculate monthly indicators if requested
   if (timeframes.includes('monthly')) {
     const monthlyCandles = aggregateToMonthly(candles);
-    const monthlyWithIndicators = calculateAllIndicators(monthlyCandles, indicators);
+    const monthlyWithIndicators = calculateAllIndicators(monthlyCandles, monthlyIndicators);
     
     // Map monthly indicators back to daily candles with 'monthly_' prefix
-    result = mapAggregatedIndicators(result, [], monthlyWithIndicators, indicators);
+    result = mapAggregatedIndicators(result, [], monthlyWithIndicators, monthlyIndicators);
   }
   
   // Add human-readable date field in dd/mm/yy format

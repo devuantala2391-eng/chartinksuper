@@ -1,0 +1,423 @@
+<div class="screener-container">
+  <!-- Header -->
+  <header class="screener-header">
+    <div class="header-content">
+      <h1 class="main-title">Stock Screener</h1>
+      <div class="header-actions">
+        <button class="btn-guide" (click)="showGuide()">
+          <i class="icon-help"></i> Scanner Guide
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <div class="screener-content">
+    <!-- Conditions Section -->
+    <div class="conditions-section">
+      <div class="section-title">
+        <h2>Create Your Scan</h2>
+        <div class="preset-selector">
+          <label>Quick Presets:</label>
+          <select #presetSelect (change)="loadPreset(presetSelect.value); presetSelect.value=''" class="preset-dropdown">
+            <option value="">Select a preset...</option>
+            <option value="volume-surge">Volume Surge</option>
+            <option value="price-breakout">Price Breakout</option>
+            <option value="trend-reversal">Trend Reversal</option>
+            <option value="rsi-oversold">RSI Oversold</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Compact Condition Builder -->
+      <div class="condition-builder-compact">
+        <div class="condition-wrapper-compact" *ngFor="let condition of conditions; let i = index">
+          <!-- AND/OR Operator (shown between conditions) -->
+          <div class="logical-operator-compact" *ngIf="i > 0">
+            <span 
+              class="highlight-text logical-op" 
+              (click)="openPopup('logicalOperator', condition.id)"
+            >
+              {{ getDisplayText(condition.logicalOperator, 'logicalOperator') }}
+            </span>
+          </div>
+
+          <!-- Compact Condition Row -->
+          <div class="condition-row-compact">
+            <!-- Time Period -->
+            <span 
+              class="highlight-text time-period" 
+              (click)="openPopup('timePeriod', condition.id)"
+            >
+              {{ getDisplayText(condition.timePeriod, 'timePeriod') }}
+            </span>
+
+            <!-- Custom time input -->
+            <input 
+              *ngIf="condition.timePeriod === 'n-days'"
+              type="number" 
+              [(ngModel)]="condition.customDaysAgo" 
+              placeholder="days"
+              class="custom-input"
+              min="1"
+            />
+            <input 
+              *ngIf="condition.timePeriod === 'n-weeks'"
+              type="number" 
+              [(ngModel)]="condition.customWeeksAgo" 
+              placeholder="weeks"
+              class="custom-input"
+              min="1"
+            />
+            <input 
+              *ngIf="condition.timePeriod === 'n-months'"
+              type="number" 
+              [(ngModel)]="condition.customMonthsAgo" 
+              placeholder="months"
+              class="custom-input"
+              min="1"
+            />
+
+            <!-- Field -->
+            <span 
+              class="highlight-text field" 
+              (click)="openPopup('field', condition.id)"
+            >
+              {{ getDisplayText(condition.field, 'field') }}
+            </span>
+
+            <!-- Component Selection for Multi-Component Indicators -->
+            <span 
+              *ngIf="condition.indicatorType === 'parameterized' && multiComponentIndicators[condition.field]"
+              class="highlight-text component" 
+              (click)="openPopup('indicatorComponent', condition.id)"
+            >
+              {{ (condition.indicatorComponent || multiComponentIndicators[condition.field][0]) | titlecase }}
+            </span>
+
+            <!-- Indicator Parameters -->
+            <span class="params-group" *ngIf="condition.indicatorType === 'parameterized'">
+              <span class="param-bracket">(</span>
+              <span 
+                *ngFor="let param of condition.indicatorParams; let j = index"
+                class="highlight-text param-text"
+                (click)="openParameterPopup('indicatorParam', condition.id, j)"
+              >
+                {{ param }}
+              </span>
+              <span class="param-bracket">)</span>
+            </span>
+
+            <!-- Operator -->
+            <span 
+              class="highlight-text operator" 
+              (click)="openPopup('operator', condition.id)"
+            >
+              {{ getDisplayText(condition.operator, 'operator') }}
+            </span>
+
+            <!-- Value Type Toggle -->
+            <span 
+              class="highlight-text value-type" 
+              (click)="openPopup('valueType', condition.id)"
+            >
+              {{ getDisplayText(condition.valueType, 'valueType') }}
+            </span>
+
+            <!-- Number Value -->
+            <input 
+              *ngIf="condition.valueType === 'number'"
+              type="text" 
+              [(ngModel)]="condition.value" 
+              placeholder="Value"
+              class="value-input-compact"
+            />
+
+            <!-- Field Value -->
+            <ng-container *ngIf="condition.valueType === 'field'">
+              <!-- Value Time Period -->
+              <span 
+                class="highlight-text value-time-period" 
+                (click)="openPopup('valueTimePeriod', condition.id)"
+              >
+                {{ getDisplayText(condition.valueTimePeriod || 'daily', 'timePeriod') }}
+              </span>
+
+              <!-- Custom time inputs for value -->
+              <input 
+                *ngIf="condition.valueTimePeriod === 'n-days'"
+                type="number" 
+                [(ngModel)]="condition.valueCustomDaysAgo" 
+                placeholder="days"
+                class="custom-input"
+                min="1"
+              />
+              <input 
+                *ngIf="condition.valueTimePeriod === 'n-weeks'"
+                type="number" 
+                [(ngModel)]="condition.valueCustomWeeksAgo" 
+                placeholder="weeks"
+                class="custom-input"
+                min="1"
+              />
+              <input 
+                *ngIf="condition.valueTimePeriod === 'n-months'"
+                type="number" 
+                [(ngModel)]="condition.valueCustomMonthsAgo" 
+                placeholder="months"
+                class="custom-input"
+                min="1"
+              />
+
+              <!-- Value Field -->
+              <span 
+                class="highlight-text value-field" 
+                (click)="openPopup('valueField', condition.id)"
+              >
+                {{ getDisplayText(condition.valueField || 'close', 'field') }}
+              </span>
+
+              <!-- Value Field Component -->
+              <span 
+                *ngIf="condition.valueIndicatorType === 'parameterized' && condition.valueField && multiComponentIndicators[condition.valueField]"
+                class="highlight-text value-component" 
+                (click)="openPopup('valueIndicatorComponent', condition.id)"
+              >
+                {{ (condition.valueIndicatorComponent || multiComponentIndicators[condition.valueField][0]) | titlecase }}
+              </span>
+
+              <!-- Value Indicator Parameters -->
+              <span class="params-group" *ngIf="condition.valueIndicatorType === 'parameterized'">
+                <span class="param-bracket">(</span>
+                <span 
+                  *ngFor="let param of condition.valueIndicatorParams; let j = index"
+                  class="highlight-text param-text"
+                  (click)="openParameterPopup('valueIndicatorParam', condition.id, j)"
+                >
+                  {{ param }}
+                </span>
+                <span class="param-bracket">)</span>
+              </span>
+
+              <!-- Arithmetic Operation -->
+              <ng-container *ngIf="condition.valueType === 'field'">
+                <span 
+                  class="highlight-text arithmetic-op" 
+                  (click)="openPopup('arithmeticOperator', condition.id)"
+                >
+                  {{ getDisplayText(condition.arithmeticOperator, 'arithmeticOperator') }}
+                </span>
+                
+                <input 
+                  *ngIf="condition.arithmeticOperator"
+                  type="text" 
+                  [(ngModel)]="condition.arithmeticValue" 
+                  placeholder="Value"
+                  class="arithmetic-value-compact"
+                />
+              </ng-container>
+            </ng-container>
+
+            <!-- Remove Button -->
+            <button 
+              class="btn-remove-compact" 
+              (click)="removeCondition(condition.id)"
+              *ngIf="conditions.length > 1"
+              title="Remove condition"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+
+        <!-- Add Condition Button -->
+        <div class="add-condition-compact">
+          <button class="btn-add-condition-compact" (click)="addCondition()">
+            + Add Condition
+          </button>
+        </div>
+      </div>
+
+      <!-- Generated Query Display -->
+      <div class="query-display">
+        <div class="query-header">
+          <h3>Generated Query</h3>
+          <button class="btn-copy" (click)="copyScan()" [disabled]="!queryString">Copy</button>
+        </div>
+        <code class="query-code">{{ queryString || 'Query will appear here...' }}</code>
+      </div>
+
+      <!-- Paste Query Section (moved below generated query) -->
+      <div class="paste-query-section-compact">
+        <div class="paste-query-header-compact">
+          <h4>Import Query</h4>
+          <button 
+            class="btn-paste-compact" 
+            (click)="pasteFromClipboard()"
+            title="Paste from clipboard"
+          >
+            📋 Paste
+          </button>
+        </div>
+        <div class="paste-query-input-compact">
+          <textarea 
+            [(ngModel)]="pasteQueryText"
+            placeholder="Paste your query here..."
+            class="paste-textarea-compact"
+            rows="2"
+          ></textarea>
+          <button 
+            class="btn-parse-query-compact" 
+            (click)="parseAndPopulateQuery()"
+            [disabled]="!pasteQueryText.trim()"
+            title="Parse query and populate fields"
+          >
+            Parse
+          </button>
+        </div>
+        <div class="paste-query-status-compact" *ngIf="pasteQueryStatus">
+          <span [ngClass]="{'success': pasteQuerySuccess, 'error': !pasteQuerySuccess}">
+            {{ pasteQueryStatus }}
+          </span>
+        </div>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="action-buttons-compact">
+        <button class="btn btn-primary btn-scan-compact" (click)="runScan()" [disabled]="loading">
+          {{ loading ? 'Scanning...' : 'Run Scan' }}
+        </button>
+        <button class="btn btn-secondary btn-backtest-compact" (click)="runBacktest()" [disabled]="loading">
+          {{ loading ? 'Running...' : 'Backtest' }}
+        </button>
+        <button class="btn btn-special-compact" (click)="runSpecialQuery()" [disabled]="loading">
+          Special
+        </button>
+        <button class="btn btn-text-compact" (click)="clearAll()">Clear</button>
+      </div>
+    </div>
+
+    <!-- Results Section -->
+    <div class="results-section" *ngIf="results || loading">
+      <!-- Progress Bar -->
+      <app-progress-bar
+        [show]="showProgress"
+        [phase]="progressPhase"
+        [message]="progressMessage"
+        [processed]="progressProcessed"
+        [total]="progressTotal"
+        [matches]="progressMatches"
+        [canClose]="progressPhase === 'completed'"
+        (close)="closeProgress()"
+      ></app-progress-bar>
+
+      <!-- Results Display -->
+      <div class="results-container" *ngIf="results && !loading">
+        <div class="results-header">
+          <h2>Scan Results</h2>
+          <div class="results-summary">
+            <span class="match-count">{{ results.totalMatches }} matches found</span>
+            <span class="scan-type" *ngIf="results.scanType">
+              {{ results.scanType === 'latest_day' ? 'Latest Day Scan' : 'Full Backtest' }}
+            </span>
+          </div>
+        </div>
+
+        <!-- Error Display -->
+        <div class="error-message" *ngIf="error">
+          <i class="icon-error"></i>
+          {{ error }}
+        </div>
+
+
+        <!-- Grouped Results -->
+        <div class="results-grouped-container" *ngIf="results.totalMatches > 0">
+          <!-- Date Groups -->
+          <div class="date-group" *ngFor="let date of getGroupedDates()">
+            <!-- Date Header (Clickable) -->
+            <div class="date-header" (click)="toggleDateExpansion(date)">
+              <div class="date-info">
+                <span class="expand-icon">{{ isDateExpanded(date) ? '▼' : '▶' }}</span>
+                <span class="date-text">{{ date }}</span>
+                <span class="stock-count">({{ getStockCountForDate(date) }} stocks)</span>
+              </div>
+            </div>
+            
+            <!-- Expandable Stock List -->
+            <div class="stock-list" *ngIf="isDateExpanded(date)">
+              <table class="results-table-responsive">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>Day</th>
+                    <th>Close Price</th>
+                    <th>Values</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr *ngFor="let match of groupedResults.get(date)">
+                    <td class="symbol">{{ match.stock }}</td>
+                    <td class="day">{{ match.day }}</td>
+                    <td class="price">₹{{ match.close | number:'1.2-2' }}</td>
+                    <td class="values-column">
+                      <div class="tooltip-wrapper" 
+                           (mouseenter)="showTooltip(match, $event)" 
+                           (mouseleave)="hideTooltip()">
+                        <i class="eye-icon">👁️</i>
+                        <span class="icon-label">{{ getScanTypeLabel() }}</span>
+                        <app-tooltip 
+                          [visible]="activeTooltip?.stock === match.stock && activeTooltip?.date === match.day"
+                          [data]="getTooltipData(match)"
+                          [scanType]="getScanTypeLabel()">
+                        </app-tooltip>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- No Results Message -->
+        <div class="no-results" *ngIf="results.totalMatches === 0">
+          <i class="icon-info"></i>
+          <p>No stocks match your criteria</p>
+          <p class="hint">Try adjusting your conditions or time period</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Popup Selector -->
+  <div class="popup-overlay" *ngIf="activePopup" (click)="closePopup()">
+    <div class="popup-selector" (click)="$event.stopPropagation()">
+      <div class="popup-header">
+        <h4>Select {{ activePopup.type | titlecase }}</h4>
+        <button class="popup-close" (click)="closePopup()">×</button>
+      </div>
+      <div class="popup-options">
+        <div 
+          *ngFor="let option of getPopupOptions(activePopup.type)"
+          class="popup-option"
+          (click)="selectPopupValue(option.value)"
+        >
+          {{ option.label }}
+        </div>
+        <!-- Component options for multi-component indicators -->
+        <div 
+          *ngIf="activePopup.type === 'indicatorComponent' || activePopup.type === 'valueIndicatorComponent'"
+          class="popup-component-options"
+        >
+          <div 
+            *ngFor="let component of getComponentOptions(activePopup)"
+            class="popup-option"
+            (click)="selectPopupValue(component)"
+          >
+            {{ component | titlecase }}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

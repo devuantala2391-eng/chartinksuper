@@ -1,0 +1,165 @@
+<div class="indicators-container">
+  <div class="indicators-header">
+    <h2>Precalculated Indicators</h2>
+    <div class="header-status">
+      <span class="status-badge" [class]="getStatusColor()">
+        {{ getStatusText() }}
+      </span>
+      <span class="last-updated" *ngIf="lastUpdated">
+        Last updated: {{ lastUpdated | date:'medium' }}
+      </span>
+    </div>
+  </div>
+
+  <div class="error-message" *ngIf="error">
+    <div class="alert alert-danger">
+      {{ error }}
+    </div>
+  </div>
+
+  <div class="indicators-content">
+    <!-- Add New Indicator Form -->
+    <div class="add-indicator-form">
+      <h3>Add New Indicator</h3>
+      <form class="indicator-form">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="timeframe">Timeframe:</label>
+            <select 
+              id="timeframe" 
+              [(ngModel)]="newIndicator.timeframe" 
+              name="timeframe"
+              class="form-control">
+              <option *ngFor="let tf of availableTimeframes" [value]="tf.value">
+                {{ tf.label }}
+              </option>
+            </select>
+          </div>
+          
+          <div class="form-group">
+            <label for="indicator">Indicator Type:</label>
+            <select 
+              id="indicator" 
+              [(ngModel)]="newIndicator.name" 
+              name="indicator"
+              class="form-control"
+              (change)="onIndicatorTypeChange()">
+              <option *ngFor="let ind of availableIndicators" [value]="ind.value">
+                {{ ind.label }}
+              </option>
+            </select>
+          </div>
+          
+          <div class="form-group" *ngIf="newIndicator.name !== 'volume'">
+            <label for="period">Period:</label>
+            <input 
+              id="period"
+              type="number" 
+              [(ngModel)]="newIndicator.params.period" 
+              name="period"
+              class="form-control"
+              min="1"
+              max="200">
+          </div>
+          
+          <div class="form-group" *ngIf="newIndicator.name === 'bb'">
+            <label for="stdDev">Standard Deviation:</label>
+            <input 
+              id="stdDev"
+              type="number" 
+              [(ngModel)]="newIndicator.params.stdDev" 
+              name="stdDev"
+              class="form-control"
+              min="0.1"
+              max="5"
+              step="0.1">
+          </div>
+        </div>
+        
+        <div class="form-actions">
+          <button 
+            type="button" 
+            class="btn btn-secondary" 
+            (click)="addIndicator()"
+            [disabled]="loading">
+            Add Indicator
+          </button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Indicators List -->
+    <div class="indicators-list">
+      <h3>
+        Configured Indicators ({{ indicators.length }})
+      </h3>
+      
+      <div class="empty-state" *ngIf="indicators.length === 0">
+        <p>No indicators configured yet. Add your first indicator above.</p>
+      </div>
+
+      <div class="indicator-cards" *ngIf="indicators.length > 0">
+        <div class="indicator-card" *ngFor="let indicator of indicators; let i = index">
+          <div class="indicator-info">
+            <h4>{{ getIndicatorDescription(indicator) }}</h4>
+            <div class="indicator-details">
+              <span class="timeframe-badge">{{ indicator.timeframe }}</span>
+              <span class="indicator-type">{{ indicator.name.toUpperCase() }}</span>
+              <span class="params" *ngIf="indicator.params.period">
+                Period: {{ indicator.params.period }}
+              </span>
+              <span class="params" *ngIf="indicator.params.stdDev">
+                Std Dev: {{ indicator.params.stdDev }}
+              </span>
+            </div>
+          </div>
+          <div class="indicator-actions">
+            <button 
+              class="btn-action danger" 
+              (click)="removeIndicator(i)"
+              [disabled]="loading">
+              <span>🗑️</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Action Buttons -->
+    <div class="action-buttons">
+      <button 
+        class="btn btn-primary" 
+        (click)="recalculateIndicators()"
+        [disabled]="loading || indicators.length === 0">
+        <span *ngIf="loading">🔄</span>
+        <span *ngIf="!loading">📊</span>
+        {{ loading ? 'Calculating...' : 'Calculate Indicators' }}
+      </button>
+      
+      <button 
+        class="btn btn-secondary" 
+        (click)="loadIndicators()"
+        [disabled]="loading">
+        <span>🔄</span>
+        Refresh Status
+      </button>
+    </div>
+  </div>
+
+  <!-- Progress Section -->
+  <div class="progress-section" *ngIf="status === 'processing'">
+    <div class="progress-info">
+      <h4>Processing Indicators...</h4>
+      <p>{{ progressMessage || 'This may take a few minutes depending on the number of indicators and stocks.' }}</p>
+      <div class="progress-bar">
+        <div class="progress-fill" [style.width.%]="progressPercentage"></div>
+      </div>
+      <div class="progress-stats">
+        <span class="progress-percentage">{{ progressPercentage }}%</span>
+        <span class="progress-counts" *ngIf="progressTotal > 0">
+          ({{ progressProcessed }} / {{ progressTotal }} stocks)
+        </span>
+      </div>
+    </div>
+  </div>
+</div>

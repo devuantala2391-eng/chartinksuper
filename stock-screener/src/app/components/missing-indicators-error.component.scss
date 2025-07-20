@@ -1,0 +1,120 @@
+.missing-indicators-error {
+  background: #fff3cd;
+  border: 1px solid #ffeaa7;
+  border-radius: 8px;
+  padding: 20px;
+  margin: 16px 0;
+  max-width: 600px;
+  
+  .error-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+    
+    .error-icon {
+      font-size: 1.5em;
+    }
+    
+    h3 {
+      margin: 0;
+      color: #856404;
+      font-size: 1.2em;
+    }
+  }
+  
+  .error-content {
+    .error-message {
+      margin: 0 0 16px 0;
+      color: #856404;
+      font-weight: 500;
+    }
+    
+    .missing-indicators-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 20px;
+      
+      .indicator-item {
+        .indicator-badge {
+          background: #dc3545;
+          color: white;
+          padding: 4px 12px;
+          border-radius: 16px;
+          font-size: 0.9em;
+          font-weight: 500;
+          font-family: monospace;
+        }
+      }
+    }
+    
+    .error-actions {
+      text-align: center;
+      
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 24px;
+        background: #007bff;
+        color: white;
+        text-decoration: none;
+        border-radius: 6px;
+        font-weight: 500;
+        transition: all 0.2s;
+        
+        &:hover {
+          background: #0056b3;
+          transform: translateY(-1px);
+        }
+        
+        .btn-icon {
+          font-size: 1.1em;
+        }
+      }
+      
+      .help-text {
+        margin: 12px 0 0 0;
+        font-size: 0.9em;
+        color: #856404;
+        font-style: italic;
+      }
+    }
+  }
+}
+
+@media (max-width: 768px) {
+  .missing-indicators-error {
+    margin: 12px 0;
+    padding: 16px;
+    
+    .error-header {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 8px;
+      
+      h3 {
+        font-size: 1.1em;
+      }
+    }
+    
+    .error-content {
+      .missing-indicators-list {
+        .indicator-item {
+          .indicator-badge {
+            font-size: 0.8em;
+            padding: 3px 8px;
+          }
+        }
+      }
+      
+      .error-actions {
+        .btn {
+          padding: 10px 20px;
+          font-size: 0.9em;
+        }
+      }
+    }
+  }
+}
