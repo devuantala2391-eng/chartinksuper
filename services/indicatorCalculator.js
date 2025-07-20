@@ -53,43 +53,45 @@ function calculateEMA(data, period) {
   return result;
 }
 
-// Relative Strength Index
+// Relative Strength Index using Wilder's smoothing method
 function calculateRSI(data, period = 14) {
   const result = [];
-  const gains = [];
-  const losses = [];
+  let avgGain = 0;
+  let avgLoss = 0;
   
   for (let i = 0; i < data.length; i++) {
     if (i === 0) {
-      gains.push(0);
-      losses.push(0);
       result.push(null);
     } else {
       const currentVal = sanitizeNumericValue(data[i]);
       const prevVal = sanitizeNumericValue(data[i - 1]);
       
       if (currentVal === null || prevVal === null) {
-        gains.push(0);
-        losses.push(0);
         result.push(null);
       } else {
         const change = currentVal - prevVal;
-        gains.push(change > 0 ? change : 0);
-        losses.push(change < 0 ? Math.abs(change) : 0);
+        const gain = Math.max(change, 0);
+        const loss = Math.max(-change, 0);
         
         if (i < period) {
+          // Accumulate gains and losses for initial average
+          avgGain += gain;
+          avgLoss += loss;
           result.push(null);
+        } else if (i === period) {
+          // Calculate initial average
+          avgGain = avgGain / period;
+          avgLoss = avgLoss / period;
+          const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+          const rsi = avgLoss === 0 ? 100 : 100 - (100 / (1 + rs));
+          result.push(rsi);
         } else {
-          const avgGain = gains.slice(i - period + 1, i + 1).reduce((a, b) => a + b, 0) / period;
-          const avgLoss = losses.slice(i - period + 1, i + 1).reduce((a, b) => a + b, 0) / period;
-          
-          if (avgLoss === 0) {
-            result.push(100);
-          } else {
-            const rs = avgGain / avgLoss;
-            const rsi = 100 - (100 / (1 + rs));
-            result.push(rsi);
-          }
+          // Use Wilder's smoothing method for subsequent values
+          avgGain = (avgGain * (period - 1) + gain) / period;
+          avgLoss = (avgLoss * (period - 1) + loss) / period;
+          const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+          const rsi = avgLoss === 0 ? 100 : 100 - (100 / (1 + rs));
+          result.push(rsi);
         }
       }
     }

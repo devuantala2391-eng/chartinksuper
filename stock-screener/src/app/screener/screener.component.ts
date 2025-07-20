@@ -5,6 +5,7 @@ import { HttpClient, HttpClientModule, HttpErrorResponse } from '@angular/common
 import { ProgressBarComponent } from '../progress-bar.component';
 import { TooltipComponent, TooltipData } from '../components/tooltip.component';
 import { Observable, retry, timer, catchError, throwError } from 'rxjs';
+import Swal from 'sweetalert2';
 
 interface Condition {
   id: number;
@@ -1632,11 +1633,67 @@ export class ScreenerComponent implements OnInit {
   private getErrorMessage(error: any): string {
     if (error instanceof HttpErrorResponse) {
       if (error.status === 0) {
+        Swal.fire({
+          icon: 'error',
+          title: 'Connection Failed',
+          text: 'Please check your internet connection and try again.',
+          confirmButtonColor: '#dc3545'
+        });
         return 'Connection failed. Please check your internet connection and try again.';
       }
+      
+      // Handle 400 errors specifically for missing indicators
+      if (error.status === 400) {
+        const errorMessage = error.error?.error || error.error?.message || '';
+        
+        // Check if it's a missing indicator error
+        if (errorMessage.includes('Missing required indicators') || 
+            errorMessage.includes('not available in precalculated storage')) {
+          const missingIndicators = error.error?.missing || [];
+          if (missingIndicators.length > 0) {
+            // Show SweetAlert for missing indicators
+            Swal.fire({
+              icon: 'error',
+              title: 'Missing Indicators',
+              html: `
+                <div style="text-align: left;">
+                  <p>The following indicators are not precalculated:</p>
+                  <ul style="background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 4px; padding: 15px 30px; margin: 10px 0;">
+                    ${missingIndicators.map((ind: string) => `<li style="color: #856404; font-family: monospace;">${ind}</li>`).join('')}
+                  </ul>
+                  <p style="color: #6c757d; font-style: italic; margin-top: 15px;">Please contact the administrator to add these indicators.</p>
+                </div>
+              `,
+              confirmButtonColor: '#dc3545',
+              confirmButtonText: 'OK',
+              width: '500px'
+            });
+            return `Missing indicators: ${missingIndicators.join(', ')}. These indicators need to be precalculated before running this query.`;
+          }
+          // Show SweetAlert for generic missing indicator error
+          Swal.fire({
+            icon: 'error',
+            title: 'Query Error',
+            text: errorMessage,
+            confirmButtonColor: '#dc3545'
+          });
+          return errorMessage;
+        }
+        
+        // Show SweetAlert for other 400 errors
+        Swal.fire({
+          icon: 'error',
+          title: 'Query Error',
+          text: errorMessage,
+          confirmButtonColor: '#dc3545'
+        });
+        return errorMessage;
+      }
+      
       if (error.status >= 500) {
         return 'Server error occurred. The request will be retried automatically.';
       }
+      
       return error.error?.error || error.message || 'An unexpected error occurred';
     }
     
