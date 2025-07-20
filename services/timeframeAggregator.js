@@ -276,6 +276,84 @@ function mapAggregatedIndicators(dailyCandles, weeklyCandles, monthlyCandles, in
       dailyCandle['monthly_volume'] = cumulativeMonthlyVolume;
     }
     
+    // Always calculate weekly OHLC for current week (default behavior)
+    // Find the first and last candle of the current week up to current day
+    let weeklyOpen = null, weeklyHigh = null, weeklyLow = null, weeklyClose = null;
+    const currentWeekNumber = getISOWeek(date);
+    const currentYear = date.getUTCFullYear();
+    
+    // Collect all candles for current week up to current day
+    const currentWeekCandles = [];
+    for (let i = index; i >= 0; i--) {
+      const candleDate = new Date(Number(dailyCandles[i].date));
+      const candleWeek = getISOWeek(candleDate);
+      const candleYear = candleDate.getUTCFullYear();
+      
+      // If we've gone to a different week, stop
+      if (candleYear !== currentYear || candleWeek !== currentWeekNumber) {
+        break;
+      }
+      
+      currentWeekCandles.unshift(dailyCandles[i]); // Add at beginning to maintain order
+    }
+    
+    if (currentWeekCandles.length > 0) {
+      // Open is from first candle of the week
+      weeklyOpen = sanitizeNumericValue(currentWeekCandles[0].open);
+      // Close is from the current day (last candle)
+      weeklyClose = sanitizeNumericValue(currentWeekCandles[currentWeekCandles.length - 1].close);
+      
+      // High is the max of all highs in the week
+      weeklyHigh = Math.max(...currentWeekCandles.map(c => sanitizeNumericValue(c.high)).filter(v => v !== null));
+      // Low is the min of all lows in the week
+      weeklyLow = Math.min(...currentWeekCandles.map(c => sanitizeNumericValue(c.low)).filter(v => v !== null));
+      
+      // Set the weekly OHLC values
+      dailyCandle['weekly_open'] = weeklyOpen;
+      dailyCandle['weekly_high'] = weeklyHigh;
+      dailyCandle['weekly_low'] = weeklyLow;
+      dailyCandle['weekly_close'] = weeklyClose;
+    }
+    
+    // Always calculate monthly OHLC for current month (default behavior)
+    // Find the first and last candle of the current month up to current day
+    let monthlyOpen = null, monthlyHigh = null, monthlyLow = null, monthlyClose = null;
+    const currentMonth = date.getUTCMonth();
+    const currentMonthYear = date.getUTCFullYear();
+    
+    // Collect all candles for current month up to current day
+    const currentMonthCandles = [];
+    for (let i = index; i >= 0; i--) {
+      const candleDate = new Date(Number(dailyCandles[i].date));
+      const candleMonth = candleDate.getUTCMonth();
+      const candleYear = candleDate.getUTCFullYear();
+      
+      // If we've gone to a different month, stop
+      if (candleYear !== currentMonthYear || candleMonth !== currentMonth) {
+        break;
+      }
+      
+      currentMonthCandles.unshift(dailyCandles[i]); // Add at beginning to maintain order
+    }
+    
+    if (currentMonthCandles.length > 0) {
+      // Open is from first candle of the month
+      monthlyOpen = sanitizeNumericValue(currentMonthCandles[0].open);
+      // Close is from the current day (last candle)
+      monthlyClose = sanitizeNumericValue(currentMonthCandles[currentMonthCandles.length - 1].close);
+      
+      // High is the max of all highs in the month
+      monthlyHigh = Math.max(...currentMonthCandles.map(c => sanitizeNumericValue(c.high)).filter(v => v !== null));
+      // Low is the min of all lows in the month
+      monthlyLow = Math.min(...currentMonthCandles.map(c => sanitizeNumericValue(c.low)).filter(v => v !== null));
+      
+      // Set the monthly OHLC values
+      dailyCandle['monthly_open'] = monthlyOpen;
+      dailyCandle['monthly_high'] = monthlyHigh;
+      dailyCandle['monthly_low'] = monthlyLow;
+      dailyCandle['monthly_close'] = monthlyClose;
+    }
+    
     // Map the new daily-calculated weekly indicators
     Object.keys(weeklyIndicatorValues).forEach(key => {
       const value = weeklyIndicatorValues[key][index];
