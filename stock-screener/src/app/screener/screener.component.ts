@@ -1,4 +1,4 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, OnDestroy, NgZone } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { HttpClient, HttpClientModule, HttpErrorResponse } from '@angular/common/http';
@@ -96,7 +96,7 @@ interface QueryResult {
   templateUrl: './screener.component.html',
   styleUrl: './screener.component.scss'
 })
-export class ScreenerComponent implements OnInit {
+export class ScreenerComponent implements OnInit, OnDestroy {
   expandedDates: Set<string> = new Set();
   title = 'Stock Screener';
   naturalLanguageQuery = '';
@@ -109,62 +109,29 @@ export class ScreenerComponent implements OnInit {
     { value: 'low', label: 'Low' },
     { value: 'close', label: 'Close' },
     { value: 'volume', label: 'Volume' },
-    { value: 'sma', label: 'SMA' },
-    { value: 'ema', label: 'EMA' },
-    { value: 'wma', label: 'WMA' },
-    { value: 'vwap', label: 'VWAP' },
     { value: 'rsi', label: 'RSI' },
-    { value: 'macd', label: 'MACD' },
-    { value: 'stochastic', label: 'Stochastic' },
-    { value: 'cci', label: 'CCI' },
-    { value: 'mfi', label: 'MFI' },
-    { value: 'roc', label: 'ROC' },
-    { value: 'bb', label: 'Bollinger Bands' },
-    { value: 'atr', label: 'ATR' },
-    { value: 'keltner', label: 'Keltner Channel' },
     { value: 'supertrend', label: 'SuperTrend' },
-    { value: 'adx', label: 'ADX' },
-    { value: 'psar', label: 'Parabolic SAR' },
-    { value: 'ichimoku', label: 'Ichimoku' },
-    { value: 'obv', label: 'OBV' },
-    { value: 'vpt', label: 'VPT' },
-    { value: 'ad', label: 'A/D Line' }
+    { value: 'bb', label: 'Bollinger Bands' },
+    { value: 'pctchg', label: '% Change' }
   ];
   
   // Parameterized indicators
   parameterizedIndicators = [
-    'rsi', 'sma', 'ema', 'wma', 'bb', 'supertrend', 'macd', 'stochastic',
-    'cci', 'mfi', 'roc', 'atr', 'keltner', 'adx', 'psar', 'ichimoku'
+    'rsi', 'supertrend', 'bb', 'pctchg'
   ];
   
   // Multi-component indicators - indicators that have multiple output values
   multiComponentIndicators: { [key: string]: string[] } = {
-    'bb': ['upper', 'middle', 'lower'],
-    'bollinger': ['upper', 'middle', 'lower'],
-    'macd': ['macd', 'signal', 'histogram'],
-    'stochastic': ['k', 'd'],
-    'keltner': ['upper', 'middle', 'lower'],
-    'ichimoku': ['tenkan', 'kijun', 'senkou_a', 'senkou_b', 'chikou']
+    'bb': ['upper', 'lower'],
+    'bollinger': ['upper', 'lower']
   };
 
   // Default parameters for indicators
   indicatorDefaults: { [key: string]: string[] } = {
     'rsi': ['14'],
-    'sma': ['20'],
-    'ema': ['20'],
-    'wma': ['20'],
     'bb': ['20', '2'],
     'supertrend': ['10', '3'],
-    'macd': ['12', '26', '9'],
-    'stochastic': ['14', '3', '3'],
-    'cci': ['20'],
-    'mfi': ['14'],
-    'roc': ['10'],
-    'atr': ['14'],
-    'keltner': ['20', '2'],
-    'adx': ['14'],
-    'psar': ['0.02', '0.2'],
-    'ichimoku': ['9', '26', '52']
+    'pctchg': ['1']
   };
 
   operators = [
@@ -174,10 +141,8 @@ export class ScreenerComponent implements OnInit {
     { value: '<=', label: 'Less than or equal' },
     { value: '=', label: 'Equal to' },
     { value: '!=', label: 'Not equal to' },
-    { value: 'crosses_above', label: 'crosses above' },
-    { value: 'crosses_below', label: 'crosses below' },
-    { value: 'increased_by', label: 'increased by %' },
-    { value: 'decreased_by', label: 'decreased by %' }
+    { value: 'crossed above', label: 'crossed above' },
+    { value: 'crossed below', label: 'crossed below' }
   ];
 
   // Time period options
@@ -255,10 +220,20 @@ export class ScreenerComponent implements OnInit {
   // Tooltip state
   activeTooltip: { stock: string; date: string } | null = null;
   
+  // CSV Upload properties
+  selectedFile: File | null = null;
+  uploading = false;
+  uploadStatus = '';
+  uploadSuccess = false;
+  showUploadProgress = false;
+  uploadProgress = 0;
+  uploadProgressText = '';
+  private csvProgressEventSource: EventSource | null = null;
+  
   private apiUrl = 'http://localhost:3000';
   private nextId = 2;
 
-  constructor(private http: HttpClient) {}
+  constructor(private http: HttpClient, private ngZone: NgZone) {}
 
   ngOnInit() {
     this.conditions.forEach(condition => {
@@ -1242,7 +1217,7 @@ export class ScreenerComponent implements OnInit {
 
   private parseConditionText(conditionText: string, id: number, logicalOperator: 'and' | 'or'): Condition | null {
     // Parse operators in order of precedence
-    const operators = ['crosses_above', 'crosses_below', '>=', '<=', '!=', '>', '<', '='];
+    const operators = ['crossed above', 'crossed below', '>=', '<=', '!=', '>', '<', '='];
     
     for (const operator of operators) {
       const opPattern = operator.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -1851,5 +1826,204 @@ export class ScreenerComponent implements OnInit {
       hash = hash & hash; // Convert to 32-bit integer
     }
     return Math.abs(hash);
+  }
+
+  // ==================== CSV UPLOAD METHODS ====================
+
+  onFileSelected(event: any) {
+    const file = event.target.files[0];
+    if (file && file.type === 'text/csv') {
+      this.selectedFile = file;
+      this.uploadStatus = '';
+      console.log('Selected CSV file:', file.name);
+    } else if (file) {
+      this.uploadStatus = 'Please select a valid CSV file';
+      this.uploadSuccess = false;
+      this.selectedFile = null;
+    }
+  }
+
+  async uploadCSV() {
+    if (!this.selectedFile) {
+      this.uploadStatus = 'Please select a CSV file first';
+      this.uploadSuccess = false;
+      return;
+    }
+
+    // Show confirmation dialog
+    const result = await Swal.fire({
+      title: 'Upload CSV and Update Database?',
+      html: `
+        <div style="text-align: left; margin: 20px 0;">
+          <p><strong>File:</strong> ${this.selectedFile.name}</p>
+          <p><strong>This will:</strong></p>
+          <ul style="margin-left: 20px;">
+            <li>Extract stock symbols from your CSV file</li>
+            <li>Update the database symbol list</li>
+            <li>Start a complete database refresh</li>
+          </ul>
+          <p style="margin-top: 15px; color: #e74c3c;">
+            <strong>Warning:</strong> This process may take several minutes and will replace the current symbol list.
+          </p>
+        </div>
+      `,
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonText: 'Yes, Upload & Update',
+      cancelButtonText: 'Cancel',
+      confirmButtonColor: '#3085d6',
+      cancelButtonColor: '#d33'
+    });
+
+    if (!result.isConfirmed) {
+      return;
+    }
+
+    this.uploading = true;
+    this.uploadStatus = '';
+    this.showUploadProgress = true;
+    this.uploadProgress = 10;
+    this.uploadProgressText = 'Uploading CSV file...';
+
+    try {
+      // Start the unified CSV upload process
+      const formData = new FormData();
+      formData.append('csvFile', this.selectedFile);
+
+      // Upload CSV and start the entire process (returns immediately with progress URL)
+      const uploadResponse = await this.http.post<any>(`${this.apiUrl}/upload-csv`, formData).toPromise();
+      
+      if (!uploadResponse.success) {
+        throw new Error(uploadResponse.error || 'Failed to process CSV');
+      }
+
+      console.log('CSV upload initiated:', uploadResponse);
+
+      // Store symbol info for success message
+      const symbolPreview = uploadResponse.sampleSymbols.join(', ');
+      const symbolCount = uploadResponse.symbolCount;
+
+      // Monitor the entire process via SSE
+      await this.monitorCSVUploadProgressSSE();
+
+      // Success - process completed
+      this.uploadProgress = 100;
+      this.uploadSuccess = true;
+      this.uploadStatus = `Successfully updated database with ${symbolCount} symbols (e.g., ${symbolPreview})`;
+
+      // Reset file input
+      this.selectedFile = null;
+      const fileInput = document.getElementById('csvFileInput') as HTMLInputElement;
+      if (fileInput) fileInput.value = '';
+
+      // Show success message
+      await Swal.fire({
+        title: 'Success!',
+        html: `
+          <p>Database updated successfully!</p>
+          <p><strong>Symbols processed:</strong> ${symbolCount}</p>
+          <p><strong>Sample symbols:</strong> ${symbolPreview}</p>
+        `,
+        icon: 'success',
+        confirmButtonText: 'OK'
+      });
+
+    } catch (error: any) {
+      console.error('CSV upload error:', error);
+      this.uploadSuccess = false;
+      this.uploadStatus = 'Upload failed: ' + (error.error?.error || error.message || 'Unknown error');
+      this.uploadProgressText = 'Upload failed';
+      
+      // Show error message
+      await Swal.fire({
+        title: 'Upload Failed',
+        text: this.uploadStatus,
+        icon: 'error',
+        confirmButtonText: 'OK'
+      });
+    } finally {
+      this.uploading = false;
+      setTimeout(() => {
+        this.showUploadProgress = false;
+        this.uploadProgress = 0;
+      }, 3000);
+    }
+  }
+
+  private async monitorCSVUploadProgressSSE(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      // Clean up any existing connection
+      if (this.csvProgressEventSource) {
+        this.csvProgressEventSource.close();
+      }
+      
+      this.csvProgressEventSource = new EventSource(`${this.apiUrl}/csv-upload-progress`);
+      
+      this.csvProgressEventSource.onmessage = (event) => {
+        try {
+          const progress = JSON.parse(event.data);
+          
+          // Run inside Angular zone to trigger change detection
+          this.ngZone.run(() => {
+            // Update progress bar
+            this.uploadProgress = progress.percentage || 0;
+            this.uploadProgressText = progress.message || 'Processing...';
+            
+            console.log('Progress update:', {
+              phase: progress.phase,
+              percentage: progress.percentage,
+              message: progress.message
+            });
+            
+            // Handle completion
+            if (progress.phase === 'completed') {
+              this.uploadProgressText = progress.message;
+              this.csvProgressEventSource?.close();
+              this.csvProgressEventSource = null;
+              resolve();
+            } else if (progress.phase === 'completed_with_warnings') {
+              this.uploadProgressText = progress.message;
+              this.csvProgressEventSource?.close();
+              this.csvProgressEventSource = null;
+              resolve();
+            } else if (progress.phase === 'error') {
+              this.csvProgressEventSource?.close();
+              this.csvProgressEventSource = null;
+              reject(new Error(progress.message));
+            } else if (progress.phase === 'cancelled') {
+              this.csvProgressEventSource?.close();
+              this.csvProgressEventSource = null;
+              reject(new Error('Process was cancelled'));
+            }
+          });
+        } catch (error) {
+          console.error('Error parsing SSE data:', error);
+          this.csvProgressEventSource?.close();
+          this.csvProgressEventSource = null;
+          reject(new Error('Failed to parse progress data'));
+        }
+      };
+      
+      this.csvProgressEventSource.onerror = (error) => {
+        console.error('SSE connection error:', error);
+        this.csvProgressEventSource?.close();
+        this.csvProgressEventSource = null;
+        reject(new Error('Connection to progress stream failed'));
+      };
+    });
+  }
+
+  ngOnDestroy() {
+    // Clean up EventSource connection
+    if (this.csvProgressEventSource) {
+      this.csvProgressEventSource.close();
+      this.csvProgressEventSource = null;
+    }
+    
+    // Clean up any intervals
+    if (this.progressInterval) {
+      clearInterval(this.progressInterval);
+      this.progressInterval = null;
+    }
   }
 }

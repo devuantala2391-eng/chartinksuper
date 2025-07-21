@@ -2,42 +2,22 @@
   "indicators": [
     {
       "timeframe": "daily",
-      "name": "bb",
-      "params": {
-        "period": 20,
-        "stdDev": 2
-      },
-      "id": "1753032153656",
-      "description": "Daily Bollinger Bands 20,2"
-    },
-    {
-      "timeframe": "weekly",
-      "name": "bb",
-      "params": {
-        "period": 20,
-        "stdDev": 2
-      },
-      "id": "1753032160690",
-      "description": "Weekly Bollinger Bands 20,2"
-    },
-    {
-      "timeframe": "monthly",
-      "name": "bb",
-      "params": {
-        "period": 20,
-        "stdDev": 2
-      },
-      "id": "1753032169158",
-      "description": "Monthly Bollinger Bands 20,2"
-    },
-    {
-      "timeframe": "weekly",
-      "name": "volume",
+      "name": "pctchg",
       "params": {},
-      "id": "1753033827319",
-      "description": "Weekly Volume"
+      "id": "1753050000001",
+      "description": "Daily % Change"
+    },
+    {
+      "timeframe": "daily",
+      "name": "bb",
+      "params": {
+        "period": 20,
+        "stdDev": 2
+      },
+      "id": "1753087537269",
+      "description": "Daily Bollinger Bands 20,2"
     }
   ],
-  "lastUpdated": "2025-07-20T18:11:41.091Z",
+  "lastUpdated": "2025-07-21T15:02:13.027Z",
   "status": "completed"
 }

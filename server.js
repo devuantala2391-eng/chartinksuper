@@ -4,6 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const cors = require('cors');
 const qs = require('qs');
+const multer = require('multer');
+const { parse } = require('csv-parse');
 
 // Configure axios defaults for better connection handling
 axios.defaults.timeout = 45000; // 45 seconds default timeout
@@ -60,6 +62,29 @@ const { clearCache } = require('./services/indicatorCache');
 const app = express();
 app.use(cors());
 app.use(express.json())
+
+// Configure multer for file uploads
+const upload = multer({
+  dest: 'uploads/', // temporary upload directory
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    // Accept only CSV files
+    if (file.mimetype === 'text/csv' || file.originalname.endsWith('.csv')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only CSV files are allowed'), false);
+    }
+  }
+});
+
+// Ensure uploads directory exists
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
 const port = 3000;
 
 process.on('uncaughtException', (err) => {
@@ -335,10 +360,23 @@ function checkPrecalculatedIndicators(requiredIndicators, requiredTimeframes) {
     };
   }
   
+  // Define basic OHLC and volume fields that are always available
+  const basicFields = [
+    'open', 'high', 'low', 'close', 'volume', 
+    'weekly_open', 'weekly_high', 'weekly_low', 'weekly_close', 'weekly_volume',
+    'monthly_open', 'monthly_high', 'monthly_low', 'monthly_close', 'monthly_volume'
+  ];
+  
   // Check if precalculated indicators include all required ones
   for (const indicator of requiredIndicators) {
     for (const timeframe of requiredTimeframes) {
       const indicatorKey = `${timeframe}_${indicator.name}_${indicator.period}`;
+      
+      // Skip checking basic OHLC fields as they are always available
+      if (basicFields.includes(indicator.name)) {
+        continue;
+      }
+      
       const found = precalculatedIndicators.indicators.some(pi => {
         const piKey = `${pi.timeframe}_${pi.name}_${pi.params.period || 14}`;
         return piKey === indicatorKey;
@@ -1203,6 +1241,16 @@ async function processPrecalculatedIndicators(indicators) {
             params: {},
             timeframe: indicator.timeframe
           };
+        case 'pctchg':
+        case 'percent_change':
+        case 'pct_change':
+        case '%_change':
+          return {
+            name: 'pctchg',
+            period: params.period || 1,
+            params: {},
+            timeframe: indicator.timeframe
+          };
         default:
           return {
             name: indicator.name,
@@ -1599,7 +1647,7 @@ app.get('/refreshdb-progress', (req, res) => {
 
 // Simplified background processing function
 async function processSimpleRefreshInBackground(totalResults) {
-  const cancelToken = globalRefreshState.cancelToken;
+  const cancelToken = globalRefreshState.cancelToken || { cancel: false };
   const progress = globalRefreshState.progress;
   
   try {
@@ -1751,13 +1799,37 @@ async function processSimpleRefreshInBackground(totalResults) {
     const fulfilled = results.filter(r => r.status === 'fulfilled').length;
     const rejected = results.filter(r => r.status === 'rejected').length;
     
-    progress.status = 'completed';
-    progress.message = `🎉 BULK refresh completed! ${progress.successful} symbols updated successfully in record time!`;
-    globalRefreshState.isRunning = false;
-    
     console.log(`🎯 BULK Database refresh completed!`);
     console.log(`📊 Stats: Processed: ${progress.processed}, Successful: ${progress.successful}, Failed: ${progress.failed}`);
     console.log(`⚡ Performance: ${fulfilled} fulfilled, ${rejected} rejected promises`);
+    
+    // Check if we have precalculated indicators to process
+    if (precalculatedIndicators.indicators && precalculatedIndicators.indicators.length > 0) {
+      console.log('🔄 Starting precalculation after DB refresh...');
+      
+      // Update progress to precalculation phase
+      progress.status = 'precalculating';
+      progress.message = `🧮 Starting precalculation for ${precalculatedIndicators.indicators.length} indicators...`;
+      progress.phase = 'precalculation';
+      
+      // Start precalculation process
+      try {
+        await processPrecalculatedIndicatorsForRefresh(precalculatedIndicators.indicators, progress);
+        
+        // Final completion
+        progress.status = 'completed';
+        progress.message = `🎉 Database refresh and precalculation completed! ${progress.successful} symbols updated successfully!`;
+      } catch (error) {
+        console.error('Precalculation error:', error);
+        progress.status = 'completed_with_warnings';
+        progress.message = `🎉 Database refresh completed, but precalculation failed: ${error.message}`;
+      }
+    } else {
+      progress.status = 'completed';
+      progress.message = `🎉 BULK refresh completed! ${progress.successful} symbols updated successfully in record time!`;
+    }
+    
+    globalRefreshState.isRunning = false;
     
   } catch (error) {
     progress.status = 'error';
@@ -1767,11 +1839,877 @@ async function processSimpleRefreshInBackground(totalResults) {
   }
 }
 
+// Modified precalculation function for refresh process with progress tracking
+async function processPrecalculatedIndicatorsForRefresh(indicators, progress) {
+  try {
+    console.log('📊 Processing precalculated indicators for all stocks during refresh...');
+    console.log('🔍 Input indicators:', JSON.stringify(indicators, null, 2));
+    
+    // Create dedicated precalculated storage directory
+    const precalculatedDir = path.join(__dirname, 'precalculatedStorage');
+    if (!fs.existsSync(precalculatedDir)) {
+      fs.mkdirSync(precalculatedDir, { recursive: true });
+    }
+    
+    // Convert indicators to the format expected by processStocksWithIndicators
+    const formattedIndicators = indicators.map(indicator => {
+      const params = indicator.params || {};
+      
+      // Handle different indicator types
+      switch(indicator.name.toLowerCase()) {
+        case 'sma':
+          return {
+            name: 'sma',
+            period: params.period || 20,
+            params: {},
+            timeframe: indicator.timeframe
+          };
+        case 'ema':
+          return {
+            name: 'ema', 
+            period: params.period || 20,
+            params: {},
+            timeframe: indicator.timeframe
+          };
+        case 'rsi':
+          return {
+            name: 'rsi',
+            period: params.period || 14,
+            params: {},
+            timeframe: indicator.timeframe
+          };
+        case 'bollinger':
+        case 'bb':
+          return {
+            name: 'bollinger',
+            period: params.period || 20,
+            params: {
+              stdDev: params.stdDev || 2
+            },
+            timeframe: indicator.timeframe
+          };
+        case 'volume':
+          return {
+            name: 'volume',
+            period: 1,
+            params: {},
+            timeframe: indicator.timeframe
+          };
+        case 'pctchg':
+        case 'percent_change':
+        case 'pct_change':
+        case '%_change':
+          return {
+            name: 'pctchg',
+            period: 1,
+            params: {},
+            timeframe: indicator.timeframe
+          };
+        default:
+          return {
+            name: indicator.name,
+            period: params.period || 20,
+            params: params,
+            timeframe: indicator.timeframe
+          };
+      }
+    });
+    
+    // Update progress
+    progress.message = `🧮 Processing indicators for ${STOCK_SYMBOLS.length} stocks...`;
+    progress.precalcTotal = STOCK_SYMBOLS.length;
+    progress.precalcProcessed = 0;
+    
+    // Import queryService to use processStocksWithIndicators
+    const { processStocksWithIndicators } = require('./services/queryService');
+    
+    // Extract unique timeframes
+    const timeframes = [...new Set(indicators.map(i => i.timeframe))];
+    
+    console.log(`🚀 Processing ${formattedIndicators.length} indicators across ${timeframes.length} timeframes for ${STOCK_SYMBOLS.length} stocks...`);
+    console.log('📈 Formatted indicators:', formattedIndicators);
+    console.log('🕐 Using timeframes:', timeframes);
+    
+    // Process all stocks with the required indicators
+    await processStocksWithIndicators({
+      indicators: formattedIndicators,
+      timeframes: timeframes
+    }, STOCK_SYMBOLS);
+    
+    console.log(`✅ Processed ${formattedIndicators.length} indicator files directly to precalculatedStorage`);
+    console.log(`📂 Storage location: ${precalculatedDir}`);
+    
+    // Update precalculated indicators status
+    precalculatedIndicators.status = 'completed';
+    precalculatedIndicators.lastUpdated = new Date().toISOString();
+    savePrecalculatedIndicators();
+    
+    console.log('✅ Precalculated indicators processing completed successfully during refresh');
+    
+  } catch (error) {
+    console.error('Error processing precalculated indicators during refresh:', error);
+    throw error;
+  }
+}
+
+// ==================== CSV UPLOAD ENDPOINTS ====================
+
+// Global state for CSV upload progress
+let csvUploadProgress = {
+  isRunning: false,
+  phase: 'idle',
+  message: '',
+  processed: 0,
+  total: 0,
+  percentage: 0,
+  symbolCount: 0,
+  sseClients: []
+};
+
+// Helper function to send SSE updates to all connected clients
+function sendCSVProgressUpdate(data) {
+  console.log(`📡 SSE Update: ${data.phase} - ${data.percentage}% - ${data.message}`);
+  console.log(`📡 Connected clients: ${csvUploadProgress.sseClients.length}`);
+  
+  // Update local state
+  csvUploadProgress.isRunning = data.isRunning !== false;
+  csvUploadProgress.phase = data.phase;
+  csvUploadProgress.message = data.message;
+  csvUploadProgress.processed = data.processed || 0;
+  csvUploadProgress.total = data.total || 100;
+  csvUploadProgress.percentage = data.percentage || 0;
+  
+  csvUploadProgress.sseClients.forEach((client, index) => {
+    try {
+      client.write(`data: ${JSON.stringify(data)}\n\n`);
+    } catch (error) {
+      console.log(`❌ Failed to send to client ${index}, removing:`, error.message);
+      // Remove disconnected clients
+      const clientIndex = csvUploadProgress.sseClients.indexOf(client);
+      if (clientIndex > -1) {
+        csvUploadProgress.sseClients.splice(clientIndex, 1);
+      }
+    }
+  });
+}
+
+// SSE endpoint for CSV upload progress
+app.get('/csv-upload-progress', (req, res) => {
+  console.log('🔗 New SSE client connected for CSV upload progress');
+  
+  // Set up SSE headers
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*'
+  });
+
+  // Add client to the list
+  csvUploadProgress.sseClients.push(res);
+  console.log(`📊 Total connected clients: ${csvUploadProgress.sseClients.length}`);
+
+  // Send current progress immediately
+  const initialProgress = {
+    isRunning: csvUploadProgress.isRunning,
+    phase: csvUploadProgress.phase,
+    message: csvUploadProgress.message,
+    processed: csvUploadProgress.processed,
+    total: csvUploadProgress.total,
+    percentage: csvUploadProgress.percentage,
+    symbolCount: csvUploadProgress.symbolCount
+  };
+  
+  console.log('📤 Sending initial progress:', initialProgress);
+  res.write(`data: ${JSON.stringify(initialProgress)}\n\n`);
+
+  // Clean up on client disconnect
+  req.on('close', () => {
+    console.log('❌ SSE client disconnected');
+    const index = csvUploadProgress.sseClients.indexOf(res);
+    if (index > -1) {
+      csvUploadProgress.sseClients.splice(index, 1);
+      console.log(`📊 Remaining connected clients: ${csvUploadProgress.sseClients.length}`);
+    }
+  });
+});
+
+// CSV Upload and Symbol Extraction endpoint
+app.post('/upload-csv', upload.single('csvFile'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'No file uploaded' 
+      });
+    }
+
+    // Initialize progress tracking
+    csvUploadProgress.isRunning = true;
+    csvUploadProgress.phase = 'parsing';
+    csvUploadProgress.message = 'Parsing CSV file...';
+    csvUploadProgress.processed = 0;
+    csvUploadProgress.total = 100;
+    csvUploadProgress.percentage = 5;
+
+    // Send initial progress update
+    sendCSVProgressUpdate({
+      isRunning: true,
+      phase: 'parsing',
+      message: 'Parsing CSV file...',
+      processed: 0,
+      total: 100,
+      percentage: 5
+    });
+
+    console.log('📁 Processing CSV file:', req.file.originalname);
+
+    // Read and parse CSV file
+    const csvData = fs.readFileSync(req.file.path, 'utf8');
+    const symbols = new Set(); // Use Set to avoid duplicates
+
+    // Parse CSV
+    parse(csvData, {
+      columns: true, // Use first row as column headers
+      skip_empty_lines: true,
+      trim: true
+    }, (err, records) => {
+      if (err) {
+        console.error('CSV parsing error:', err);
+        // Clean up uploaded file
+        fs.unlinkSync(req.file.path);
+        return res.status(400).json({
+          success: false,
+          error: 'Failed to parse CSV file: ' + err.message
+        });
+      }
+
+      try {
+        // Extract symbols from CSV records
+        // Look for common column names that might contain symbols
+        const symbolColumns = ['symbol', 'Symbol', 'SYMBOL', 'stock', 'Stock', 'STOCK', 
+                              'ticker', 'Ticker', 'TICKER', 'name', 'Name', 'NAME'];
+        
+        records.forEach(record => {
+          // Try to find symbol in any of the possible columns
+          for (const colName of symbolColumns) {
+            if (record[colName]) {
+              const symbol = record[colName].toString().trim().toUpperCase();
+              if (symbol && symbol.length > 0) {
+                symbols.add(symbol);
+                break; // Found symbol, no need to check other columns
+              }
+            }
+          }
+        });
+
+        // Clean up uploaded file
+        fs.unlinkSync(req.file.path);
+
+        const extractedSymbols = Array.from(symbols).sort();
+        
+        console.log(`✅ Extracted ${extractedSymbols.length} unique symbols from CSV`);
+        
+        // Update progress after extraction
+        csvUploadProgress.symbolCount = extractedSymbols.length;
+        sendCSVProgressUpdate({
+          isRunning: true,
+          phase: 'extracted',
+          message: `Extracted ${extractedSymbols.length} symbols from CSV`,
+          processed: 20,
+          total: 100,
+          percentage: 20,
+          symbolCount: extractedSymbols.length
+        });
+        
+        // Send immediate response with basic info
+        res.json({
+          success: true,
+          message: 'CSV processing started',
+          symbolCount: extractedSymbols.length,
+          sampleSymbols: extractedSymbols.slice(0, 10), // Show first 10 as preview
+          progressUrl: '/csv-upload-progress'
+        });
+
+        // Continue processing in background
+        processCSVSymbolsInBackground(extractedSymbols);
+
+      } catch (error) {
+        console.error('Symbol extraction error:', error);
+        // Clean up uploaded file
+        fs.unlinkSync(req.file.path);
+        
+        // Send error update via SSE
+        sendCSVProgressUpdate({
+          isRunning: false,
+          phase: 'error',
+          message: 'Failed to extract symbols: ' + error.message,
+          processed: 0,
+          total: 100,
+          percentage: 0
+        });
+        
+        res.status(500).json({
+          success: false,
+          error: 'Failed to extract symbols: ' + error.message
+        });
+      }
+    });
+
+  } catch (error) {
+    console.error('CSV upload error:', error);
+    // Clean up uploaded file if it exists
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    
+    // Send error update via SSE
+    sendCSVProgressUpdate({
+      isRunning: false,
+      phase: 'error',
+      message: 'Upload failed: ' + error.message,
+      processed: 0,
+      total: 100,
+      percentage: 0
+    });
+    
+    res.status(500).json({
+      success: false,
+      error: 'Upload failed: ' + error.message
+    });
+  }
+});
+
+// Background function to process CSV symbols and trigger refresh
+async function processCSVSymbolsInBackground(extractedSymbols) {
+  try {
+    // Update progress - updating constants
+    sendCSVProgressUpdate({
+      isRunning: true,
+      phase: 'updating_constants',
+      message: 'Updating symbol constants...',
+      processed: 30,
+      total: 100,
+      percentage: 30
+    });
+
+    // Read the current constants file
+    const constantsPath = path.join(__dirname, 'stockSymbols.constants.js');
+    let constantsContent = fs.readFileSync(constantsPath, 'utf8');
+    
+    // Replace the STOCK_SYMBOLS array
+    const newSymbolsArray = `const STOCK_SYMBOLS = [\n  '${extractedSymbols.join("',\n  '")}'\n];`;
+    const updatedContent = constantsContent.replace(
+      /const STOCK_SYMBOLS = \[[^\]]*\];/s,
+      newSymbolsArray
+    );
+    
+    // Write the updated content back to the file
+    fs.writeFileSync(constantsPath, updatedContent, 'utf8');
+    console.log(`📝 Updated stockSymbols.constants.js with ${extractedSymbols.length} symbols`);
+
+    // Reload the constants (clear require cache and require again)
+    delete require.cache[require.resolve('./stockSymbols.constants.js')];
+    const { STOCK_SYMBOLS: UPDATED_SYMBOLS } = require('./stockSymbols.constants.js');
+    
+    console.log(`✅ Constants reloaded. New symbol count: ${UPDATED_SYMBOLS.length}`);
+
+    // Update progress - starting refresh
+    sendCSVProgressUpdate({
+      isRunning: true,
+      phase: 'starting_refresh',
+      message: 'Starting database refresh...',
+      processed: 40,
+      total: 100,
+      percentage: 40
+    });
+
+    // Start refresh DB process with updated symbols
+    if (globalRefreshState.isRunning) {
+      throw new Error('A refresh process is already running. Please wait for it to complete.');
+    }
+
+    globalRefreshState.isRunning = true;
+    globalRefreshState.cancelToken = { cancel: false };
+    globalRefreshState.progress = {
+      status: 'starting',
+      processed: 0,
+      successful: 0,
+      failed: 0,
+      total: UPDATED_SYMBOLS.length,
+      message: 'Initializing refresh with updated symbols...'
+    };
+
+    // Start the refresh process in background with progress integration
+    processSimpleRefreshInBackgroundWithCSV();
+
+  } catch (error) {
+    console.error('Background CSV processing error:', error);
+    sendCSVProgressUpdate({
+      isRunning: false,
+      phase: 'error',
+      message: 'Failed to process symbols: ' + error.message,
+      processed: 0,
+      total: 100,
+      percentage: 0
+    });
+  }
+}
+
+// Modified refresh function that integrates with CSV upload progress
+async function processSimpleRefreshInBackgroundWithCSV() {
+  const cancelToken = globalRefreshState.cancelToken || { cancel: false };
+  const progress = globalRefreshState.progress;
+  
+  try {
+    const dbPath = path.join(__dirname, 'db');
+    
+    // Delete existing db folder
+    if (fs.existsSync(dbPath)) {
+      console.log('Deleting existing db folder...');
+      fs.rmSync(dbPath, { recursive: true, force: true });
+    }
+    
+    // Create fresh db folder
+    fs.mkdirSync(dbPath, { recursive: true });
+    
+    console.log(`🚀 Starting BULK processing for ${STOCK_SYMBOLS.length} symbols...`);
+    
+    // Update CSV progress - database refresh started
+    sendCSVProgressUpdate({
+      isRunning: true,
+      phase: 'refreshing_database',
+      message: `Refreshing database for ${STOCK_SYMBOLS.length} stocks...`,
+      processed: 50,
+      total: 100,
+      percentage: 50
+    });
+    
+    // Process stocks with controlled concurrency (similar to original logic)
+    const CONCURRENT_LIMIT = 50;
+    const DELAY_BETWEEN_REQUESTS = 10;
+    
+    let processed = 0;
+    let successful = 0;
+    let failed = 0;
+    
+    const processConcurrently = async (symbols, limit) => {
+      const results = [];
+      for (let i = 0; i < symbols.length; i += limit) {
+        // Check for cancellation
+        if (cancelToken.cancel) break;
+        
+        const batch = symbols.slice(i, i + limit);
+        const batchPromises = batch.map(symbol => 
+          processStockWithDelay(symbol, DELAY_BETWEEN_REQUESTS)
+        );
+        
+        const batchResults = await Promise.allSettled(batchPromises);
+        results.push(...batchResults);
+        
+        // Update progress
+        processed += batch.length;
+        successful = results.filter(r => r.status === 'fulfilled' && r.value?.success === true).length;
+        failed = results.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && r.value?.success === false)).length;
+        
+        // Update both global refresh state and CSV progress
+        progress.processed = processed;
+        progress.successful = successful;
+        progress.failed = failed;
+        progress.percentage = Math.round((processed / STOCK_SYMBOLS.length) * 100);
+        
+        // Calculate CSV progress (50% to 85% for database refresh)
+        const dbProgress = (processed / STOCK_SYMBOLS.length) * 35; // 35% of total
+        sendCSVProgressUpdate({
+          isRunning: true,
+          phase: 'refreshing_database',
+          message: `Database refresh: ${processed}/${STOCK_SYMBOLS.length} (${successful} successful)`,
+          processed: 50 + dbProgress,
+          total: 100,
+          percentage: 50 + dbProgress,
+          dbStats: { processed, successful, failed, total: STOCK_SYMBOLS.length }
+        });
+        
+        console.log(`📊 Processed ${processed}/${STOCK_SYMBOLS.length} symbols (✅ ${successful} success, ❌ ${failed} failed)`);
+      }
+      
+      return results;
+    };
+    
+    const processStockWithDelay = (symbol, delay) => {
+      return new Promise((resolve) => {
+        setTimeout(async () => {
+          try {
+            const result = await processStockData(symbol);
+            resolve(result);
+          } catch (error) {
+            resolve({ symbol, success: false, error: error.message });
+          }
+        }, delay);
+      });
+    };
+    
+    const processStockData = async (symbol) => {
+      const symbolPath = path.join(dbPath, `${symbol}.json`);
+      
+      try {
+        console.log(`🔄 Fetching data for ${symbol}...`);
+        
+        // Use the same API endpoint and format as the working refresh endpoint
+        const queryString = "select high, low, open, close, volume";
+        const data = qs.stringify({
+          query: queryString,
+          use_live: 1,
+          limit: 1,
+          size: 2000, // Default size like the working version
+          widget_id: -1,
+          end_time: -1,
+          timeframe: "Daily",
+          symbol: symbol,
+          scan_link: "scanlink:b6b0c6620714e44ab63d271d0ddbd498"
+        });
+        
+        const response = await axios.post('https://chartink.com/oapi', data, {
+          headers: {
+            'accept': 'application/json, text/plain, */*',
+            'accept-language': 'en-GB,en-US;q=0.9,en;q=0.8,la;q=0.7',
+            'content-type': 'application/x-www-form-urlencoded',
+            'cookie': '_ga=GA1.2.827081830.1738516382; _gid=GA1.2.158232909.1738612317; XSRF-TOKEN=eyJpdiI6IjVrL2dLek8rSVE4aGFTWWllazd6cHc9PSIsInZhbHVlIjoiQmVUcmlLb0Z2dk9uYVlPeUpJL3d1OTQ0MTdvcUpWZGt6V2tEaHpEeUJidGJVOENDeFpYbnJiaVgxV3NielhMbjBGUzlTVmNuektCaHhTb0V3MFVnS1VUbWZRVCtEYXFxYlhrYzZ4eWpnY2RuZjltSlJJd1NaUkE4dlFTbVA5aDkiLCJtYWMiOiJkYzM1YzY2YTIwOTM5NTQzODNjMzNkMDZiNWMwY2NkNzc5MDQ5OTFmOGJlMTgwMzJmYjM1NDdmNTFjNzAyOGY2IiwidGFnIjoiIn0%3D; ci_session=eyJpdiI6InVrKzF5dXE4b2lzazMxU2lQWkJMN0E9PSIsInZhbHVlIjoiTzdMOHNsZDFJZ1dYd0JxT2EyQ0NVZGIvNUZUdmJsOHFtSXZuc002bnBrck5RSmVpS1NIRTZUUTZjWU9NVTNOcmM0SmtOSnF5UVI0cGVlU2VrNGJCM3Y2NkhKdTBvdWJlVEZzS3k2VDdtNGRDbzJqemo5M3gzbVFWaXEzQWFkbjAiLCJtYWMiOiI2YjYzMzI5N2UwOTZmYTM3OTNlNWMwNzk1NmFjY2E4MTdlMzQxNGVjYzIxMDUxOWE1ODkyYTg1MTM1NTU2NjJjIiwidGFnIjoiIn0%3D',
+            'dnt': '1',
+            'origin': 'https://chartink.com',
+            'priority': 'u=1, i',
+            'referer': 'https://chartink.com/screener/copy-double-volume-563',
+            'sec-ch-ua': '"Not A(Brand";v="8", "Chromium";v="132", "Google Chrome";v="132"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'sec-fetch-dest': 'empty',
+            'sec-fetch-mode': 'cors',
+            'sec-fetch-site': 'same-origin',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
+            'x-requested-with': 'XMLHttpRequest'
+          }
+        });
+        
+        // Extract data using the same logic as the working refresh endpoint
+        const groupData = response?.data?.groupData?.[0]?.results;
+        const metaData = response?.data?.metaData?.[0]?.tradeTimes;
+        let mappedData = [];
+        
+        if (groupData && metaData) {
+          const highs = groupData[0]?.high || [];
+          const lows = groupData[1]?.low || [];
+          const opens = groupData[2]?.open || [];
+          const closes = groupData[3]?.close || [];
+          const volumes = groupData[4]?.volume || [];
+          
+          highs.forEach((element, idx) => {
+            if(idx < metaData.length){
+              mappedData.push({
+                open: opens[idx] !== undefined && opens[idx] !== null ? String(opens[idx]) : '',
+                low: lows[idx] !== undefined && lows[idx] !== null ? String(lows[idx]) : '',
+                high: highs[idx] !== undefined && highs[idx] !== null ? String(highs[idx]) : '',
+                close: closes[idx] !== undefined && closes[idx] !== null ? String(closes[idx]) : '',
+                volume: volumes[idx] !== undefined && volumes[idx] !== null ? String(volumes[idx]) : null,
+                date: metaData[idx] !== undefined && metaData[idx] !== null ? String(getNextDayTimestamp(metaData[idx])) : '',
+                day: metaData[idx] !== undefined && metaData[idx] !== null ? getDayOfWeekName(getNextDayTimestamp(metaData[idx])) : '',
+              });
+            }
+          });
+          
+          // Save in the same format as the working version
+          fs.writeFileSync(symbolPath, JSON.stringify({ data: mappedData }, null, 2), 'utf8');
+          console.log(`✅ Saved ${symbol}.json (${mappedData.length} records)`);
+          return { symbol, success: true };
+        } else {
+          // This is expected for symbols with no data - don't treat as error
+          console.log(`⚠️ No data available for ${symbol} (might be delisted or invalid)`);
+          return { symbol, success: false, error: 'No data available' };
+        }
+      } catch (error) {
+        console.log(`❌ Failed to fetch ${symbol}:`, error.message);
+        throw new Error(`Failed to fetch data for ${symbol}: ${error.message}`);
+      }
+    };
+    
+    // Process with controlled concurrency
+    console.log(`⏳ Processing all ${STOCK_SYMBOLS.length} requests with ${CONCURRENT_LIMIT} concurrent limit...`);
+    const results = await processConcurrently(STOCK_SYMBOLS, CONCURRENT_LIMIT);
+    
+    // Check for cancellation
+    if (cancelToken.cancel) {
+      console.log('Refresh cancelled by user');
+      progress.status = 'cancelled';
+      progress.message = 'Refresh cancelled by user';
+      globalRefreshState.isRunning = false;
+      sendCSVProgressUpdate({
+        isRunning: false,
+        phase: 'cancelled',
+        message: 'Process cancelled by user',
+        processed: 0,
+        total: 100,
+        percentage: 0
+      });
+      return;
+    }
+    
+    // Calculate final stats
+    const fulfilled = results.filter(r => r.status === 'fulfilled').length;
+    const rejected = results.filter(r => r.status === 'rejected').length;
+    
+    console.log(`🎯 BULK Database refresh completed!`);
+    console.log(`📊 Stats: Processed: ${progress.processed}, Successful: ${progress.successful}, Failed: ${progress.failed}`);
+    console.log(`⚡ Performance: ${fulfilled} fulfilled, ${rejected} rejected promises`);
+    
+    // Check if we have precalculated indicators to process
+    if (precalculatedIndicators.indicators && precalculatedIndicators.indicators.length > 0) {
+      console.log('🔄 Starting precalculation after DB refresh...');
+      
+      // Update CSV progress to precalculation phase
+      sendCSVProgressUpdate({
+        isRunning: true,
+        phase: 'precalculating',
+        message: `Starting precalculation for ${precalculatedIndicators.indicators.length} indicators...`,
+        processed: 85,
+        total: 100,
+        percentage: 85
+      });
+      
+      // Start precalculation process
+      try {
+        await processPrecalculatedIndicatorsForRefreshWithCSV(precalculatedIndicators.indicators, progress);
+        
+        // Final completion
+        sendCSVProgressUpdate({
+          isRunning: false,
+          phase: 'completed',
+          message: `✅ Database refresh and precalculation completed! ${progress.successful} symbols updated successfully!`,
+          processed: 100,
+          total: 100,
+          percentage: 100
+        });
+      } catch (error) {
+        console.error('Precalculation error:', error);
+        sendCSVProgressUpdate({
+          isRunning: false,
+          phase: 'completed_with_warnings',
+          message: `✅ Database refresh completed, but precalculation failed: ${error.message}`,
+          processed: 100,
+          total: 100,
+          percentage: 100
+        });
+      }
+    } else {
+      // Final completion without precalculation
+      sendCSVProgressUpdate({
+        isRunning: false,
+        phase: 'completed',
+        message: `✅ Database refresh completed! ${progress.successful} symbols updated successfully!`,
+        processed: 100,
+        total: 100,
+        percentage: 100
+      });
+    }
+    
+    globalRefreshState.isRunning = false;
+    
+  } catch (error) {
+    progress.status = 'error';
+    progress.error = error.message;
+    globalRefreshState.isRunning = false;
+    console.error('Database refresh error:', error);
+    
+    sendCSVProgressUpdate({
+      isRunning: false,
+      phase: 'error',
+      message: 'Database refresh failed: ' + error.message,
+      processed: 0,
+      total: 100,
+      percentage: 0
+    });
+  }
+}
+
+// Modified precalculation function for CSV upload process
+async function processPrecalculatedIndicatorsForRefreshWithCSV(indicators, progress) {
+  try {
+    console.log('📊 Processing precalculated indicators during CSV upload process...');
+    
+    // Create dedicated precalculated storage directory
+    const precalculatedDir = path.join(__dirname, 'precalculatedStorage');
+    if (!fs.existsSync(precalculatedDir)) {
+      fs.mkdirSync(precalculatedDir, { recursive: true });
+    }
+    
+    // Convert indicators to the format expected by processStocksWithIndicators
+    const formattedIndicators = indicators.map(indicator => {
+      const params = indicator.params || {};
+      
+      // Handle different indicator types (same logic as before)
+      switch(indicator.name.toLowerCase()) {
+        case 'sma':
+          return { name: 'sma', period: params.period || 20, params: {}, timeframe: indicator.timeframe };
+        case 'ema':
+          return { name: 'ema', period: params.period || 20, params: {}, timeframe: indicator.timeframe };
+        case 'rsi':
+          return { name: 'rsi', period: params.period || 14, params: {}, timeframe: indicator.timeframe };
+        case 'bollinger':
+        case 'bb':
+          return { name: 'bollinger', period: params.period || 20, params: { stdDev: params.stdDev || 2 }, timeframe: indicator.timeframe };
+        case 'volume':
+          return { name: 'volume', period: 1, params: {}, timeframe: indicator.timeframe };
+        case 'pctchg':
+        case 'percent_change':
+        case 'pct_change':
+        case '%_change':
+          return { name: 'pctchg', period: 1, params: {}, timeframe: indicator.timeframe };
+        default:
+          return { name: indicator.name, period: params.period || 20, params: params, timeframe: indicator.timeframe };
+      }
+    });
+    
+    // Extract unique timeframes
+    const timeframes = [...new Set(indicators.map(i => i.timeframe))];
+    
+    console.log(`🚀 Processing ${formattedIndicators.length} indicators across ${timeframes.length} timeframes for ${STOCK_SYMBOLS.length} stocks...`);
+    
+    // Import queryService to use processStocksWithIndicators
+    const { processStocksWithIndicators } = require('./services/queryService');
+    
+    // Set up a global progress handler to capture precalculation progress
+    const originalUpdateProgress = global.updateProgress;
+    global.updateProgress = (progressData) => {
+      if (progressData.phase === 'processing_indicators') {
+        const precalcProgress = Math.round((progressData.processed / progressData.total) * 100);
+        const overallProgress = 85 + (precalcProgress * 0.15); // 85-100%
+        
+        sendCSVProgressUpdate({
+          isRunning: true,
+          phase: 'precalculating',
+          message: `Precalculating indicators: ${progressData.processed}/${progressData.total} stocks`,
+          processed: overallProgress,
+          total: 100,
+          percentage: overallProgress,
+          precalcStats: {
+            processed: progressData.processed,
+            total: progressData.total,
+            percentage: precalcProgress
+          }
+        });
+      }
+    };
+    
+    try {
+      // Process all stocks with the required indicators
+      await processStocksWithIndicators({
+        indicators: formattedIndicators,
+        timeframes: timeframes
+      }, STOCK_SYMBOLS);
+    } finally {
+      // Restore the original updateProgress function
+      global.updateProgress = originalUpdateProgress;
+    }
+    
+    console.log(`✅ Processed ${formattedIndicators.length} indicator files directly to precalculatedStorage`);
+    console.log(`📂 Storage location: ${precalculatedDir}`);
+    
+    // Update precalculated indicators status
+    precalculatedIndicators.status = 'completed';
+    precalculatedIndicators.lastUpdated = new Date().toISOString();
+    savePrecalculatedIndicators();
+    
+    console.log('✅ Precalculated indicators processing completed successfully during CSV upload');
+    
+  } catch (error) {
+    console.error('Error processing precalculated indicators during CSV upload:', error);
+    throw error;
+  }
+}
+
+// Update symbols and refresh DB endpoint
+app.post('/update-symbols-and-refresh', async (req, res) => {
+  try {
+    const { symbols } = req.body;
+    
+    if (!symbols || !Array.isArray(symbols) || symbols.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No symbols provided'
+      });
+    }
+
+    console.log(`🔄 Updating symbol list with ${symbols.length} symbols...`);
+
+    // Update the constants file
+    const constantsPath = path.join(__dirname, 'stockSymbols.constants.js');
+    const newConstantsContent = `const STOCK_SYMBOLS = ${JSON.stringify(symbols, null, 2)};
+
+const TOTAL_SYMBOLS = STOCK_SYMBOLS.length;
+
+module.exports = {
+  STOCK_SYMBOLS,
+  TOTAL_SYMBOLS
+};
+`;
+
+    // Write updated constants file
+    fs.writeFileSync(constantsPath, newConstantsContent, 'utf8');
+    
+    console.log('📝 Updated stockSymbols.constants.js');
+
+    // Reload the constants (clear require cache and require again)
+    delete require.cache[require.resolve('./stockSymbols.constants.js')];
+    const { STOCK_SYMBOLS: UPDATED_SYMBOLS } = require('./stockSymbols.constants.js');
+    
+    console.log(`✅ Constants reloaded. New symbol count: ${UPDATED_SYMBOLS.length}`);
+
+    // Start refresh DB process with updated symbols
+    if (globalRefreshState.isRunning) {
+      return res.status(409).json({
+        success: false,
+        error: 'A refresh process is already running. Please wait for it to complete.'
+      });
+    }
+
+    globalRefreshState.isRunning = true;
+    globalRefreshState.cancelToken = { cancel: false };
+    globalRefreshState.progress = {
+      status: 'starting',
+      processed: 0,
+      successful: 0,
+      failed: 0,
+      total: UPDATED_SYMBOLS.length,
+      message: 'Initializing refresh with updated symbols...'
+    };
+
+    // Start the refresh process in background
+    processSimpleRefreshInBackground(2000); // Default to 2000 total results
+
+    res.json({
+      success: true,
+      message: 'Symbols updated and database refresh started',
+      symbolCount: UPDATED_SYMBOLS.length,
+      progressUrl: '/refreshdb-progress'
+    });
+
+  } catch (error) {
+    console.error('Update symbols and refresh error:', error);
+    globalRefreshState.isRunning = false;
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update symbols and refresh: ' + error.message
+    });
+  }
+});
+
+// ==================== END CSV UPLOAD ENDPOINTS ====================
+
 // Start server
 app.listen(port, () => {
   console.log(`Server is running on http://localhost:${port}`);
   console.log('Available endpoints:');
   console.log('  GET /query/progress - Get current query progress');
   console.log('  POST /query - Execute stock query');
+  console.log('  POST /upload-csv - Upload CSV and extract symbols');
+  console.log('  POST /update-symbols-and-refresh - Update symbol list and refresh DB');
   console.log('  GET /health - Server health check');
 });

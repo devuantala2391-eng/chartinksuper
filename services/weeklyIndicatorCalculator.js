@@ -321,6 +321,13 @@ function calculateWeeklyIndicatorsDaily(candles, indicators) {
           calculatedIndicators[`weekly_rsi_${period}`] = calculateWeeklyRSIDaily(candles, period);
           break;
           
+        case 'pctchg':
+        case 'percent_change':
+        case 'pct_change':
+        case '%_change':
+          calculatedIndicators[`weekly_pctchg_${period || 1}`] = calculateWeeklyPercentChangeDaily(candles, period || 1);
+          break;
+          
         // Add more indicators as needed
       }
     } catch (error) {
@@ -689,6 +696,127 @@ function calculateMonthlyBollingerBandsDaily(candles, period = 20, standardDevia
   return result;
 }
 
+// Calculate Weekly Percent Change for each day
+function calculateWeeklyPercentChangeDaily(candles, period = 1) {
+  const result = [];
+  
+  // Group candles by week
+  const weeklyData = new Map();
+  
+  candles.forEach(candle => {
+    const date = new Date(Number(candle.date));
+    const weekKey = getISOWeekKey(date);
+    
+    if (!weeklyData.has(weekKey)) {
+      weeklyData.set(weekKey, []);
+    }
+    weeklyData.get(weekKey).push(candle);
+  });
+  
+  // Sort weeks chronologically
+  const sortedWeeks = Array.from(weeklyData.keys()).sort();
+  
+  // For each candle, calculate the weekly percent change
+  candles.forEach((candle, index) => {
+    const currentDate = new Date(Number(candle.date));
+    const currentWeekKey = getISOWeekKey(currentDate);
+    const currentWeekIndex = sortedWeeks.indexOf(currentWeekKey);
+    const currentClose = sanitizeNumericValue(candle.close);
+    
+    if (currentClose === null || currentWeekIndex < period) {
+      result.push(null);
+      return;
+    }
+    
+    // Find the close value from 'period' weeks ago
+    const previousWeekKey = sortedWeeks[currentWeekIndex - period];
+    const previousWeekCandles = weeklyData.get(previousWeekKey);
+    
+    if (!previousWeekCandles || previousWeekCandles.length === 0) {
+      result.push(null);
+      return;
+    }
+    
+    // Get the last trading day of the previous week
+    const previousWeekLastCandle = previousWeekCandles[previousWeekCandles.length - 1];
+    const previousClose = sanitizeNumericValue(previousWeekLastCandle.close);
+    
+    if (previousClose === null || previousClose === 0) {
+      result.push(null);
+    } else {
+      const pctChange = ((currentClose - previousClose) / previousClose) * 100;
+      result.push(pctChange);
+    }
+  });
+  
+  return result;
+}
+
+// Calculate Monthly Percent Change for each day
+function calculateMonthlyPercentChangeDaily(candles, period = 1) {
+  const result = [];
+  
+  // Helper to get month key
+  function getMonthKey(date) {
+    return `${date.getUTCFullYear()}-${date.getUTCMonth()}`;
+  }
+  
+  // Group candles by month
+  const monthlyData = new Map();
+  
+  candles.forEach(candle => {
+    const date = new Date(Number(candle.date));
+    const monthKey = getMonthKey(date);
+    
+    if (!monthlyData.has(monthKey)) {
+      monthlyData.set(monthKey, []);
+    }
+    monthlyData.get(monthKey).push(candle);
+  });
+  
+  // Sort months chronologically
+  const sortedMonths = Array.from(monthlyData.keys()).sort((a, b) => {
+    const [yearA, monthA] = a.split('-').map(Number);
+    const [yearB, monthB] = b.split('-').map(Number);
+    return yearA - yearB || monthA - monthB;
+  });
+  
+  // For each candle, calculate the monthly percent change
+  candles.forEach((candle, index) => {
+    const currentDate = new Date(Number(candle.date));
+    const currentMonthKey = getMonthKey(currentDate);
+    const currentMonthIndex = sortedMonths.indexOf(currentMonthKey);
+    const currentClose = sanitizeNumericValue(candle.close);
+    
+    if (currentClose === null || currentMonthIndex < period) {
+      result.push(null);
+      return;
+    }
+    
+    // Find the close value from 'period' months ago
+    const previousMonthKey = sortedMonths[currentMonthIndex - period];
+    const previousMonthCandles = monthlyData.get(previousMonthKey);
+    
+    if (!previousMonthCandles || previousMonthCandles.length === 0) {
+      result.push(null);
+      return;
+    }
+    
+    // Get the last trading day of the previous month
+    const previousMonthLastCandle = previousMonthCandles[previousMonthCandles.length - 1];
+    const previousClose = sanitizeNumericValue(previousMonthLastCandle.close);
+    
+    if (previousClose === null || previousClose === 0) {
+      result.push(null);
+    } else {
+      const pctChange = ((currentClose - previousClose) / previousClose) * 100;
+      result.push(pctChange);
+    }
+  });
+  
+  return result;
+}
+
 module.exports = {
   calculateWeeklySMADaily,
   calculateWeeklyEMADaily,
@@ -697,5 +825,7 @@ module.exports = {
   calculateMonthlySMADaily,
   calculateMonthlyEMADaily,
   calculateWeeklyBollingerBandsDaily,
-  calculateMonthlyBollingerBandsDaily
+  calculateMonthlyBollingerBandsDaily,
+  calculateWeeklyPercentChangeDaily,
+  calculateMonthlyPercentChangeDaily
 };

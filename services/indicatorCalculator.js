@@ -490,22 +490,30 @@ function calculateAllIndicatorsWithTimeframes(candles, indicators, timeframes = 
     result = dailyResult;
   }
   
-  // Calculate weekly indicators if requested
-  if (timeframes.includes('weekly')) {
-    const weeklyCandles = aggregateToWeekly(candles);
+  // ALWAYS calculate weekly OHLC and volume data
+  const weeklyCandles = aggregateToWeekly(candles);
+  
+  // Calculate weekly indicators if requested or if there are weekly indicators
+  if (timeframes.includes('weekly') && weeklyIndicators.length > 0) {
     const weeklyWithIndicators = calculateAllIndicators(weeklyCandles, weeklyIndicators);
-    
     // Map weekly indicators back to daily candles with 'weekly_' prefix
     result = mapAggregatedIndicators(result, weeklyWithIndicators, [], weeklyIndicators);
+  } else {
+    // Even without weekly indicators, map the basic weekly OHLC data
+    result = mapAggregatedIndicators(result, weeklyCandles, [], []);
   }
   
-  // Calculate monthly indicators if requested
-  if (timeframes.includes('monthly')) {
-    const monthlyCandles = aggregateToMonthly(candles);
+  // ALWAYS calculate monthly OHLC and volume data
+  const monthlyCandles = aggregateToMonthly(candles);
+  
+  // Calculate monthly indicators if requested or if there are monthly indicators
+  if (timeframes.includes('monthly') && monthlyIndicators.length > 0) {
     const monthlyWithIndicators = calculateAllIndicators(monthlyCandles, monthlyIndicators);
-    
     // Map monthly indicators back to daily candles with 'monthly_' prefix
     result = mapAggregatedIndicators(result, [], monthlyWithIndicators, monthlyIndicators);
+  } else {
+    // Even without monthly indicators, map the basic monthly OHLC data
+    result = mapAggregatedIndicators(result, [], monthlyCandles, []);
   }
   
   // Add human-readable date field in dd/mm/yy format
@@ -532,6 +540,7 @@ module.exports = {
   calculateMACD,
   calculateStochastic,
   calculateWilliamsR,
+  calculatePercentChange,
   calculateAllIndicators,
   calculateAllIndicatorsWithTimeframes
 };

@@ -179,6 +179,13 @@ function mapAggregatedIndicators(dailyCandles, weeklyCandles, monthlyCandles, in
         weeklyIndicatorValues[`weekly_bb_middle_${period || 20}_${params?.stdDev || 2}`] = weeklyBB.middle;
         weeklyIndicatorValues[`weekly_bb_lower_${period || 20}_${params?.stdDev || 2}`] = weeklyBB.lower;
         break;
+      case 'pctchg':
+      case 'percent_change':
+      case 'pct_change':
+      case '%_change':
+        const { calculateWeeklyPercentChangeDaily } = require('./weeklyIndicatorCalculator');
+        weeklyIndicatorValues[`weekly_pctchg_${period || 1}`] = calculateWeeklyPercentChangeDaily(dailyCandles, period || 1);
+        break;
     }
   });
   
@@ -202,12 +209,19 @@ function mapAggregatedIndicators(dailyCandles, weeklyCandles, monthlyCandles, in
         monthlyIndicatorValues[`monthly_bb_middle_${period || 20}_${params?.stdDev || 2}`] = monthlyBB.middle;
         monthlyIndicatorValues[`monthly_bb_lower_${period || 20}_${params?.stdDev || 2}`] = monthlyBB.lower;
         break;
+      case 'pctchg':
+      case 'percent_change':
+      case 'pct_change':
+      case '%_change':
+        const { calculateMonthlyPercentChangeDaily } = require('./weeklyIndicatorCalculator');
+        monthlyIndicatorValues[`monthly_pctchg_${period || 1}`] = calculateMonthlyPercentChangeDaily(dailyCandles, period || 1);
+        break;
     }
   });
   
-  // Check if volume is requested as an indicator
-  const hasWeeklyVolume = indicators.some(ind => ind.name === 'volume' && ind.timeframe === 'weekly');
-  const hasMonthlyVolume = indicators.some(ind => ind.name === 'volume' && ind.timeframe === 'monthly');
+  // Always calculate weekly and monthly volume (as per user requirement)
+  const hasWeeklyVolume = true;  // Always true now
+  const hasMonthlyVolume = true; // Always true now
   
   // Map indicators to daily candles
   dailyCandles.forEach((dailyCandle, index) => {

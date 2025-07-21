@@ -51,7 +51,8 @@
       "Bash(cmd.exe:*)",
       "Bash(head:*)",
       "Bash(npm run lint)",
-      "Bash(npm uninstall:*)"
+      "Bash(npm uninstall:*)",
+      "Bash(tail:*)"
     ],
     "deny": []
   }

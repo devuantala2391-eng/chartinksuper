@@ -367,15 +367,15 @@ export class PopupComponent implements OnInit {
   ];
   
   fields = [
-    { value: 'close', label: 'Close' },
     { value: 'open', label: 'Open' },
     { value: 'high', label: 'High' },
     { value: 'low', label: 'Low' },
+    { value: 'close', label: 'Close' },
     { value: 'volume', label: 'Volume' },
     { value: 'rsi', label: 'RSI' },
-    { value: 'sma', label: 'SMA' },
-    { value: 'ema', label: 'EMA' },
-    { value: 'bb', label: 'Bollinger Bands' }
+    { value: 'supertrend', label: 'SuperTrend' },
+    { value: 'bb', label: 'Bollinger Bands' },
+    { value: 'pctchg', label: '% Change' }
   ];
   
   ngOnInit() {
@@ -463,13 +463,9 @@ export class PopupComponent implements OnInit {
   getParamLabel(indicator: string, index: number): string {
     const labels: { [key: string]: string[] } = {
       'rsi': ['Period'],
-      'sma': ['Period'],
-      'ema': ['Period'],
       'bb': ['Period', 'Std Dev'],
       'supertrend': ['Period', 'Multiplier'],
-      'macd': ['Fast', 'Slow', 'Signal'],
-      'stochastic': ['K Period', 'D Period', 'Smooth'],
-      'williamsr': ['Period']
+      'pctchg': ['Period']
     };
     
     return labels[indicator]?.[index] || `Param ${index + 1}`;

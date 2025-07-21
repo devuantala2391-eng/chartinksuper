@@ -240,19 +240,15 @@ export class ConditionCompactComponent {
   @Output() remove = new EventEmitter<void>();
   
   fieldOptions = [
-    { value: 'close', label: 'Close', hint: 'Daily closing price' },
-    { value: 'open', label: 'Open', hint: 'Daily opening price' },
-    { value: 'high', label: 'High', hint: 'Daily high' },
-    { value: 'low', label: 'Low', hint: 'Daily low' },
+    { value: 'open', label: 'Open', hint: 'Opening price' },
+    { value: 'high', label: 'High', hint: 'Highest price' },
+    { value: 'low', label: 'Low', hint: 'Lowest price' },
+    { value: 'close', label: 'Close', hint: 'Closing price' },
     { value: 'volume', label: 'Volume', hint: 'Trading volume' },
     { value: 'rsi', label: 'RSI', hint: 'Relative Strength Index' },
-    { value: 'sma', label: 'SMA', hint: 'Simple Moving Average' },
-    { value: 'ema', label: 'EMA', hint: 'Exponential Moving Average' },
-    { value: 'bb', label: 'Bollinger Bands', hint: 'BB upper/middle/lower' },
     { value: 'supertrend', label: 'SuperTrend', hint: 'Trend indicator' },
-    { value: 'macd', label: 'MACD', hint: 'Moving Average Convergence' },
-    { value: 'stochastic', label: 'Stochastic', hint: 'Momentum indicator' },
-    { value: 'williamsr', label: 'Williams %R', hint: 'Overbought/oversold' }
+    { value: 'bb', label: 'Bollinger Bands', hint: 'Bollinger Bands (upper/middle/lower)' },
+    { value: 'pctchg', label: '% Change', hint: 'Percentage change' }
   ];
   
   constructor(private popupService: PopupService) {}
@@ -442,7 +438,7 @@ export class ConditionCompactComponent {
   }
   
   updateIndicatorInfo() {
-    const parameterizedIndicators = ['rsi', 'sma', 'ema', 'bb', 'supertrend', 'macd', 'stochastic', 'williamsr'];
+    const parameterizedIndicators = ['rsi', 'bb', 'supertrend', 'pctchg'];
     
     if (parameterizedIndicators.includes(this.condition.field)) {
       this.condition.indicatorType = 'parameterized';
@@ -452,13 +448,9 @@ export class ConditionCompactComponent {
       if (!this.condition.indicatorParams) {
         const defaults: { [key: string]: string[] } = {
           'rsi': ['14'],
-          'sma': ['20'],
-          'ema': ['20'],
           'bb': ['20', '2'],
           'supertrend': ['10', '3'],
-          'macd': ['12', '26', '9'],
-          'stochastic': ['14', '3', '3'],
-          'williamsr': ['14']
+          'pctchg': ['1']
         };
         this.condition.indicatorParams = defaults[this.condition.field] || [];
       }
@@ -470,7 +462,7 @@ export class ConditionCompactComponent {
   }
   
   updateValueIndicatorInfo() {
-    const parameterizedIndicators = ['rsi', 'sma', 'ema', 'bb', 'supertrend', 'macd', 'stochastic', 'williamsr'];
+    const parameterizedIndicators = ['rsi', 'bb', 'supertrend', 'pctchg'];
     
     if (this.condition.valueField && parameterizedIndicators.includes(this.condition.valueField)) {
       this.condition.valueIndicatorType = 'parameterized';
@@ -480,13 +472,9 @@ export class ConditionCompactComponent {
       if (!this.condition.valueIndicatorParams) {
         const defaults: { [key: string]: string[] } = {
           'rsi': ['14'],
-          'sma': ['20'],
-          'ema': ['20'],
           'bb': ['20', '2'],
           'supertrend': ['10', '3'],
-          'macd': ['12', '26', '9'],
-          'stochastic': ['14', '3', '3'],
-          'williamsr': ['14']
+          'pctchg': ['1']
         };
         this.condition.valueIndicatorParams = defaults[this.condition.valueField] || [];
       }

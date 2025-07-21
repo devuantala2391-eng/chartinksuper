@@ -33,8 +33,8 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
   indicators: PrecalculatedIndicator[] = [];
   newIndicator: PrecalculatedIndicator = {
     timeframe: 'daily',
-    name: 'sma',
-    params: { period: 20 }
+    name: 'rsi',
+    params: { period: 14 }
   };
   loading = false;
   error: string | null = null;
@@ -51,10 +51,10 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
   private apiUrl = 'http://localhost:3000/api';
 
   availableIndicators = [
-    { value: 'sma', label: 'Simple Moving Average (SMA)' },
-    { value: 'ema', label: 'Exponential Moving Average (EMA)' },
     { value: 'rsi', label: 'Relative Strength Index (RSI)' },
+    { value: 'supertrend', label: 'SuperTrend' },
     { value: 'bb', label: 'Bollinger Bands' },
+    { value: 'pctchg', label: '% Change' },
     { value: 'volume', label: 'Volume' }
   ];
 
@@ -149,8 +149,8 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
     // Reset form
     this.newIndicator = {
       timeframe: 'daily',
-      name: 'sma',
-      params: { period: 20 }
+      name: 'rsi',
+      params: { period: 14 }
     };
   }
 
@@ -162,18 +162,25 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
 
     // Parameter validation
     if (indicator.name !== 'volume') {
-      if (!indicator.params.period || indicator.params.period < 1) {
+      if (!indicator.params['period'] || indicator.params['period'] < 1) {
         return 'Period must be a positive number.';
       }
-      if (indicator.params.period > 200) {
+      if (indicator.params['period'] > 200) {
         return 'Period cannot exceed 200.';
       }
     }
 
     // Bollinger Bands specific validation
     if (indicator.name === 'bb') {
-      if (!indicator.params.stdDev || indicator.params.stdDev < 0.1 || indicator.params.stdDev > 5) {
+      if (!indicator.params['stdDev'] || indicator.params['stdDev'] < 0.1 || indicator.params['stdDev'] > 5) {
         return 'Standard deviation must be between 0.1 and 5.';
+      }
+    }
+
+    // SuperTrend specific validation
+    if (indicator.name === 'supertrend') {
+      if (!indicator.params['multiplier'] || indicator.params['multiplier'] < 0.1 || indicator.params['multiplier'] > 10) {
+        return 'Multiplier must be between 0.1 and 10.';
       }
     }
 
@@ -189,11 +196,14 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
     const indicatorName = this.availableIndicators.find(i => i.value === indicator.name)?.label || indicator.name;
     
     let paramStr = '';
-    if (indicator.params.period) {
-      paramStr += ` ${indicator.params.period}`;
+    if (indicator.params['period']) {
+      paramStr += ` ${indicator.params['period']}`;
     }
-    if (indicator.params.stdDev) {
-      paramStr += `,${indicator.params.stdDev}`;
+    if (indicator.params['stdDev']) {
+      paramStr += `,${indicator.params['stdDev']}`;
+    }
+    if (indicator.params['multiplier']) {
+      paramStr += `,${indicator.params['multiplier']}`;
     }
     
     return `${timeframe} ${indicatorName}${paramStr}`;
@@ -389,13 +399,17 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
   onIndicatorTypeChange() {
     // Reset params when indicator type changes
     switch (this.newIndicator.name) {
-      case 'sma':
-      case 'ema':
       case 'rsi':
-        this.newIndicator.params = { period: 20 };
+        this.newIndicator.params = { period: 14 };
+        break;
+      case 'supertrend':
+        this.newIndicator.params = { period: 10, multiplier: 3 };
         break;
       case 'bb':
         this.newIndicator.params = { period: 20, stdDev: 2 };
+        break;
+      case 'pctchg':
+        this.newIndicator.params = { period: 1 };
         break;
       case 'volume':
         this.newIndicator.params = {};

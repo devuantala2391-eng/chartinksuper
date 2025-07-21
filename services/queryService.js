@@ -17,6 +17,8 @@ const INDICATOR_MAPPINGS = {
   'monthly upper bollinger band': 'bb_upper_monthly',
   'monthly lower bollinger band': 'bb_lower_monthly',
   'monthly middle bollinger band': 'bb_middle_monthly',
+  'monthly bb upper': 'bb_upper_monthly',
+  'monthly bb lower': 'bb_lower_monthly',
   'daily bb upper': 'bb_upper_daily',
   'daily bb lower': 'bb_lower_daily',
   'daily bb middle': 'bb_middle_daily',
@@ -64,8 +66,10 @@ const INDICATOR_MAPPINGS = {
   // SuperTrend
   'daily supertrend': 'supertrend_daily',
   'weekly supertrend': 'supertrend_weekly',
+  'monthly supertrend': 'supertrend_monthly',
   'daily super trend': 'supertrend_daily',
   'weekly super trend': 'supertrend_weekly',
+  'monthly super trend': 'supertrend_monthly',
   
   // Price fields
   'daily close': 'close',
@@ -90,10 +94,13 @@ const INDICATOR_MAPPINGS = {
   // Percent change
   'daily percent change': 'pctchg_daily',
   'weekly percent change': 'pctchg_weekly',
+  'monthly percent change': 'pctchg_monthly',
   'daily pct change': 'pctchg_daily',
   'weekly pct change': 'pctchg_weekly',
+  'monthly pct change': 'pctchg_monthly',
   'daily % change': 'pctchg_daily',
   'weekly % change': 'pctchg_weekly',
+  'monthly % change': 'pctchg_monthly',
   
   // Special cases
   'current close': 'close',
@@ -134,6 +141,16 @@ const SIMPLE_FIELD_MAPPINGS = {
   '% change': 'pctchg_daily',
   'bb': 'bb_daily',
   'bollinger': 'bb_daily',
+  // Monthly price fields
+  'monthly_open': 'monthly_open',
+  'monthly_high': 'monthly_high', 
+  'monthly_low': 'monthly_low',
+  'monthly_close': 'monthly_close',
+  // Weekly price fields (for consistency)
+  'weekly_open': 'weekly_open',
+  'weekly_high': 'weekly_high',
+  'weekly_low': 'weekly_low', 
+  'weekly_close': 'weekly_close'
 };
 
 
@@ -478,9 +495,14 @@ function parseField(fieldStr) {
     const priceFields = ['open', 'high', 'low', 'close', 'volume'];
     
     if (timeUnit === 'week') {
-      // Check if it's a price field that needs aggregation
-      if (priceFields.includes(fieldName)) {
-        field = fieldName;
+      // Check if it's a price field that needs aggregation (handle both 'open' and 'weekly_open' formats)
+      let basePriceField = fieldName;
+      if (fieldName.startsWith('weekly_')) {
+        basePriceField = fieldName.replace('weekly_', '');
+      }
+      
+      if (priceFields.includes(fieldName) || priceFields.includes(basePriceField)) {
+        field = basePriceField; // Use the base field name (e.g., 'open' not 'weekly_open')
         useWeeklyAggregation = true;
       } else {
         // For indicators, try to find the weekly version
@@ -518,8 +540,14 @@ function parseField(fieldStr) {
       }
     } else if (timeUnit === 'month') {
       // For month-based queries
-      if (priceFields.includes(fieldName)) {
-        field = fieldName;
+      // Check if it's a price field (handle both 'open' and 'monthly_open' formats)
+      let basePriceField = fieldName;
+      if (fieldName.startsWith('monthly_')) {
+        basePriceField = fieldName.replace('monthly_', '');
+      }
+      
+      if (priceFields.includes(fieldName) || priceFields.includes(basePriceField)) {
+        field = basePriceField; // Use the base field name (e.g., 'open' not 'monthly_open')
         useMonthlyAggregation = true;
       } else {
         // For indicators, we'll use the daily value from N months ago
@@ -588,6 +616,40 @@ function parseField(fieldStr) {
   const simpleField = SIMPLE_FIELD_MAPPINGS[fieldStr];
   if (simpleField) {
     return { type: 'field', field: simpleField };
+  }
+  
+  // Handle monthly fields without time prefix (e.g., 'monthly_close' should be treated as current month's close)
+  if (fieldStr.startsWith('monthly_')) {
+    const basePriceField = fieldStr.replace('monthly_', '');
+    const priceFields = ['open', 'high', 'low', 'close', 'volume'];
+    if (priceFields.includes(basePriceField)) {
+      return {
+        type: 'field',
+        field: basePriceField,
+        timeUnit: 'month',
+        unitsAgo: 0,
+        daysAgo: 0,
+        useWeeklyAggregation: false,
+        useMonthlyAggregation: true
+      };
+    }
+  }
+  
+  // Handle weekly fields without time prefix (e.g., 'weekly_close' should be treated as current week's close)
+  if (fieldStr.startsWith('weekly_')) {
+    const basePriceField = fieldStr.replace('weekly_', '');
+    const priceFields = ['open', 'high', 'low', 'close', 'volume'];
+    if (priceFields.includes(basePriceField)) {
+      return {
+        type: 'field',
+        field: basePriceField,
+        timeUnit: 'week',
+        unitsAgo: 0,
+        daysAgo: 0,
+        useWeeklyAggregation: true,
+        useMonthlyAggregation: false
+      };
+    }
   }
   
   // If no match found, treat as field name directly
@@ -678,6 +740,13 @@ function extractIndicatorsFromQuery(parsedQuery) {
           params: {}
         }));
         timeframes.add('weekly');
+      } else if (field.field === 'pctchg_monthly') {
+        indicators.add(JSON.stringify({
+          name: 'pctchg',
+          period: 20,
+          params: {}
+        }));
+        timeframes.add('monthly');
       } else if (field.field === 'bb_upper_daily' || field.field === 'bb_lower_daily' || field.field === 'bb_middle_daily') {
         indicators.add(JSON.stringify({
           name: 'bb',
@@ -785,6 +854,10 @@ function extractIndicatorsFromQuery(parsedQuery) {
       params: {}
     }));
   }
+  
+  // Always include weekly and monthly timeframes for OHLC data
+  timeframes.add('weekly');
+  timeframes.add('monthly');
   
   return {
     indicators: Array.from(indicators).map(ind => JSON.parse(ind)),
@@ -1123,21 +1196,35 @@ function getFieldValue(candle, prevCandle, field, candles, currentIndex) {
   }
   
   // Handle weekly aggregated fields
-  if (field === 'open_weekly') {
+  if (field === 'open_weekly' || field === 'weekly_open') {
     return getWeeklyAggregatedValue(candles, currentIndex, 'open', 0);
   }
-  if (field === 'high_weekly') {
+  if (field === 'high_weekly' || field === 'weekly_high') {
     return getWeeklyAggregatedValue(candles, currentIndex, 'high', 0);
   }
-  if (field === 'low_weekly') {
+  if (field === 'low_weekly' || field === 'weekly_low') {
     return getWeeklyAggregatedValue(candles, currentIndex, 'low', 0);
   }
-  if (field === 'close_weekly') {
+  if (field === 'close_weekly' || field === 'weekly_close') {
     return getWeeklyAggregatedValue(candles, currentIndex, 'close', 0);
   }
   if (field === 'weekly_volume') {
     // Weekly volume is already calculated in the candle, just return it
     return sanitizeNumericValue(candle.weekly_volume);
+  }
+  
+  // Handle monthly aggregated fields
+  if (field === 'open_monthly' || field === 'monthly_open') {
+    return getMonthlyAggregatedValue(candles, currentIndex, 'open', 0);
+  }
+  if (field === 'high_monthly' || field === 'monthly_high') {
+    return getMonthlyAggregatedValue(candles, currentIndex, 'high', 0);
+  }
+  if (field === 'low_monthly' || field === 'monthly_low') {
+    return getMonthlyAggregatedValue(candles, currentIndex, 'low', 0);
+  }
+  if (field === 'close_monthly' || field === 'monthly_close') {
+    return getMonthlyAggregatedValue(candles, currentIndex, 'close', 0);
   }
   
   // Handle monthly volume
@@ -1500,6 +1587,100 @@ function parseIndicatorParams(indicatorName, params) {
   return result;
 }
 
+// Helper function to detect timeframe from field name
+function detectTimeframe(fieldExpr) {
+  // Handle different expression types
+  let fieldStr = '';
+  if (typeof fieldExpr === 'string') {
+    fieldStr = fieldExpr;
+  } else if (fieldExpr.type === 'field') {
+    fieldStr = fieldExpr.field;
+  } else if (fieldExpr.type === 'dynamic_indicator') {
+    fieldStr = fieldExpr.fieldKey;
+  } else if (fieldExpr.field) {
+    fieldStr = fieldExpr.field;
+  } else if (fieldExpr.fieldKey) {
+    fieldStr = fieldExpr.fieldKey;
+  }
+  
+  // Check for timeframe prefix
+  if (fieldStr.startsWith('weekly_') || fieldStr.includes('weekly')) {
+    return 'weekly';
+  } else if (fieldStr.startsWith('monthly_') || fieldStr.includes('monthly')) {
+    return 'monthly';
+  }
+  return 'daily';
+}
+
+// Helper function to find the last candle of the previous period
+function findPreviousPeriodLastCandle(candles, currentIndex, timeframe) {
+  if (currentIndex === 0) return null;
+  
+  const currentDate = new Date(Number(candles[currentIndex].date));
+  
+  if (timeframe === 'daily') {
+    // For daily, just return the previous candle
+    return currentIndex - 1;
+  } else if (timeframe === 'weekly') {
+    // Find the last candle of the previous week
+    const currentWeek = getISOWeek(currentDate);
+    const currentYear = currentDate.getUTCFullYear();
+    
+    // Calculate previous week and year
+    let prevWeek = currentWeek - 1;
+    let prevYear = currentYear;
+    if (prevWeek <= 0) {
+      prevYear--;
+      const lastDayOfPrevYear = new Date(Date.UTC(prevYear, 11, 31));
+      prevWeek = getISOWeek(lastDayOfPrevYear);
+    }
+    
+    // Find the last candle of the previous week
+    let lastCandleIndex = -1;
+    for (let i = currentIndex - 1; i >= 0; i--) {
+      const candleDate = new Date(Number(candles[i].date));
+      const candleWeek = getISOWeek(candleDate);
+      const candleYear = candleDate.getUTCFullYear();
+      
+      if (candleYear === prevYear && candleWeek === prevWeek) {
+        lastCandleIndex = i;
+      } else if (candleYear < prevYear || (candleYear === prevYear && candleWeek < prevWeek)) {
+        // We've gone past the previous week, stop
+        break;
+      }
+    }
+    
+    return lastCandleIndex;
+  } else if (timeframe === 'monthly') {
+    // Find the last candle of the previous month
+    let prevMonth = currentDate.getUTCMonth() - 1;
+    let prevYear = currentDate.getUTCFullYear();
+    if (prevMonth < 0) {
+      prevMonth = 11;
+      prevYear--;
+    }
+    
+    // Find the last candle of the previous month
+    let lastCandleIndex = -1;
+    for (let i = currentIndex - 1; i >= 0; i--) {
+      const candleDate = new Date(Number(candles[i].date));
+      const candleMonth = candleDate.getUTCMonth();
+      const candleYear = candleDate.getUTCFullYear();
+      
+      if (candleYear === prevYear && candleMonth === prevMonth) {
+        lastCandleIndex = i;
+      } else if (candleYear < prevYear || (candleYear === prevYear && candleMonth < prevMonth)) {
+        // We've gone past the previous month, stop
+        break;
+      }
+    }
+    
+    return lastCandleIndex;
+  }
+  
+  return null;
+}
+
 function evaluateCondition(condition, candle, prevCandle, candles, currentIndex) {
   // Handle crossed above/below operators
   if (condition.operator === 'crossed above' || condition.operator === 'crossed below') {
@@ -1509,9 +1690,29 @@ function evaluateCondition(condition, candle, prevCandle, candles, currentIndex)
     
     if (leftValue === null || rightValue === null || currentIndex === 0) return false;
     
-    // Get previous values
-    const prevLeftValue = evaluateExpression(condition.left, prevCandle, candles[currentIndex - 2], candles, currentIndex - 1);
-    const prevRightValue = evaluateExpression(condition.right, prevCandle, candles[currentIndex - 2], candles, currentIndex - 1);
+    // Detect timeframes from both sides of the condition
+    const leftTimeframe = detectTimeframe(condition.left);
+    const rightTimeframe = detectTimeframe(condition.right);
+    
+    // Use the most restrictive timeframe (monthly > weekly > daily)
+    let timeframe = 'daily';
+    if (leftTimeframe === 'monthly' || rightTimeframe === 'monthly') {
+      timeframe = 'monthly';
+    } else if (leftTimeframe === 'weekly' || rightTimeframe === 'weekly') {
+      timeframe = 'weekly';
+    }
+    
+    // Find the appropriate previous candle based on timeframe
+    const prevIndex = findPreviousPeriodLastCandle(candles, currentIndex, timeframe);
+    if (prevIndex === null || prevIndex < 0) return false;
+    
+    // Get the previous candle
+    const appropriatePrevCandle = candles[prevIndex];
+    const appropriatePrevPrevCandle = prevIndex > 0 ? candles[prevIndex - 1] : null;
+    
+    // Get previous values using the appropriate previous candle
+    const prevLeftValue = evaluateExpression(condition.left, appropriatePrevCandle, appropriatePrevPrevCandle, candles, prevIndex);
+    const prevRightValue = evaluateExpression(condition.right, appropriatePrevCandle, appropriatePrevPrevCandle, candles, prevIndex);
     
     if (prevLeftValue === null || prevRightValue === null) return false;
     
@@ -1703,90 +1904,95 @@ function getDataAvailabilityIndex(candles, parsedQuery) {
 const getQueryExamples = () => ({
   examples: [
     {
-      query: "daily upper bollinger band > daily close",
-      description: "Find stocks where price is below upper Bollinger Band"
+      query: "close > daily upper bollinger band",
+      description: "Find stocks breaking above upper Bollinger Band"
     },
     {
-      query: "weekly rsi > 60 and close > weekly sma",
-      description: "Find stocks with weekly RSI above 60 and price above weekly SMA"
+      query: "close < daily lower bollinger band",
+      description: "Find stocks below lower Bollinger Band"
     },
     {
-      query: "current close > yesterday's close and daily rsi < 30",
-      description: "Find stocks that closed higher than previous day with oversold RSI"
+      query: "daily rsi > 70",
+      description: "Find overbought stocks (RSI above 70)"
     },
     {
-      query: "daily percent change > 5 and volume > 1000000",
-      description: "Find stocks with 5% daily gain and high volume"
+      query: "daily rsi < 30",
+      description: "Find oversold stocks (RSI below 30)"
     },
     {
-      query: "1 day ago volume > 100000 and volume > 200000",
-      description: "Find stocks where volume increased from yesterday"
+      query: "close > daily supertrend",
+      description: "Find stocks in uptrend (above Supertrend)"
     },
     {
-      query: "3 days ago rsi < 30 and rsi > 50",
-      description: "Find stocks that recovered from oversold in 3 days"
+      query: "close < daily supertrend",
+      description: "Find stocks in downtrend (below Supertrend)"
     },
     {
-      query: "5 days ago close < 100 and close > 110",
-      description: "Find stocks that gained 10% in 5 days"
+      query: "daily % change > 5",
+      description: "Find stocks with daily gain above 5%"
     },
     {
-      query: "1 day ago volume > 1 week ago volume * 1.2",
-      description: "Find stocks where yesterday's volume was 20% higher than a week ago"
+      query: "daily % change < -5",
+      description: "Find stocks with daily loss above 5%"
     },
     {
-      query: "1 day ago supertrend > weekly supertrend",
-      description: "Find stocks where yesterday's supertrend is above weekly supertrend"
+      query: "volume > 1000000",
+      description: "Find high volume stocks"
     },
     {
-      query: "close > sma * 1.05 and rsi < 70",
-      description: "Find stocks trading 5% above SMA with RSI below 70"
+      query: "weekly % change > 10 and daily rsi < 70",
+      description: "Find stocks with 10% weekly gain, not yet overbought"
     },
     {
-      query: "1 week ago high < close",
-      description: "Find stocks that closed above last week's high"
+      query: "close > open and volume > 500000",
+      description: "Find stocks closing higher with good volume"
     },
     {
-      query: "volume * 1.5 > 1 week ago volume",
-      description: "Find stocks where today's volume is 50% higher than last week's total"
+      query: "monthly % change > 20 and close > monthly upper bollinger band",
+      description: "Find strong monthly gainers breaking out"
     },
     {
-      query: "1 month ago low > close",
-      description: "Find stocks trading below last month's low"
+      query: "close crossed above daily supertrend",
+      description: "Find stocks with bullish Supertrend crossover"
     },
     {
-      query: "2 * 1 month ago volume < volume",
-      description: "Find stocks where current volume is double the monthly volume from a month ago"
+      query: "weekly rsi crossed above 50",
+      description: "Find stocks with bullish weekly RSI crossover"
     }
   ],
   availableIndicators: {
     daily: [
       "daily upper bollinger band (bb_upper_daily)",
       "daily lower bollinger band (bb_lower_daily)",
-      "daily sma (sma_daily)",
-      "daily ema (ema_daily)",
       "daily rsi (rsi_daily)",
       "daily supertrend (supertrend_daily)",
-      "daily percent change (pctchg_daily)"
+      "daily percent change (pctchg_daily)",
+      "daily % change (pctchg_daily)"
     ],
     weekly: [
       "weekly upper bollinger band (bb_upper_weekly)",
       "weekly lower bollinger band (bb_lower_weekly)",
-      "weekly sma (sma_weekly)",
-      "weekly ema (ema_weekly)",
       "weekly rsi (rsi_weekly)",
       "weekly supertrend (supertrend_weekly)",
       "weekly percent change (pctchg_weekly)",
-      "weekly volume (volume_weekly)"
+      "weekly % change (pctchg_weekly)",
+      "weekly volume (weekly_volume)"
+    ],
+    monthly: [
+      "monthly upper bollinger band (bb_upper_monthly)",
+      "monthly lower bollinger band (bb_lower_monthly)",
+      "monthly rsi (rsi_monthly)",
+      "monthly supertrend (supertrend_monthly)",
+      "monthly percent change (pctchg_monthly)",
+      "monthly % change (pctchg_monthly)",
+      "monthly volume (monthly_volume)"
     ],
     price: [
-      "close",
       "open",
       "high",
       "low",
-      "volume",
-      "current close",
-      "yesterday's close"
+      "close",
+      "volume"
     ],
     timeBased: [
       "n days/weeks/months ago <indicator>",

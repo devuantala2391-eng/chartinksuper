@@ -295,6 +295,55 @@
         </button>
         <button class="btn btn-text-compact" (click)="clearAll()">Clear</button>
       </div>
+
+      <!-- CSV Upload Section -->
+      <div class="csv-upload-section">
+        <div class="csv-upload-header">
+          <h3>📁 Update Symbol Database</h3>
+          <p class="csv-upload-description">Upload a CSV file to update the stock symbols list and refresh the database</p>
+        </div>
+        
+        <div class="csv-upload-form">
+          <div class="file-input-wrapper">
+            <input 
+              type="file" 
+              #fileInput 
+              (change)="onFileSelected($event)" 
+              accept=".csv"
+              class="file-input"
+              id="csvFileInput"
+            />
+            <label for="csvFileInput" class="file-input-label">
+              <i class="icon-upload"></i>
+              {{ selectedFile ? selectedFile.name : 'Choose CSV file...' }}
+            </label>
+          </div>
+          
+          <button 
+            class="btn btn-upload" 
+            (click)="uploadCSV()" 
+            [disabled]="!selectedFile || uploading"
+          >
+            {{ uploading ? 'Processing...' : 'Upload & Update Database' }}
+          </button>
+        </div>
+
+        <!-- Upload Status -->
+        <div class="upload-status" *ngIf="uploadStatus">
+          <div [ngClass]="{'success': uploadSuccess, 'error': !uploadSuccess}">
+            <i [class]="uploadSuccess ? 'icon-check' : 'icon-error'"></i>
+            {{ uploadStatus }}
+          </div>
+        </div>
+
+        <!-- CSV Upload Progress -->
+        <div class="upload-progress" *ngIf="showUploadProgress">
+          <div class="progress-bar-container">
+            <div class="progress-bar" [style.width.%]="uploadProgress"></div>
+          </div>
+          <div class="progress-text">{{ uploadProgressText }}</div>
+        </div>
+      </div>
     </div>
 
     <!-- Results Section -->
