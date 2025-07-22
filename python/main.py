@@ -445,11 +445,44 @@ async def precalculate_indicators(request: PrecalculateRequest):
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error))
 
+def write_stock_batch_parallel(stock_results_chunk, precalc_dir_str):
+    """Parallel file writing function for ProcessPoolExecutor - maximizes I/O throughput."""
+    import json
+    import time
+    from pathlib import Path
+    
+    batch_start = time.time()
+    write_count = 0
+    precalc_dir = Path(precalc_dir_str)
+    
+    print(f"[DEBUG] Writing batch of {len(stock_results_chunk)} files in parallel process")
+    
+    for stock, processed_data, success, error in stock_results_chunk:
+        if success and processed_data:
+            try:
+                output_file = precalc_dir / f"{stock}_piped.json"
+                with open(output_file, 'w') as f:
+                    json.dump(processed_data, f)
+                write_count += 1
+            except Exception as e:
+                print(f"[DEBUG] Failed to write {stock}: {e}")
+    
+    batch_end = time.time()
+    print(f"[DEBUG] Parallel write batch completed in {batch_end - batch_start:.2f}s, wrote {write_count} files")
+    return write_count
+
+
 def process_stock_batch_cpu_intensive(stock_batch_data):
     """CPU-intensive processing function for multiprocessing - maximizes CPU usage."""
+    import time
+    batch_start = time.time()
     results = []
     
-    for stock, stock_data, indicators, timeframes in stock_batch_data:
+    print(f"[DEBUG] Processing batch with {len(stock_batch_data)} stocks at {batch_start}")
+    
+    for i, (stock, stock_data, indicators, timeframes) in enumerate(stock_batch_data):
+        stock_start = time.time()
+        print(f"[DEBUG] Processing stock {i+1}/{len(stock_batch_data)}: {stock} with {len(stock_data)} candles")
         try:
             # Process indicators for this stock (CPU-intensive work)
             result = {
@@ -532,11 +565,17 @@ def process_stock_batch_cpu_intensive(stock_batch_data):
                 
                 result["data"].append(enhanced_candle)
             
+            stock_end = time.time()
+            print(f"[DEBUG] Completed stock {stock} in {stock_end - stock_start:.2f}s")
             results.append((stock, result, True, None))
             
         except Exception as e:
+            stock_end = time.time()
+            print(f"[DEBUG] Failed stock {stock} in {stock_end - stock_start:.2f}s: {e}")
             results.append((stock, None, False, str(e)))
     
+    batch_end = time.time()
+    print(f"[DEBUG] Batch completed in {batch_end - batch_start:.2f}s with {len(results)} results")
     return results
 
 async def process_indicators_background(indicators: List[Dict[str, Any]]):
@@ -624,19 +663,29 @@ async def process_indicators_background(indicators: List[Dict[str, Any]]):
         # Process chunks using ProcessPoolExecutor for MAXIMUM CPU usage
         all_results = []
         
+        print(f"[DEBUG] Starting CPU processing with {len(chunks)} chunks, {PERFORMANCE_CONFIG['max_cpu_workers']} workers")
+        
         # Use ProcessPoolExecutor for true parallelism (bypasses GIL)
         with concurrent.futures.ProcessPoolExecutor(max_workers=PERFORMANCE_CONFIG["max_cpu_workers"]) as cpu_executor:
             # Submit all chunk processing tasks
             loop = asyncio.get_event_loop()
             chunk_futures = []
             
-            for chunk in chunks:
+            for i, chunk in enumerate(chunks):
+                print(f"[DEBUG] Submitting chunk {i+1}/{len(chunks)} with {len(chunk)} stocks")
                 future = loop.run_in_executor(cpu_executor, process_stock_batch_cpu_intensive, chunk)
                 chunk_futures.append(future)
             
             # Process results as they complete with real-time progress updates
+            completed_chunks = 0
             for future in asyncio.as_completed(chunk_futures):
+                chunk_start_time = time.time()
                 chunk_results = await future
+                chunk_end_time = time.time()
+                completed_chunks += 1
+                
+                print(f"[DEBUG] Completed chunk {completed_chunks}/{len(chunks)} in {chunk_end_time - chunk_start_time:.2f}s, got {len(chunk_results)} results")
+                
                 all_results.extend(chunk_results)
                 
                 # Update progress for this chunk
@@ -644,35 +693,48 @@ async def process_indicators_background(indicators: List[Dict[str, Any]]):
                 failed_count = len(chunk_results) - success_count
                 update_counters_batch(success_count, failed_count)
                 
+                # Print current progress with timestamp
+                current_time = time.time()
+                print(f"[DEBUG] Progress update at {current_time:.2f}: {counters['processed']}/{len(STOCK_SYMBOLS)} stocks processed")
+                
                 # Minimal yield to allow SSE updates
                 await asyncio.sleep(0)
         
-        # OPTIMIZED: Write files in batches to avoid completion bottleneck
-        def write_stock_file(stock_result):
-            stock, processed_data, success, error = stock_result
-            if success and processed_data:
-                try:
-                    output_file = precalc_dir / f"{stock}_piped.json"
-                    with open(output_file, 'w') as f:
-                        json.dump(processed_data, f)
-                    return True
-                except Exception:
-                    return False
-            return False
+        # MAXIMUM PERFORMANCE: Parallel file writing using ProcessPoolExecutor (same as calculations)
+        print(f"[DEBUG] Starting PARALLEL file write phase with {len(all_results)} results using {PERFORMANCE_CONFIG['max_cpu_workers']} CPU workers")
+        write_start_time = time.time()
         
-        # Write results in batches instead of all at once
-        write_batch_size = 50
-        for i in range(0, len(all_results), write_batch_size):
-            batch_results = all_results[i:i + write_batch_size]
+        # Split file writing into optimal chunks for maximum CPU usage
+        write_chunk_size = max(5, len(all_results) // (PERFORMANCE_CONFIG["max_cpu_workers"] * 2))
+        write_chunks = [all_results[i:i + write_chunk_size] for i in range(0, len(all_results), write_chunk_size)]
+        
+        print(f"[DEBUG] File writing: {len(write_chunks)} chunks, {write_chunk_size} files per chunk")
+        
+        # Use ProcessPoolExecutor for maximum parallel file I/O (same approach as calculations)
+        with concurrent.futures.ProcessPoolExecutor(max_workers=PERFORMANCE_CONFIG["max_cpu_workers"]) as write_executor:
+            # Submit all file writing chunks in parallel
+            write_futures = []
             
-            with concurrent.futures.ThreadPoolExecutor(max_workers=32) as file_executor:
-                write_futures = [file_executor.submit(write_stock_file, result) for result in batch_results]
-                await asyncio.gather(*[
-                    loop.run_in_executor(None, future.result) for future in write_futures
-                ])
+            for i, write_chunk in enumerate(write_chunks):
+                print(f"[DEBUG] Submitting write chunk {i+1}/{len(write_chunks)} with {len(write_chunk)} files")
+                future = loop.run_in_executor(write_executor, write_stock_batch_parallel, write_chunk, str(precalc_dir))
+                write_futures.append(future)
             
-            # Small progress update for file writing
-            await asyncio.sleep(0)
+            # Process write results as they complete (same pattern as calculations)
+            completed_write_chunks = 0
+            for future in asyncio.as_completed(write_futures):
+                chunk_start = time.time()
+                chunk_write_count = await future
+                chunk_end = time.time()
+                completed_write_chunks += 1
+                
+                print(f"[DEBUG] Completed write chunk {completed_write_chunks}/{len(write_chunks)} in {chunk_end - chunk_start:.2f}s, wrote {chunk_write_count} files")
+                
+                # Minimal yield for progress updates
+                await asyncio.sleep(0)
+        
+        write_end_time = time.time()
+        print(f"[DEBUG] PARALLEL file write phase completed in {write_end_time - write_start_time:.2f}s")
         
         # Update completion status
         precalc_data = {
@@ -1365,15 +1427,15 @@ async def update_symbols_and_refresh():
 
 if __name__ == "__main__":
     print("="*60)
-    print("🚀 STARTING CHARTINKSUPER FASTAPI SERVER (SIMPLE MODE)")
+    print("STARTING CHARTINKSUPER FASTAPI SERVER (SIMPLE MODE)")
     print("="*60)
-    print(f"🌐 Server URL: http://127.0.0.1:8001")
-    print(f"📚 API Docs: http://127.0.0.1:8001/docs")
-    print(f"📊 Health Check: http://127.0.0.1:8001/health")
-    print(f"🔄 Refresh DB: POST http://127.0.0.1:8001/refreshdb")
-    print(f"📡 SSE Progress: GET http://127.0.0.1:8001/refreshdb-progress-stream")
+    print(f"Server URL: http://127.0.0.1:8001")
+    print(f"API Docs: http://127.0.0.1:8001/docs")
+    print(f"Health Check: http://127.0.0.1:8001/health")
+    print(f"Refresh DB: POST http://127.0.0.1:8001/refreshdb")
+    print(f"SSE Progress: GET http://127.0.0.1:8001/refreshdb-progress-stream")
     print("="*60)
-    print("🎯 Logs will appear below when APIs are called...")
+    print("Logs will appear below when APIs are called...")
     print("="*60)
     sys.stdout.flush()
     
