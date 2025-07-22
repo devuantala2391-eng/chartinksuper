@@ -1,4 +1,5 @@
 @echo off
+setlocal enabledelayedexpansion
 set PYTHONIOENCODING=utf-8
 set PYTHONUNBUFFERED=1
 
@@ -8,21 +9,30 @@ echo ==========================================
 echo 🧹 Cleaning up existing Python processes...
 
 REM Kill all existing Python processes
-taskkill //F //IM python.exe >nul 2>&1
-taskkill //F //IM python3.exe >nul 2>&1
-taskkill //F //IM python3.12.exe >nul 2>&1
+taskkill /F /IM python.exe >nul 2>&1
+taskkill /F /IM python3.exe >nul 2>&1
+taskkill /F /IM python3.12.exe >nul 2>&1
 
 REM Wait a moment for cleanup
 timeout /t 2 /nobreak >nul
 
-REM Check if port 8001 is still in use
+REM Find and kill process using port 8001
 echo 🔍 Checking port 8001...
-netstat -ano | findstr :8001 >nul
+for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr :8001 ^| findstr LISTENING') do (
+    echo ⚠️  Port 8001 is in use by process %%a, terminating...
+    taskkill /F /PID %%a >nul 2>&1
+    timeout /t 2 /nobreak >nul
+)
+
+REM Double check if port is free
+netstat -ano | findstr :8001 | findstr LISTENING >nul 2>&1
 if %errorlevel% equ 0 (
-    echo ⚠️  Port 8001 still in use, waiting for cleanup...
-    timeout /t 3 /nobreak >nul
+    echo ❌ ERROR: Could not free port 8001
+    echo Please manually close the application using port 8001
+    pause
+    exit /b 1
 ) else (
-    echo ✅ Port 8001 is available
+    echo ✅ Port 8001 is now available
 )
 
 echo 🚀 Starting ChartinkSuper FastAPI Server...
@@ -34,4 +44,20 @@ echo ==========================================
 echo 🎯 Press Ctrl+C to stop the server
 echo ==========================================
 
-python -u simple_server.py
+REM Check if main.py exists
+if not exist main.py (
+    echo ❌ ERROR: main.py not found in current directory
+    echo Current directory: %CD%
+    pause
+    exit /b 1
+)
+
+REM Start the server
+python -u main.py
+
+REM If we get here, the server stopped
+echo.
+echo ==========================================
+echo 🛑 Server stopped
+echo ==========================================
+pause

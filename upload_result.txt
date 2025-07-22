@@ -1,0 +1,1 @@
+{"success":true,"message":"CSV processing started","symbolCount":2483,"sampleSymbols":["20MICRONS","21STCENMGM","360ONE","3IINFOLTD","3MINDIA","3PLAND","5PAISA","63MOONS","A2ZINFRA","AAATECH"],"progressUrl":"/csv-upload-progress"}

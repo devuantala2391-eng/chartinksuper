@@ -64,7 +64,8 @@
       "Bash(del test_*.py benchmark_*.py check_progress.py clean_test.py start_and_test.py csv_upload_fixed.py run_fixed_server.py *.md)",
       "mcp__ide__getDiagnostics",
       "mcp__ide__executeCode",
-      "Bash(start cmd /k:*)"
+      "Bash(start cmd /k:*)",
+      "Bash(del test_path.py)"
     ],
     "deny": []
   }

@@ -5,19 +5,25 @@ from pathlib import Path
 import asyncio
 from typing import List, Dict, Any, Optional
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
 
 class ChartinkService:
     def __init__(self):
-        self.timeout = 30.0
-        self.max_retries = 2
+        self.timeout = 10.0  # Faster timeout for maximum speed
+        self.max_retries = 1  # Minimal retries for speed
         # Create a shared client with optimized limits
         self.client_limits = httpx.Limits(
-            max_keepalive_connections=5000,
-            max_connections=None,
-            keepalive_expiry=60.0
+            max_keepalive_connections=10000,  # Even more connections!
+            max_connections=None,  # Unlimited connections
+            keepalive_expiry=300.0  # Longer keepalive
         )
+        # Create a pool of clients for better concurrency
+        self.client_pool = []
+        self.pool_size = 50  # 50 shared clients
+        self.pool_index = 0
+        self.pool_lock = threading.Lock()  # Thread-safe access
         self.base_headers = {
             'accept': 'application/json, text/plain, */*',
             'accept-language': 'en-GB,en-US;q=0.9,en;q=0.8,la;q=0.7',
@@ -36,28 +42,38 @@ class ChartinkService:
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
             'x-xsrf-token': 'eyJpdiI6IjVrL2dLek8rSVE4aGFTWWllazd6cHc9PSIsInZhbHVlIjoiQmVUcmlLb0Z2dk9uYVlPeUpJL3d1OTQ0MTdvcUpWZGt6V2tEaHpEeUJidGJVOENDeFpYbnJiaVgxV3NielhMbjBGUzlTVmNuektCaHhTb0V3MFVnS1VUbWZRVCtEYXFxYlhrYzZ4eWpnY2RuZjltSlJJd1NaUkE4dlFTbVA5aDkiLCJtYWMiOiJkYzM1YzY2YTIwOTM5NTQzODNjMzNkMDZiNWMwY2NkNzc5MDQ5OTFmOGJlMTgwMzJmYjM1NDdmNTFjNzAyOGY2IiwidGFnIjoiIn0=',
         }
-        # Create shared client instance
-        self.client = None
-
-    async def get_client(self):
-        """Get or create shared HTTP client."""
-        if self.client is None:
-            self.client = httpx.AsyncClient(
+    
+    async def initialize_client_pool(self):
+        """Initialize the client pool for maximum concurrency."""
+        if self.client_pool:  # Already initialized
+            return
+        
+        for i in range(self.pool_size):
+            client = httpx.AsyncClient(
                 timeout=self.timeout,
-                limits=self.client_limits
-                # http2=True removed - requires additional package
+                limits=self.client_limits,
+                headers=self.base_headers
             )
-        return self.client
+            self.client_pool.append(client)
+    
+    async def get_client(self):
+        """Get a client from the pool using round-robin."""
+        if not self.client_pool:
+            await self.initialize_client_pool()
+        
+        with self.pool_lock:
+            client = self.client_pool[self.pool_index % self.pool_size]
+            self.pool_index += 1
+        return client
+    
+    async def close_all_clients(self):
+        """Close all clients in the pool."""
+        for client in self.client_pool:
+            await client.aclose()
+        self.client_pool = []
 
-    async def close(self):
-        """Close the shared client."""
-        if self.client:
-            await self.client.aclose()
-            self.client = None
-
-    async def fetch_stock_data(self, symbol: str, size: int = 20000) -> Dict[str, Any]:
-        """Fetch stock data from Chartink API - FAST VERSION."""
-        print(f"[FETCH] Starting fetch for {symbol}")
+    async def fetch_stock_data(self, symbol: str, size: int = 2000) -> Dict[str, Any]:
+        """Fetch stock data from Chartink API using client pool."""
         query_string = "select high, low, open, close, volume"
         
         form_data = {
@@ -72,6 +88,7 @@ class ChartinkService:
             'scan_link': 'scanlink:b6b0c6620714e44ab63d271d0ddbd498'
         }
 
+        # Get client from pool instead of creating new one
         client = await self.get_client()
         
         # Try once, if it fails, try again - but FAST!
@@ -79,88 +96,54 @@ class ChartinkService:
             try:
                 response = await client.post(
                     'https://chartink.com/oapi',
-                    headers=self.base_headers,
                     data=form_data
                 )
                 response.raise_for_status()
-                data = response.json()
-                print(f"[FETCH] SUCCESS: Successfully fetched data for {symbol}")
-                return data
-                    
+                return response.json()
+                
             except (httpx.RequestError, httpx.HTTPStatusError) as error:
-                print(f"[FETCH] ERROR: Error fetching {symbol} (attempt {attempt + 1}/{self.max_retries}): {error}")
+                # Check if it's a client error (4xx) vs server error (5xx)
+                is_client_error = hasattr(error, 'response') and error.response and 400 <= error.response.status_code < 500
+                
                 if attempt == self.max_retries - 1:
-                    logger.error(f"Failed {symbol}: {error}")
+                    if is_client_error:
+                        # Don't log client errors (like invalid symbols) as they're expected
+                        pass
+                    else:
+                        print(f"[ERROR] Failed to fetch {symbol} after {self.max_retries} attempts: {error}")
                     raise
-                # Minimal retry delay - just 0.1 seconds
-                await asyncio.sleep(0.1)
+                
+                # Don't retry client errors, but do retry server errors
+                if is_client_error:
+                    raise
 
     async def process_single_symbol(self, symbol: str, size: int = 2000, progress_callback=None) -> Dict[str, str]:
         """Process a single symbol and save stock data."""
         from datetime import datetime
+        symbol_start = datetime.now()
         try:
-            symbol_start = datetime.now()
-            print(f"\n[PROCESS SYMBOL] {symbol_start.strftime('%H:%M:%S.%f')[:-3]} - Starting {symbol}")
-            logger.info(f"Processing symbol: {symbol}")
-            
-            # Ensure the directory exists
-            json_dir = Path("db")
-            json_dir.mkdir(parents=True, exist_ok=True)
-            print(f"[PROCESS SYMBOL] DB directory ensured: {json_dir.absolute()}")
-            logger.info(f"DB directory path: {json_dir.absolute()}")
-            
-            # Remove existing file if it exists
+            # Get file path (directory already created in process_payload)
+            json_dir = Path(__file__).parent.parent.parent / "db"
             file_path = json_dir / f"{symbol}.json"
-            if file_path.exists():
-                file_path.unlink()
             
             # Fetch data from Chartink API
-            print(f"[PROCESS SYMBOL] Fetching data for {symbol}...")
-            response_data = await self.fetch_stock_data(symbol, size * 10)
-            print(f"[PROCESS SYMBOL] Got response data for {symbol}")
-            logger.info(f"Fetched data for {symbol}")
+            response_data = await self.fetch_stock_data(symbol, size)
             
             # Process and map the data
             mapped_data = self._map_response_data(response_data)
-            print(f"[PROCESS SYMBOL] Mapped {len(mapped_data)} records for {symbol}")
-            logger.info(f"Mapped {len(mapped_data)} records for {symbol}")
             
             # Save to JSON file
-            print(f"[PROCESS SYMBOL] Writing to file: {file_path.absolute()}")
             with open(file_path, 'w') as f:
                 json.dump(mapped_data, f)
-            
-            # Verify file was written
-            if file_path.exists():
-                file_size = file_path.stat().st_size
-                print(f"[PROCESS SYMBOL] SUCCESS: File written successfully: {file_path.name} ({file_size} bytes)")
-                logger.info(f"File written: {file_path.name} ({file_size} bytes)")
-            else:
-                print(f"[PROCESS SYMBOL] ERROR: File not found after writing: {file_path}")
-                logger.error(f"File not found after writing: {file_path}")
             
             # Call progress callback if provided
             if progress_callback:
                 await progress_callback(symbol, True)
             
-            symbol_end = datetime.now()
-            process_time = (symbol_end - symbol_start).total_seconds()
-            success_msg = f"Success: {len(mapped_data)} records in {process_time:.2f}s"
-            print(f"[PROCESS SYMBOL] {symbol_end.strftime('%H:%M:%S.%f')[:-3]} - {symbol}: {success_msg}")
-            return {symbol: success_msg}
+            return {symbol: f"Success: {len(mapped_data)} records"}
             
         except Exception as error:
-            error_msg = f"{symbol}: {type(error).__name__}: {str(error)}"
-            logger.error(f"Failed to process {error_msg}")
-            
-            # Log first few errors in detail
-            if hasattr(self, '_error_count'):
-                self._error_count += 1
-            else:
-                self._error_count = 1
-            
-            if self._error_count <= 5:
-                logger.error(f"Detailed error for {symbol}:", exc_info=True)
+            error_msg = f"Failed: {type(error).__name__}: {str(error)}"
             
             # Call progress callback with failure
             if progress_callback:
@@ -169,7 +152,7 @@ class ChartinkService:
             return {symbol: error_msg}
 
     async def process_payload(self, payload: List[List[str]], concurrent_limit: int = None, progress_callback=None) -> Dict[str, str]:
-        """Process ALL symbols at MAXIMUM SPEED - NO LIMITS!"""
+        """Process symbols with controlled concurrency using semaphore."""
         from datetime import datetime
         size = 2000
         
@@ -182,26 +165,42 @@ class ChartinkService:
         if not symbols:
             return {}
         
-        service_start = datetime.now()
-        logger.info(f"Processing {len(symbols)} symbols with unlimited concurrency")
-        print(f"\n[CHARTINK SERVICE] {service_start.strftime('%H:%M:%S.%f')[:-3]} - Starting to process {len(symbols)} symbols")
-        print(f"[CHARTINK SERVICE] Using unlimited concurrent requests")
+        # Ensure the directory exists ONCE before processing
+        json_dir = Path(__file__).parent.parent.parent / "db"
+        json_dir.mkdir(parents=True, exist_ok=True)
         
-        # Process ALL symbols at once - no batching, no limits!
+        # Initialize client pool BEFORE processing starts
+        await self.initialize_client_pool()
+        
+        print(f"\n[CHARTINK] Starting concurrent processing of {len(symbols)} symbols...")
+        
+        # Use semaphore to limit concurrent requests to pool size
+        semaphore = asyncio.Semaphore(self.pool_size * 2)  # Allow 2x pool size for better throughput
         results = {}
         
-        async def process_symbol_fast(symbol):
-            result = await self.process_single_symbol(symbol, size, progress_callback)
-            results.update(result)
-            return result
+        processed_count = 0
         
-        # Create tasks for ALL symbols at once
-        tasks = [process_symbol_fast(symbol) for symbol in symbols]
+        async def process_symbol_with_semaphore(symbol):
+            nonlocal processed_count
+            async with semaphore:
+                try:
+                    result = await self.process_single_symbol(symbol, size, progress_callback)
+                    results.update(result)
+                    processed_count += 1
+                    if processed_count % 50 == 0:
+                        print(f"[CHARTINK] Progress: {processed_count}/{len(symbols)} symbols processed...")
+                    return result
+                except Exception as e:
+                    processed_count += 1
+                    return {symbol: f"Error: {str(e)}"}
         
-        # Fire all requests simultaneously!
+        # Create tasks for ALL symbols
+        tasks = [process_symbol_with_semaphore(symbol) for symbol in symbols]
+        
+        # Fire all requests with controlled concurrency
         start_time = asyncio.get_event_loop().time()
         
-        # Use gather to run all tasks concurrently
+        # Use gather to run all tasks with semaphore control
         await asyncio.gather(*tasks, return_exceptions=True)
         
         end_time = asyncio.get_event_loop().time()
@@ -209,11 +208,10 @@ class ChartinkService:
         elapsed = end_time - start_time
         rate = len(symbols) / elapsed if elapsed > 0 else 0
         
-        service_end = datetime.now()
-        print(f"\n[CHARTINK SERVICE] {service_end.strftime('%H:%M:%S.%f')[:-3]} - Processing completed")
-        print(f"[CHARTINK SERVICE] Processed {len(symbols)} symbols in {elapsed:.2f} seconds")
-        print(f"[CHARTINK SERVICE] Rate: {rate:.1f} symbols/second")
-        logger.info(f"Bulk processing completed in {elapsed:.2f} seconds ({rate:.1f} symbols/sec)")
+        print(f"\n[CHARTINK] Processed {len(symbols)} symbols in {elapsed:.2f} seconds ({rate:.1f} symbols/sec)")
+        
+        # Close all clients when done
+        await self.close_all_clients()
         
         return results
 
