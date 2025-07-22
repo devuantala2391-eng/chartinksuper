@@ -48,7 +48,7 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
   private progressInterval: any;
   private eventSource: EventSource | null = null;
 
-  private apiUrl = 'http://localhost:3000/api';
+  private apiUrl = 'http://localhost:8001/api';
 
   availableIndicators = [
     { value: 'rsi', label: 'Relative Strength Index (RSI)' },
@@ -359,7 +359,7 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
     // Poll for progress updates
     this.progressInterval = setInterval(() => {
       if (this.status === 'processing') {
-        this.http.get<any>('http://localhost:3000/query/progress')
+        this.http.get<any>('http://localhost:8001/query/progress')
           .subscribe({
             next: (progress) => {
               if (progress.isRunning && progress.phase === 'processing_indicators') {

@@ -71,7 +71,7 @@ export class AppCompact implements OnInit {
   groupedResults = new Map<string, any[]>();
   
   private nextId = 1;
-  private apiUrl = 'http://localhost:3000';
+  private apiUrl = 'http://localhost:8001';
   
   constructor(private http: HttpClient) {}
   

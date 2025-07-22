@@ -230,7 +230,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   uploadProgressText = '';
   private csvProgressEventSource: EventSource | null = null;
   
-  private apiUrl = 'http://localhost:3000';
+  private apiUrl = 'http://localhost:8001';
   private nextId = 2;
 
   constructor(private http: HttpClient, private ngZone: NgZone) {}
@@ -1900,8 +1900,8 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       console.log('CSV upload initiated:', uploadResponse);
 
       // Store symbol info for success message
-      const symbolPreview = uploadResponse.sampleSymbols.join(', ');
-      const symbolCount = uploadResponse.symbolCount;
+      const symbolPreview = uploadResponse.sampleSymbols ? uploadResponse.sampleSymbols.join(', ') : 'No symbols found';
+      const symbolCount = uploadResponse.symbolCount || 0;
 
       // Monitor the entire process via SSE
       await this.monitorCSVUploadProgressSSE();
@@ -1952,19 +1952,12 @@ export class ScreenerComponent implements OnInit, OnDestroy {
 
   private async monitorCSVUploadProgressSSE(): Promise<void> {
     return new Promise((resolve, reject) => {
-      // Clean up any existing connection
-      if (this.csvProgressEventSource) {
-        this.csvProgressEventSource.close();
-      }
+      let pollCount = 0;
+      const maxPolls = 300; // 5 minutes max (300 * 1 second)
       
-      this.csvProgressEventSource = new EventSource(`${this.apiUrl}/csv-upload-progress`);
-      
-      this.csvProgressEventSource.onmessage = (event) => {
-        try {
-          const progress = JSON.parse(event.data);
-          
-          // Run inside Angular zone to trigger change detection
-          this.ngZone.run(() => {
+      const pollProgress = () => {
+        this.http.get<any>(`${this.apiUrl}/csv-upload-progress`).subscribe({
+          next: (progress) => {
             // Update progress bar
             this.uploadProgress = progress.percentage || 0;
             this.uploadProgressText = progress.message || 'Processing...';
@@ -1978,38 +1971,40 @@ export class ScreenerComponent implements OnInit, OnDestroy {
             // Handle completion
             if (progress.phase === 'completed') {
               this.uploadProgressText = progress.message;
-              this.csvProgressEventSource?.close();
-              this.csvProgressEventSource = null;
               resolve();
+              return;
             } else if (progress.phase === 'completed_with_warnings') {
               this.uploadProgressText = progress.message;
-              this.csvProgressEventSource?.close();
-              this.csvProgressEventSource = null;
               resolve();
+              return;
             } else if (progress.phase === 'error') {
-              this.csvProgressEventSource?.close();
-              this.csvProgressEventSource = null;
               reject(new Error(progress.message));
+              return;
             } else if (progress.phase === 'cancelled') {
-              this.csvProgressEventSource?.close();
-              this.csvProgressEventSource = null;
               reject(new Error('Process was cancelled'));
+              return;
             }
-          });
-        } catch (error) {
-          console.error('Error parsing SSE data:', error);
-          this.csvProgressEventSource?.close();
-          this.csvProgressEventSource = null;
-          reject(new Error('Failed to parse progress data'));
-        }
+            
+            // Continue polling if still running
+            if (progress.isRunning && pollCount < maxPolls) {
+              pollCount++;
+              setTimeout(pollProgress, 1000); // Poll every 1 second
+            } else if (pollCount >= maxPolls) {
+              reject(new Error('Upload timeout - process took too long'));
+            } else if (!progress.isRunning) {
+              // Process finished but didn't hit completion states - assume success
+              resolve();
+            }
+          },
+          error: (error) => {
+            console.error('Progress polling error:', error);
+            reject(new Error('Failed to check progress'));
+          }
+        });
       };
       
-      this.csvProgressEventSource.onerror = (error) => {
-        console.error('SSE connection error:', error);
-        this.csvProgressEventSource?.close();
-        this.csvProgressEventSource = null;
-        reject(new Error('Connection to progress stream failed'));
-      };
+      // Start polling
+      pollProgress();
     });
   }
 

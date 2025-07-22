@@ -136,7 +136,7 @@ app.post('/chartink-api', async (req, res) => {
       return res.status(400).json({ error: "Invalid or missing payload" });
     }
     // Ensure the directory exists
-    const dirPath = path.join(__dirname, 'db', 'jsonfile');
+    const dirPath = path.join(__dirname, 'db');
     if (!fs.existsSync(dirPath)) {
       fs.mkdirSync(dirPath, { recursive: true });
     }

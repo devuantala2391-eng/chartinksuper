@@ -2484,9 +2484,4 @@ const STOCK_SYMBOLS = [
   'ZYDUSWELL'
 ];
 
-const TOTAL_SYMBOLS = STOCK_SYMBOLS.length;
-
-module.exports = {
-  STOCK_SYMBOLS,
-  TOTAL_SYMBOLS
-};
+module.exports = { STOCK_SYMBOLS };

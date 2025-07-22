@@ -12,7 +12,7 @@ const {
 } = require('./mapper');
 
 // Read input JSON
-const inputPath = path.join(__dirname, 'db', 'jsonfile', 'KELLTONTEC.json');
+const inputPath = path.join(__dirname, 'db', 'KELLTONTEC.json');
 const outputDir = path.join(__dirname, 'mapperStorage');
 const outputPathPiped = path.join(outputDir, 'KELLTONTEC_piped.json');
 

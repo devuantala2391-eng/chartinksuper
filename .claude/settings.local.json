@@ -52,7 +52,16 @@
       "Bash(head:*)",
       "Bash(npm run lint)",
       "Bash(npm uninstall:*)",
-      "Bash(tail:*)"
+      "Bash(tail:*)",
+      "Bash(pip install:*)",
+      "Bash(start /b python:*)",
+      "Bash(for pid in 21272 27276 5480 5444 22640)",
+      "Bash(do taskkill //PID $pid //F)",
+      "Bash(echo:*)",
+      "Bash(done)",
+      "Bash(start_server.bat)",
+      "Bash(start /B python:*)",
+      "Bash(del test_*.py benchmark_*.py check_progress.py clean_test.py start_and_test.py csv_upload_fixed.py run_fixed_server.py *.md)"
     ],
     "deny": []
   }
