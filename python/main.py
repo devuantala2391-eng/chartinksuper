@@ -379,10 +379,169 @@ async def process_query(request: QueryRequest):
 
 @app.post("/query/latest")
 async def process_latest_query(request: QueryRequest):
-    """Process query for latest day only."""
-    # Similar to /query but only check the most recent candle
-    # Implementation would be similar to above but filtered for latest data
-    return await process_query(request)  # Placeholder - would need specific latest-day logic
+    """Process query for latest day only - optimized for speed."""
+    try:
+        query = request.query
+        stocks = request.stocks
+        
+        if not query:
+            raise HTTPException(status_code=400, detail="Query is required")
+        
+        # Reset abort flag
+        current_query_abort["aborted"] = False
+        
+        # Reset progress
+        update_progress({
+            "isRunning": True,
+            "phase": "initializing",
+            "message": "Starting latest day scan...",
+            "processed": 0,
+            "total": TOTAL_SYMBOLS,
+            "matches": 0,
+            "startTime": datetime.utcnow().timestamp() * 1000
+        })
+        
+        logger.info(f"Processing LATEST DAY query: {query}")
+        
+        # Parse the query
+        try:
+            parsed_query = parse_query(query)
+        except Exception as error:
+            update_progress({"isRunning": False, "phase": "error", "message": "Invalid query format"})
+            raise HTTPException(
+                status_code=400, 
+                detail={
+                    "error": "Invalid query format",
+                    "details": str(error),
+                    "hint": 'Example: "rsi(14) > 70 and sma(20) < close"'
+                }
+            )
+        
+        # Extract indicators
+        indicators_data = extract_indicators_from_query(parsed_query)
+        required_indicators = indicators_data["indicators"]
+        
+        logger.info(f"Required indicators: {required_indicators}")
+        
+        # Process stocks - ONLY CHECK LATEST CANDLE
+        all_matches = []
+        errors = []
+        processed_count = 0
+        
+        stock_list = stocks or STOCK_SYMBOLS
+        total_stocks = len(stock_list)
+        
+        update_progress({
+            "phase": "processing_and_analyzing",
+            "message": "Scanning latest day data...",
+            "processed": 0,
+            "total": total_stocks
+        })
+        
+        # MAXIMUM PERFORMANCE: Parallel latest scan processing using ProcessPoolExecutor
+        print(f"[DEBUG] Starting PARALLEL latest scan with {PERFORMANCE_CONFIG['max_cpu_workers']} CPU workers")
+        scan_start_time = time.time()
+        
+        # Split stocks into optimal chunks for maximum CPU usage
+        scan_chunk_size = max(10, len(stock_list) // (PERFORMANCE_CONFIG["max_cpu_workers"] * 2))
+        scan_chunks = [stock_list[i:i + scan_chunk_size] for i in range(0, len(stock_list), scan_chunk_size)]
+        
+        print(f"[DEBUG] Latest scan: {len(scan_chunks)} chunks, {scan_chunk_size} stocks per chunk")
+        
+        # Use ProcessPoolExecutor for maximum CPU utilization
+        with concurrent.futures.ProcessPoolExecutor(max_workers=PERFORMANCE_CONFIG["max_cpu_workers"]) as scan_executor:
+            # Submit all scan chunks in parallel
+            loop = asyncio.get_event_loop()
+            scan_futures = []
+            
+            for i, chunk in enumerate(scan_chunks):
+                print(f"[DEBUG] Submitting scan chunk {i+1}/{len(scan_chunks)} with {len(chunk)} stocks")
+                current_dir = str(Path(__file__).parent.absolute())
+                future = loop.run_in_executor(scan_executor, process_latest_scan_batch_parallel, chunk, parsed_query, current_dir)
+                scan_futures.append(future)
+            
+            # Process scan results as they complete with real-time progress updates
+            completed_chunks = 0
+            for future in asyncio.as_completed(scan_futures):
+                chunk_start_time = time.time()
+                chunk_result = await future
+                chunk_end_time = time.time()
+                completed_chunks += 1
+                
+                print(f"[DEBUG] Completed scan chunk {completed_chunks}/{len(scan_chunks)} in {chunk_end_time - chunk_start_time:.2f}s")
+                print(f"[DEBUG] Chunk results: {chunk_result['processed']} processed, {len(chunk_result['matches'])} matches, {len(chunk_result['errors'])} errors")
+                
+                # Aggregate results
+                all_matches.extend(chunk_result["matches"])
+                errors.extend(chunk_result["errors"])
+                processed_count += chunk_result["processed"]
+                
+                # Update progress for this chunk
+                update_progress({
+                    "phase": "processing_and_analyzing",
+                    "message": f"Parallel latest scan: {processed_count}/{total_stocks} stocks, {len(all_matches)} matches found",
+                    "processed": processed_count,
+                    "total": total_stocks,
+                    "matches": len(all_matches)
+                })
+                
+                # Check for abort
+                if current_query_abort["aborted"]:
+                    raise HTTPException(status_code=400, detail="Query was aborted")
+                
+                # Minimal yield to allow progress updates
+                await asyncio.sleep(0)
+        
+        scan_end_time = time.time()
+        total_scan_time = scan_end_time - scan_start_time
+        print(f"[DEBUG] PARALLEL latest scan completed in {total_scan_time:.2f}s | Rate: {len(stock_list) / total_scan_time:.1f} stocks/sec")
+        
+        # Sort matches by stock symbol for consistency  
+        all_matches.sort(key=lambda x: x.get("stock", ""))
+        
+        # Update completion progress
+        update_progress({
+            "phase": "completed",
+            "message": f"Latest day scan completed: Found {len(all_matches)} matches",
+            "processed": processed_count,
+            "total": total_stocks,
+            "matches": len(all_matches),
+            "isRunning": False
+        })
+        
+        logger.info(f"Latest day scan completed: {len(all_matches)} matches found")
+        
+        return {
+            "success": True,
+            "query": query,
+            "scanType": "latest_day",
+            "parsedQuery": {
+                "conditions": [
+                    {
+                        "left": c["left"],
+                        "operator": c["operator"], 
+                        "right": c["right"]
+                    } for c in parsed_query["conditions"]
+                ],
+                "logicalOperators": parsed_query["logicalOperators"]
+            },
+            "requiredIndicators": required_indicators,
+            "matches": all_matches,
+            "totalProcessed": processed_count,
+            "totalMatches": len(all_matches),
+            "errors": errors[:10] if errors else []  # Limit error reporting
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.error(f"Latest day query processing error: {error}", exc_info=True)
+        update_progress({
+            "phase": "error",
+            "message": "Latest day scan failed",
+            "isRunning": False
+        })
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(error)}")
 
 @app.get("/query/examples")
 async def get_query_examples_endpoint():
@@ -444,6 +603,121 @@ async def precalculate_indicators(request: PrecalculateRequest):
         raise
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error))
+
+def process_latest_scan_batch_parallel(stock_batch, parsed_query_dict, base_path=""):
+    """Parallel latest scan processing function for ProcessPoolExecutor - maximizes CPU usage."""
+    import json
+    import time
+    import sys
+    import os
+    from pathlib import Path
+    
+    batch_start = time.time()
+    matches = []
+    errors = []
+    processed = 0
+    
+    # Add current directory to path for imports
+    if base_path and base_path not in sys.path:
+        sys.path.insert(0, base_path)
+    
+    # Import the query service function
+    try:
+        # Try to import directly first
+        from services.query_service import find_matching_candles
+    except ImportError:
+        try:
+            # Try with absolute path
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            services_path = os.path.join(current_dir, 'services')
+            if services_path not in sys.path:
+                sys.path.insert(0, services_path)
+            from query_service import find_matching_candles
+        except ImportError:
+            # Simple fallback implementation for basic conditions
+            def find_matching_candles(candles, parsed_query, stock):
+                matches = []
+                for candle in candles:
+                    try:
+                        # Simple evaluation for basic conditions
+                        conditions = parsed_query.get("conditions", [])
+                        if not conditions:
+                            continue
+                        
+                        results = []
+                        for condition in conditions:
+                            left = condition["left"]
+                            operator = condition["operator"] 
+                            right = condition["right"]
+                            
+                            # Get values from candle
+                            left_val = candle.get(left.get("value", ""), 0) if left.get("type") == "field" else float(left.get("value", 0))
+                            right_val = candle.get(right.get("value", ""), 0) if right.get("type") == "field" else float(right.get("value", 0))
+                            
+                            # Simple comparison
+                            if operator == ">":
+                                results.append(left_val > right_val)
+                            elif operator == "<":
+                                results.append(left_val < right_val)
+                            elif operator == ">=":
+                                results.append(left_val >= right_val)
+                            elif operator == "<=":
+                                results.append(left_val <= right_val)
+                            elif operator == "==":
+                                results.append(left_val == right_val)
+                            else:
+                                results.append(False)
+                        
+                        # Simple AND logic for now
+                        if all(results):
+                            matches.append({
+                                "stock": stock,
+                                "date": candle.get("timestamp", ""),
+                                "data": candle
+                            })
+                    except:
+                        continue
+                return matches
+    
+    print(f"[DEBUG] Processing latest scan batch of {len(stock_batch)} stocks")
+    
+    for stock in stock_batch:
+        try:
+            # Check for precalculated data
+            precalculated_file = Path(f"precalculatedStorage/{stock}_piped.json")
+            if precalculated_file.exists():
+                with open(precalculated_file, 'r') as f:
+                    mapped_data = json.load(f)
+                candles = mapped_data.get("data", [])
+                
+                if candles:
+                    # Only check the LATEST candle (most recent)
+                    latest_candle = candles[-1]
+                    
+                    # Check if latest candle matches the query
+                    stock_matches = find_matching_candles([latest_candle], parsed_query_dict, stock)
+                    matches.extend(stock_matches)
+                else:
+                    errors.append({"stock": stock, "error": "No candle data available"})
+            else:
+                errors.append({"stock": stock, "error": "Precalculated data not found"})
+            
+            processed += 1
+            
+        except Exception as e:
+            errors.append({"stock": stock, "error": str(e)})
+            processed += 1
+    
+    batch_end = time.time()
+    print(f"[DEBUG] Latest scan batch completed in {batch_end - batch_start:.2f}s, processed {processed} stocks, found {len(matches)} matches")
+    
+    return {
+        "matches": matches,
+        "errors": errors,
+        "processed": processed,
+        "processing_time": batch_end - batch_start
+    }
+
 
 def write_stock_batch_parallel(stock_results_chunk, precalc_dir_str):
     """Parallel file writing function for ProcessPoolExecutor - maximizes I/O throughput."""
