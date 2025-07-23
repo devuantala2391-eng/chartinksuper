@@ -961,7 +961,7 @@ def process_single_stock_latest_safe(stock, parsed_query):
         from services.query_service import find_matching_candles
         
         # Check for precalculated data
-        precalculated_file = Path(f"precalculatedStorage/{stock}_piped.json")
+        precalculated_file = Path(f"../precalculatedStorage/{stock}_piped.json")
         if not precalculated_file.exists():
             return {"success": False, "error": "Precalculated data not found"}
         
@@ -985,7 +985,7 @@ def process_single_stock_latest_safe(stock, parsed_query):
             import json
             from pathlib import Path
             
-            precalculated_file = Path(f"precalculatedStorage/{stock}_piped.json")
+            precalculated_file = Path(f"../precalculatedStorage/{stock}_piped.json")
             if not precalculated_file.exists():
                 return {"success": False, "error": "Precalculated data not found"}
             
@@ -1053,7 +1053,7 @@ def process_single_stock_safe(stock, parsed_query):
         from services.query_service import find_matching_candles
         
         # Check for precalculated data
-        precalculated_file = Path(f"precalculatedStorage/{stock}_piped.json")
+        precalculated_file = Path(f"../precalculatedStorage/{stock}_piped.json")
         if not precalculated_file.exists():
             return {"success": False, "error": "Precalculated data not found"}
         
@@ -1076,7 +1076,7 @@ def process_single_stock_safe(stock, parsed_query):
             import json
             from pathlib import Path
             
-            precalculated_file = Path(f"precalculatedStorage/{stock}_piped.json")
+            precalculated_file = Path(f"../precalculatedStorage/{stock}_piped.json")
             if not precalculated_file.exists():
                 return {"success": False, "error": "Precalculated data not found"}
             
@@ -1217,7 +1217,7 @@ def process_query_batch_parallel(stock_batch, parsed_query_dict, base_path=""):
         for stock in stock_batch:
             try:
                 # Check for precalculated data (full historical data for query)
-                precalculated_file = Path(f"precalculatedStorage/{stock}_piped.json")
+                precalculated_file = Path(f"../precalculatedStorage/{stock}_piped.json")
                 if precalculated_file.exists():
                     with open(precalculated_file, 'r') as f:
                         mapped_data = json.load(f)
@@ -1341,7 +1341,7 @@ def process_latest_scan_batch_parallel(stock_batch, parsed_query_dict, base_path
         for stock in stock_batch:
             try:
                 # Check for precalculated data
-                precalculated_file = Path(f"precalculatedStorage/{stock}_piped.json")
+                precalculated_file = Path(f"../precalculatedStorage/{stock}_piped.json")
                 if precalculated_file.exists():
                     with open(precalculated_file, 'r') as f:
                         mapped_data = json.load(f)
@@ -1574,7 +1574,7 @@ async def process_indicators_background(indicators: List[Dict[str, Any]]):
     
     try:
         # Create precalculatedStorage directory
-        precalc_dir = Path("precalculatedStorage")
+        precalc_dir = Path("../precalculatedStorage")
         precalc_dir.mkdir(parents=True, exist_ok=True)
         
         # Extract timeframes from indicators
@@ -1617,7 +1617,7 @@ async def process_indicators_background(indicators: List[Dict[str, Any]]):
         
         def read_stock_file(stock):
             try:
-                stock_file = Path(__file__).parent / "db" / f"{stock}.json"
+                stock_file = Path(__file__).parent.parent / "db" / f"{stock}.json"
                 if stock_file.exists():
                     with open(stock_file, 'r') as f:
                         return stock, json.load(f), True

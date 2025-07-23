@@ -136,7 +136,7 @@ app.post('/chartink-api', async (req, res) => {
       return res.status(400).json({ error: "Invalid or missing payload" });
     }
     // Ensure the directory exists
-    const dirPath = path.join(__dirname, 'db');
+    const dirPath = path.join(__dirname, '..', 'db');
     if (!fs.existsSync(dirPath)) {
       fs.mkdirSync(dirPath, { recursive: true });
     }
@@ -350,7 +350,7 @@ function checkPrecalculatedIndicators(requiredIndicators, requiredTimeframes) {
   
   // Check if all required indicators are available in precalculated storage
   const missing = [];
-  const precalculatedDir = path.join(__dirname, 'precalculatedStorage');
+  const precalculatedDir = path.join(__dirname, '..', 'precalculatedStorage');
   
   if (!fs.existsSync(precalculatedDir)) {
     return {
@@ -1192,7 +1192,7 @@ async function processPrecalculatedIndicators(indicators) {
     console.log('📊 Processing precalculated indicators for all stocks...');
     
     // Create dedicated precalculated storage directory
-    const precalculatedDir = path.join(__dirname, 'precalculatedStorage');
+    const precalculatedDir = path.join(__dirname, '..', 'precalculatedStorage');
     if (!fs.existsSync(precalculatedDir)) {
       fs.mkdirSync(precalculatedDir, { recursive: true });
     }
@@ -1371,7 +1371,7 @@ app.post('/refreshdb', async (req, res) => {
     })}\n\n`);
     
     // Ensure the db directory exists
-    const dbPath = path.join(__dirname, 'db');
+    const dbPath = path.join(__dirname, '..', 'db');
     if (!fs.existsSync(dbPath)) {
       fs.mkdirSync(dbPath, { recursive: true });
     }
@@ -1577,7 +1577,7 @@ app.post('/refreshdb', async (req, res) => {
     }
     
     // Delete existing db folder
-    const dbPath = path.join(__dirname, 'db');
+    const dbPath = path.join(__dirname, '..', 'db');
     if (fs.existsSync(dbPath)) {
       console.log('Deleting existing db folder...');
       fs.rmSync(dbPath, { recursive: true, force: true });
@@ -1651,7 +1651,7 @@ async function processSimpleRefreshInBackground(totalResults) {
   const progress = globalRefreshState.progress;
   
   try {
-    const dbPath = path.join(__dirname, 'db');
+    const dbPath = path.join(__dirname, '..', 'db');
     
     console.log(`🚀 Starting BULK processing for ${STOCK_SYMBOLS.length} symbols...`);
     
@@ -1846,7 +1846,7 @@ async function processPrecalculatedIndicatorsForRefresh(indicators, progress) {
     console.log('🔍 Input indicators:', JSON.stringify(indicators, null, 2));
     
     // Create dedicated precalculated storage directory
-    const precalculatedDir = path.join(__dirname, 'precalculatedStorage');
+    const precalculatedDir = path.join(__dirname, '..', 'precalculatedStorage');
     if (!fs.existsSync(precalculatedDir)) {
       fs.mkdirSync(precalculatedDir, { recursive: true });
     }
@@ -2262,7 +2262,7 @@ async function processSimpleRefreshInBackgroundWithCSV() {
   const progress = globalRefreshState.progress;
   
   try {
-    const dbPath = path.join(__dirname, 'db');
+    const dbPath = path.join(__dirname, '..', 'db');
     
     // Delete existing db folder
     if (fs.existsSync(dbPath)) {
@@ -2535,7 +2535,7 @@ async function processPrecalculatedIndicatorsForRefreshWithCSV(indicators, progr
     console.log('📊 Processing precalculated indicators during CSV upload process...');
     
     // Create dedicated precalculated storage directory
-    const precalculatedDir = path.join(__dirname, 'precalculatedStorage');
+    const precalculatedDir = path.join(__dirname, '..', 'precalculatedStorage');
     if (!fs.existsSync(precalculatedDir)) {
       fs.mkdirSync(precalculatedDir, { recursive: true });
     }
