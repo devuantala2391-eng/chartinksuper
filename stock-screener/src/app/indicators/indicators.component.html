@@ -74,6 +74,19 @@
               max="5"
               step="0.1">
           </div>
+          
+          <div class="form-group" *ngIf="newIndicator.name === 'supertrend'">
+            <label for="multiplier">Multiplier:</label>
+            <input 
+              id="multiplier"
+              type="number" 
+              [(ngModel)]="newIndicator.params['multiplier']" 
+              name="multiplier"
+              class="form-control"
+              min="0.1"
+              max="10"
+              step="0.1">
+          </div>
         </div>
         
         <div class="form-actions">
@@ -110,6 +123,9 @@
               </span>
               <span class="params" *ngIf="indicator.params.stdDev">
                 Std Dev: {{ indicator.params.stdDev }}
+              </span>
+              <span class="params" *ngIf="indicator.params['multiplier']">
+                Multiplier: {{ indicator.params['multiplier'] }}
               </span>
             </div>
           </div>

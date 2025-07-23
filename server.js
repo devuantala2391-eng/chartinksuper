@@ -131,7 +131,7 @@ function getNextDayTimestamp(dateString) {
 app.post('/chartink-api', async (req, res) => {
   try {
     const { payload } = req.body;
-    const size = 2000; // Hardcoded size
+    const size = 200; // Hardcoded size
     if (!payload || !Array.isArray(payload) || payload.length === 0) {
       return res.status(400).json({ error: "Invalid or missing payload" });
     }
@@ -1347,7 +1347,7 @@ async function processPrecalculatedIndicators(indicators) {
 // Refresh DB endpoint with progress streaming
 app.post('/refreshdb', async (req, res) => {
   try {
-    const { totalResults = 2000 } = req.body;
+    const { totalResults = 200 } = req.body;
     
     console.log(`Starting database refresh for ${STOCK_SYMBOLS.length} symbols with ${totalResults} results each...`);
     
@@ -1565,7 +1565,7 @@ let globalRefreshState = {
 // Simple refresh DB endpoint
 app.post('/refreshdb', async (req, res) => {
   try {
-    const { totalResults = 2000 } = req.body;
+    const { totalResults = 200 } = req.body;
     
     // Cancel any existing refresh
     if (globalRefreshState.isRunning && globalRefreshState.cancelToken) {
@@ -2361,7 +2361,7 @@ async function processSimpleRefreshInBackgroundWithCSV() {
           query: queryString,
           use_live: 1,
           limit: 1,
-          size: 2000, // Default size like the working version
+          size: 200, // Default size like the working version
           widget_id: -1,
           end_time: -1,
           timeframe: "Daily",
@@ -2682,7 +2682,7 @@ module.exports = {
     };
 
     // Start the refresh process in background
-    processSimpleRefreshInBackground(2000); // Default to 2000 total results
+    processSimpleRefreshInBackground(200); // Default to 2000 total results
 
     res.json({
       success: true,

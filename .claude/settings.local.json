@@ -65,7 +65,8 @@
       "mcp__ide__getDiagnostics",
       "mcp__ide__executeCode",
       "Bash(start cmd /k:*)",
-      "Bash(del test_path.py)"
+      "Bash(del test_path.py)",
+      "Bash(rg:*)"
     ],
     "deny": []
   }

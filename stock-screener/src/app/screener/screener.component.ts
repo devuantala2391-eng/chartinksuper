@@ -216,6 +216,9 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   progressTotal = 100;
   progressMatches?: number;
   private progressInterval?: any;
+  private queryProgressEventSource: EventSource | null = null;
+  private isQueryRunning = false;
+  private currentRequestAbortController: AbortController | null = null;
   
   // Tooltip state
   activeTooltip: { stock: string; date: string } | null = null;
@@ -489,6 +492,11 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       return;
     }
 
+    // Prevent duplicate requests
+    if (!this.checkAndPreventDuplicateRequest()) {
+      return;
+    }
+
     this.loading = true;
     this.error = null;
     this.results = null;
@@ -503,8 +511,8 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     const query = this.buildQuery();
     this.queryString = query;
     
-    // Start polling for progress updates
-    this.startProgressPolling();
+    // Start SSE for progress updates
+    this.startProgressSSE();
 
     // Send query to latest day endpoint with timeout and retry logic
     this.makeHttpRequestWithRetry(() => 
@@ -520,6 +528,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
         this.progressMessage = `Found ${response.totalMatches} matches for latest day!`;
         this.progressProcessed = this.progressTotal;
         this.stopProgressPolling();
+        this.finishQueryRequest();
         
         // Auto-hide progress after delay, but allow manual close
         setTimeout(() => {
@@ -534,6 +543,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
         this.error = this.getErrorMessage(error);
         console.error('Error:', error);
         this.stopProgressPolling();
+        this.finishQueryRequest();
       }
     });
   }
@@ -541,6 +551,11 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   runBacktest() {
     if (this.conditions.length === 0 || !this.validateConditions()) {
       this.error = 'Please complete all condition configurations';
+      return;
+    }
+
+    // Prevent duplicate requests
+    if (!this.checkAndPreventDuplicateRequest()) {
       return;
     }
 
@@ -558,8 +573,8 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     const query = this.buildQuery();
     this.queryString = query;
     
-    // Start polling for progress updates
-    this.startProgressPolling();
+    // Start SSE for progress updates
+    this.startProgressSSE();
 
     // Send query to original endpoint for full backtest with retry logic
     this.makeHttpRequestWithRetry(() => 
@@ -575,6 +590,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
         this.progressMessage = `Backtest completed! Found ${response.totalMatches} matches!`;
         this.progressProcessed = this.progressTotal;
         this.stopProgressPolling();
+        this.finishQueryRequest();
         
         // Auto-hide progress after delay, but allow manual close
         setTimeout(() => {
@@ -589,11 +605,17 @@ export class ScreenerComponent implements OnInit, OnDestroy {
         this.error = this.getErrorMessage(error);
         console.error('Error:', error);
         this.stopProgressPolling();
+        this.finishQueryRequest();
       }
     });
   }
   
   runSpecialQuery() {
+    // Prevent duplicate requests
+    if (!this.checkAndPreventDuplicateRequest()) {
+      return;
+    }
+    
     // Hardcoded query as specified
     const specialQuery = `weekly volume crossed above 1 week ago volume * 1.5 and weekly close crossed above weekly supertrend(10,2) and weekly close crossed above weekly sma(20)`;
     
@@ -611,8 +633,8 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     // Set the query string for display
     this.queryString = specialQuery;
     
-    // Start polling for progress updates
-    this.startProgressPolling();
+    // Start SSE for progress updates
+    this.startProgressSSE();
     
     // Send query to full backtest endpoint with retry logic
     this.makeHttpRequestWithRetry(() => 
@@ -628,6 +650,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
         this.progressMessage = `Found ${response.totalMatches} matches for special query!`;
         this.progressProcessed = this.progressTotal;
         this.stopProgressPolling();
+        this.finishQueryRequest();
         
         // Auto-hide progress after delay, but allow manual close
         setTimeout(() => {
@@ -642,70 +665,123 @@ export class ScreenerComponent implements OnInit, OnDestroy {
         this.error = this.getErrorMessage(error);
         console.error('Error:', error);
         this.stopProgressPolling();
+        this.finishQueryRequest();
       }
     });
   }
   
-  private startProgressPolling() {
-    // Clear any existing interval
-    this.stopProgressPolling();
+  private startProgressSSE() {
+    // Clear any existing SSE connection
+    this.stopProgressSSE();
     
-    // Make an immediate call to test the endpoint
-    this.http.get<any>(`${this.apiUrl}/query/progress`)
-      .subscribe({
-        next: (progress) => {
-          console.log('Initial progress check:', progress);
-        },
-        error: (error) => {
-          console.error('Initial progress check failed:', error);
+    console.log('Starting SSE connection for query progress...');
+    
+    // Create new SSE connection
+    this.queryProgressEventSource = new EventSource(`${this.apiUrl}/api/progress-stream`);
+    
+    this.queryProgressEventSource.onopen = () => {
+      console.log('Query progress SSE connection opened');
+    };
+    
+    this.queryProgressEventSource.onmessage = (event) => {
+      try {
+        const progress = JSON.parse(event.data);
+        console.log('Progress update received via SSE:', progress);
+        
+        // Skip heartbeat messages
+        if (progress.heartbeat) {
+          return;
         }
-      });
-    
-    // Poll every 2 seconds for progress updates
-    this.progressInterval = setInterval(() => {
-      this.http.get<any>(`${this.apiUrl}/query/progress`)
-        .subscribe({
-          next: (progress) => {
-            console.log('Progress update received:', progress);
-            if (progress.isRunning) {
-              this.progressPhase = progress.phase;
-              this.progressMessage = progress.message || '';
-              this.progressProcessed = progress.processed || 0;
-              this.progressTotal = progress.total || 2446;
-              if (progress.matches !== undefined) {
-                this.progressMatches = progress.matches;
-              }
+        
+        // Skip connection messages
+        if (progress.connected) {
+          return;
+        }
+        
+        // Run inside Angular zone to trigger change detection
+        this.ngZone.run(() => {
+          // Update progress UI
+          if (progress.isRunning) {
+            this.progressPhase = progress.phase;
+            this.progressMessage = progress.message || '';
+            this.progressProcessed = progress.processed || 0;
+            this.progressTotal = progress.total || 2446;
+            if (progress.matches !== undefined) {
+              this.progressMatches = progress.matches;
             }
-          },
-          error: (error) => {
-            console.error('Progress polling error:', error);
-            console.error('Error details:', error.error);
+          } else if (progress.phase === 'completed') {
+            // Handle completion
+            this.progressPhase = 'completed';
+            this.progressMessage = progress.message || 'Query completed!';
+            this.progressProcessed = progress.total || this.progressTotal;
+            if (progress.matches !== undefined) {
+              this.progressMatches = progress.matches;
+            }
+            
+            // Close SSE connection on completion
+            setTimeout(() => {
+              this.stopProgressSSE();
+            }, 1000);
           }
         });
-    }, 2000); // Poll every 2 seconds
+      } catch (error) {
+        console.error('Error parsing SSE progress data:', error);
+      }
+    };
+    
+    this.queryProgressEventSource.onerror = (error) => {
+      console.error('Query progress SSE error:', error);
+      
+      // Auto-reconnect after short delay if connection fails
+      setTimeout(() => {
+        if (this.queryProgressEventSource?.readyState === EventSource.CLOSED) {
+          console.log('Attempting to reconnect SSE...');
+          this.startProgressSSE();
+        }
+      }, 2000);
+    };
   }
   
-  private stopProgressPolling() {
-    if (this.progressInterval) {
-      clearInterval(this.progressInterval);
-      this.progressInterval = undefined;
+  private stopProgressSSE() {
+    if (this.queryProgressEventSource) {
+      console.log('Closing query progress SSE connection');
+      this.queryProgressEventSource.close();
+      this.queryProgressEventSource = null;
     }
   }
   
-  // Manual test function for debugging
-  testProgressEndpoint() {
-    console.log('Testing progress endpoint...');
-    this.http.get<any>(`${this.apiUrl}/query/progress`)
-      .subscribe({
-        next: (progress) => {
-          console.log('Progress endpoint working:', progress);
-        },
-        error: (error) => {
-          console.error('Progress endpoint failed:', error);
-          console.error('Status:', error.status);
-          console.error('URL:', error.url);
-        }
-      });
+  // Legacy function - keep for backward compatibility but make it call SSE
+  private stopProgressPolling() {
+    this.stopProgressSSE();
+  }
+  
+  private checkAndPreventDuplicateRequest(): boolean {
+    if (this.isQueryRunning) {
+      console.warn('Query already running, ignoring duplicate request');
+      return false; // Prevent execution
+    }
+    
+    // Cancel any existing request
+    if (this.currentRequestAbortController) {
+      this.currentRequestAbortController.abort();
+    }
+    
+    // Create new abort controller for this request
+    this.currentRequestAbortController = new AbortController();
+    this.isQueryRunning = true;
+    
+    return true; // Allow execution
+  }
+  
+  private finishQueryRequest() {
+    this.isQueryRunning = false;
+    this.currentRequestAbortController = null;
+  }
+  
+  // Manual test function for debugging SSE
+  testProgressSSE() {
+    console.log('Testing progress SSE connection...');
+    this.startProgressSSE();
   }
 
   groupByDate(matches: any[]) {
@@ -1952,73 +2028,114 @@ export class ScreenerComponent implements OnInit, OnDestroy {
 
   private async monitorCSVUploadProgressSSE(): Promise<void> {
     return new Promise((resolve, reject) => {
-      let pollCount = 0;
-      const maxPolls = 300; // 5 minutes max (300 * 1 second)
+      // Close any existing SSE connection
+      if (this.csvProgressEventSource) {
+        this.csvProgressEventSource.close();
+        this.csvProgressEventSource = null;
+      }
+
+      console.log('Connecting to CSV upload SSE endpoint...');
       
-      const pollProgress = () => {
-        this.http.get<any>(`${this.apiUrl}/csv-upload-progress`).subscribe({
-          next: (progress) => {
-            // Update progress bar
-            this.uploadProgress = progress.percentage || 0;
-            this.uploadProgressText = progress.message || 'Processing...';
-            
-            console.log('Progress update:', {
-              phase: progress.phase,
-              percentage: progress.percentage,
-              message: progress.message
-            });
-            
-            // Handle completion
-            if (progress.phase === 'completed') {
-              this.uploadProgressText = progress.message;
-              resolve();
-              return;
-            } else if (progress.phase === 'completed_with_warnings') {
-              this.uploadProgressText = progress.message;
-              resolve();
-              return;
-            } else if (progress.phase === 'error') {
-              reject(new Error(progress.message));
-              return;
-            } else if (progress.phase === 'cancelled') {
-              reject(new Error('Process was cancelled'));
-              return;
-            }
-            
-            // Continue polling if still running
-            if (progress.isRunning && pollCount < maxPolls) {
-              pollCount++;
-              setTimeout(pollProgress, 1000); // Poll every 1 second
-            } else if (pollCount >= maxPolls) {
-              reject(new Error('Upload timeout - process took too long'));
-            } else if (!progress.isRunning) {
-              // Process finished but didn't hit completion states - assume success
-              resolve();
-            }
-          },
-          error: (error) => {
-            console.error('Progress polling error:', error);
-            reject(new Error('Failed to check progress'));
-          }
-        });
+      // Create new SSE connection to the CSV upload progress stream
+      this.csvProgressEventSource = new EventSource(`${this.apiUrl}/csv-upload-progress-stream`);
+      
+      let connectionTimeout = setTimeout(() => {
+        console.error('SSE connection timeout');
+        if (this.csvProgressEventSource) {
+          this.csvProgressEventSource.close();
+          this.csvProgressEventSource = null;
+        }
+        reject(new Error('Failed to connect to progress stream'));
+      }, 10000); // 10 second connection timeout
+
+      this.csvProgressEventSource.onopen = () => {
+        console.log('SSE connection opened for CSV upload progress');
+        clearTimeout(connectionTimeout);
       };
-      
-      // Start polling
-      pollProgress();
+
+      this.csvProgressEventSource.onmessage = (event) => {
+        try {
+          const progress = JSON.parse(event.data);
+          
+          // Update progress bar
+          if (progress.percentage !== undefined) {
+            this.uploadProgress = progress.percentage;
+          }
+          if (progress.message) {
+            this.uploadProgressText = progress.message;
+          }
+          
+          console.log('SSE Progress update:', {
+            phase: progress.phase,
+            percentage: progress.percentage,
+            message: progress.message
+          });
+          
+          // Handle completion states
+          if (progress.phase === 'completed') {
+            console.log('Upload completed successfully');
+            if (this.csvProgressEventSource) {
+              this.csvProgressEventSource.close();
+              this.csvProgressEventSource = null;
+            }
+            resolve();
+          } else if (progress.phase === 'completed_with_warnings') {
+            console.log('Upload completed with warnings');
+            if (this.csvProgressEventSource) {
+              this.csvProgressEventSource.close();
+              this.csvProgressEventSource = null;
+            }
+            resolve();
+          } else if (progress.phase === 'error') {
+            console.error('Upload error:', progress.message);
+            if (this.csvProgressEventSource) {
+              this.csvProgressEventSource.close();
+              this.csvProgressEventSource = null;
+            }
+            reject(new Error(progress.message || 'Upload failed'));
+          } else if (progress.phase === 'cancelled') {
+            console.log('Upload cancelled');
+            if (this.csvProgressEventSource) {
+              this.csvProgressEventSource.close();
+              this.csvProgressEventSource = null;
+            }
+            reject(new Error('Process was cancelled'));
+          }
+        } catch (error) {
+          console.error('Error parsing SSE message:', error);
+        }
+      };
+
+      this.csvProgressEventSource.onerror = (error) => {
+        console.error('SSE connection error:', error);
+        clearTimeout(connectionTimeout);
+        
+        // Clean up the connection
+        if (this.csvProgressEventSource) {
+          this.csvProgressEventSource.close();
+          this.csvProgressEventSource = null;
+        }
+        
+        // Don't reject on connection errors, as the browser will automatically reconnect
+        // Only reject if we haven't received any progress updates
+        console.warn('SSE connection lost, but process may still be running');
+      };
     });
   }
 
   ngOnDestroy() {
-    // Clean up EventSource connection
+    // Clean up EventSource connections
     if (this.csvProgressEventSource) {
       this.csvProgressEventSource.close();
       this.csvProgressEventSource = null;
     }
     
-    // Clean up any intervals
-    if (this.progressInterval) {
-      clearInterval(this.progressInterval);
-      this.progressInterval = null;
+    if (this.queryProgressEventSource) {
+      this.queryProgressEventSource.close();
+      this.queryProgressEventSource = null;
     }
+    
+    // Clean up any running queries
+    this.finishQueryRequest();
   }
 }

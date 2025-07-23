@@ -80,6 +80,10 @@ current_progress = {
 # Query abortion mechanism
 current_query_abort = {"aborted": False}
 
+# Simple query lock to prevent concurrent queries
+query_lock = threading.Lock()
+current_query_id = None
+
 # SSE connections and broadcast queue
 import queue
 progress_queue = queue.Queue()
@@ -130,8 +134,230 @@ chartink_service = ChartinkService()
 Path("uploads").mkdir(exist_ok=True)
 (Path(__file__).parent.parent / "db").mkdir(parents=True, exist_ok=True)
 
+# Technical indicator calculation functions
+def calculate_atr(highs, lows, closes, period=14):
+    """Calculate Average True Range"""
+    true_ranges = []
+    for i in range(len(closes)):
+        if i == 0:
+            true_ranges.append(highs[i] - lows[i])
+        else:
+            hl = highs[i] - lows[i]
+            hc = abs(highs[i] - closes[i-1])
+            lc = abs(lows[i] - closes[i-1])
+            true_ranges.append(max(hl, hc, lc))
+    
+    # Calculate ATR using SMA of True Range
+    atr_values = []
+    for i in range(len(true_ranges)):
+        if i < period - 1:
+            atr_values.append(None)
+        else:
+            window = true_ranges[i-period+1:i+1]
+            atr_values.append(sum(window) / len(window))
+    
+    return atr_values
+
+def calculate_supertrend(highs, lows, closes, period=10, multiplier=3):
+    """Calculate SuperTrend indicator"""
+    atr_values = calculate_atr(highs, lows, closes, period)
+    supertrend_values = []
+    trend_values = []
+    
+    basic_upper_band = []
+    basic_lower_band = []
+    final_upper_band = []
+    final_lower_band = []
+    
+    for i in range(len(closes)):
+        if i < period - 1 or atr_values[i] is None:
+            supertrend_values.append(None)
+            trend_values.append(None)
+            basic_upper_band.append(None)
+            basic_lower_band.append(None)
+            final_upper_band.append(None)
+            final_lower_band.append(None)
+        else:
+            # Calculate basic bands
+            hl2 = (highs[i] + lows[i]) / 2
+            bub = hl2 + (multiplier * atr_values[i])
+            blb = hl2 - (multiplier * atr_values[i])
+            
+            basic_upper_band.append(bub)
+            basic_lower_band.append(blb)
+            
+            # Calculate final bands
+            if i == 0 or final_upper_band[i-1] is None:
+                fub = bub
+            else:
+                fub = bub if bub < final_upper_band[i-1] or closes[i-1] > final_upper_band[i-1] else final_upper_band[i-1]
+            
+            if i == 0 or final_lower_band[i-1] is None:
+                flb = blb
+            else:
+                flb = blb if blb > final_lower_band[i-1] or closes[i-1] < final_lower_band[i-1] else final_lower_band[i-1]
+            
+            final_upper_band.append(fub)
+            final_lower_band.append(flb)
+            
+            # Determine trend and SuperTrend value
+            if i == 0 or trend_values[i-1] is None:
+                trend = 1 if closes[i] <= fub else -1
+            else:
+                if trend_values[i-1] == 1:
+                    trend = -1 if closes[i] > fub else 1
+                else:
+                    trend = 1 if closes[i] < flb else -1
+            
+            trend_values.append(trend)
+            supertrend_values.append(flb if trend == 1 else fub)
+    
+    return supertrend_values
+
+def calculate_sma(values, period):
+    """Calculate Simple Moving Average"""
+    result = []
+    for i in range(len(values)):
+        if i < period - 1:
+            result.append(None)
+        else:
+            window = values[i-period+1:i+1]
+            result.append(sum(window) / len(window))
+    return result
+
+def calculate_ema(values, period):
+    """Calculate Exponential Moving Average"""
+    result = []
+    multiplier = 2 / (period + 1)
+    
+    for i in range(len(values)):
+        if i == 0:
+            result.append(values[i])
+        elif result[i-1] is None:
+            result.append(values[i])
+        else:
+            ema = (values[i] - result[i-1]) * multiplier + result[i-1]
+            result.append(ema)
+    
+    return result
+
+def calculate_rsi(closes, period=14):
+    """Calculate Relative Strength Index"""
+    gains = []
+    losses = []
+    
+    for i in range(len(closes)):
+        if i == 0:
+            gains.append(0)
+            losses.append(0)
+        else:
+            change = closes[i] - closes[i-1]
+            gains.append(max(change, 0))
+            losses.append(max(-change, 0))
+    
+    avg_gains = calculate_sma(gains, period)
+    avg_losses = calculate_sma(losses, period)
+    
+    rsi_values = []
+    for i in range(len(closes)):
+        if avg_gains[i] is None or avg_losses[i] is None or avg_losses[i] == 0:
+            rsi_values.append(None)
+        else:
+            rs = avg_gains[i] / avg_losses[i]
+            rsi = 100 - (100 / (1 + rs))
+            rsi_values.append(rsi)
+    
+    return rsi_values
+
+def calculate_bollinger_bands(closes, period=20, std_dev=2):
+    """Calculate Bollinger Bands"""
+    sma_values = calculate_sma(closes, period)
+    upper_band = []
+    lower_band = []
+    
+    for i in range(len(closes)):
+        if i < period - 1 or sma_values[i] is None:
+            upper_band.append(None)
+            lower_band.append(None)
+        else:
+            window = closes[i-period+1:i+1]
+            mean = sma_values[i]
+            variance = sum((x - mean) ** 2 for x in window) / len(window)
+            std = variance ** 0.5
+            
+            upper_band.append(mean + (std_dev * std))
+            lower_band.append(mean - (std_dev * std))
+    
+    return upper_band, sma_values, lower_band
+
+def get_week_start_timestamp(timestamp):
+    """Get the start of the week (Sunday) for a given timestamp"""
+    import datetime
+    dt = datetime.datetime.fromtimestamp(timestamp / 1000)
+    days_since_sunday = dt.weekday() + 1  # Monday is 0, so Sunday becomes 6
+    if days_since_sunday == 7:
+        days_since_sunday = 0
+    week_start = dt - datetime.timedelta(days=days_since_sunday)
+    return int(week_start.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+
+def get_month_start_timestamp(timestamp):
+    """Get the start of the month for a given timestamp"""
+    import datetime
+    dt = datetime.datetime.fromtimestamp(timestamp / 1000)
+    month_start = dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return int(month_start.timestamp() * 1000)
+
+def calculate_weekly_monthly_ohlcv(stock_data):
+    """Calculate weekly and monthly OHLCV data from daily data"""
+    if not stock_data:
+        return {}, {}
+    
+    weekly_data = {}
+    monthly_data = {}
+    
+    for candle in stock_data:
+        timestamp = candle.get("timestamp", 0)
+        
+        # Weekly aggregation
+        week_key = get_week_start_timestamp(timestamp)
+        if week_key not in weekly_data:
+            weekly_data[week_key] = {
+                "open": candle.get("open"),
+                "high": candle.get("high"),
+                "low": candle.get("low"),
+                "close": candle.get("close"),
+                "volume": candle.get("volume", 0),
+                "count": 1
+            }
+        else:
+            weekly_data[week_key]["high"] = max(weekly_data[week_key]["high"], candle.get("high", 0))
+            weekly_data[week_key]["low"] = min(weekly_data[week_key]["low"], candle.get("low", float('inf')))
+            weekly_data[week_key]["close"] = candle.get("close")  # Last close in the week
+            weekly_data[week_key]["volume"] += candle.get("volume", 0)
+            weekly_data[week_key]["count"] += 1
+        
+        # Monthly aggregation
+        month_key = get_month_start_timestamp(timestamp)
+        if month_key not in monthly_data:
+            monthly_data[month_key] = {
+                "open": candle.get("open"),
+                "high": candle.get("high"),
+                "low": candle.get("low"),
+                "close": candle.get("close"),
+                "volume": candle.get("volume", 0),
+                "count": 1
+            }
+        else:
+            monthly_data[month_key]["high"] = max(monthly_data[month_key]["high"], candle.get("high", 0))
+            monthly_data[month_key]["low"] = min(monthly_data[month_key]["low"], candle.get("low", float('inf')))
+            monthly_data[month_key]["close"] = candle.get("close")  # Last close in the month
+            monthly_data[month_key]["volume"] += candle.get("volume", 0)
+            monthly_data[month_key]["count"] += 1
+    
+    return weekly_data, monthly_data
+
 def update_progress(updates: Dict[str, Any]):
-    """Update progress and notify SSE connections."""
+    """Update progress and notify SSE connections with rate limiting."""
     global current_progress
     current_progress.update(updates)
     
@@ -141,9 +367,22 @@ def update_progress(updates: Dict[str, Any]):
             int((current_progress["processed"] / current_progress["total"]) * 100), 100
         )
     
-    # Broadcast update to all SSE connections
+    # Add timestamp for client-side deduplication
+    current_progress["timestamp"] = time.time()
+    
+    # Broadcast update to all SSE connections with queue management
     try:
-        progress_queue.put_nowait(current_progress.copy())
+        # Only add to queue if it's not too full (prevent flooding)
+        if progress_queue.qsize() < 10:
+            progress_queue.put_nowait(current_progress.copy())
+        else:
+            # If queue is getting full, clear old items and add latest
+            while progress_queue.qsize() > 5:
+                try:
+                    progress_queue.get_nowait()
+                except queue.Empty:
+                    break
+            progress_queue.put_nowait(current_progress.copy())
     except queue.Full:
         # If queue is full, clear it and add the latest
         while not progress_queue.empty():
@@ -153,8 +392,9 @@ def update_progress(updates: Dict[str, Any]):
                 break
         progress_queue.put_nowait(current_progress.copy())
     
-    # Log progress update
-    logger.info(f"Progress update: {current_progress}")
+    # Log progress update (less verbose)
+    if current_progress.get("processed", 0) % 10 == 0 or current_progress.get("isRunning") == False:
+        logger.info(f"Progress: {current_progress.get('phase', 'unknown')} - {current_progress.get('processed', 0)}/{current_progress.get('total', 0)} ({current_progress.get('percentage', 0)}%)")
 
 @app.get("/")
 async def root():
@@ -190,34 +430,29 @@ async def chartink_api(request: ChartinkApiRequest):
         logger.error(f"Chartink API error: {error}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(error)}")
 
-@app.get("/query/progress")
-async def get_query_progress():
-    """Get current query progress."""
-    try:
-        # Calculate percentage (22 stocks = 1% as per original logic)
-        percentage = min(int(current_progress["processed"] / 22), 100) if current_progress["total"] > 0 else 0
-        
-        response = {
-            **current_progress,
-            "percentage": percentage
-        }
-        
-        logger.info(f"Progress endpoint called: {response}")
-        return response
-        
-    except Exception as error:
-        logger.error(f"Progress endpoint error: {error}")
-        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/query")
 async def process_query(request: QueryRequest):
     """Process stock screening query."""
+    global current_query_id
+    
+    # Check if another query is already running
+    if not query_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409, 
+            detail="Another query is already running. Please wait for it to complete."
+        )
+    
     try:
         query = request.query
         stocks = request.stocks
         
         if not query:
             raise HTTPException(status_code=400, detail="Query is required")
+        
+        # Generate unique query ID
+        import uuid
+        current_query_id = str(uuid.uuid4())[:8]
         
         # Reset abort flag
         current_query_abort["aborted"] = False
@@ -272,71 +507,86 @@ async def process_query(request: QueryRequest):
             "total": total_stocks
         })
         
-        # SAFE PARALLEL PROCESSING: Use ThreadPoolExecutor for async compatibility
-        print(f"[DEBUG] Starting SAFE PARALLEL query processing with {PERFORMANCE_CONFIG['max_cpu_workers']} workers")
+        # MAXIMUM PERFORMANCE: Use ProcessPoolExecutor for true parallelism
+        print(f"[DEBUG] Starting MAXIMUM PERFORMANCE query processing with {PERFORMANCE_CONFIG['max_cpu_workers']} workers")
         query_start_time = time.time()
         
-        # Use ThreadPoolExecutor for better async compatibility (avoids ASGI issues)
-        max_workers = min(PERFORMANCE_CONFIG["max_cpu_workers"], 8)  # Limit to prevent resource exhaustion
+        # Use ProcessPoolExecutor for maximum CPU utilization (bypasses GIL)
+        max_workers = PERFORMANCE_CONFIG["max_cpu_workers"]  # Use all available CPU workers
         
-        # Process stocks in smaller batches to avoid memory issues
-        batch_size = 50  # Process 50 stocks at a time
+        # Split stocks into optimal chunks for maximum CPU usage
+        chunk_size = max(10, len(stock_list) // (max_workers * 2))
+        chunks = [stock_list[i:i + chunk_size] for i in range(0, len(stock_list), chunk_size)]
+        
+        print(f"[DEBUG] Full query: {len(chunks)} chunks, {chunk_size} stocks per chunk")
         
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Process stocks in batches
-                for batch_start in range(0, len(stock_list), batch_size):
-                    batch_end = min(batch_start + batch_size, len(stock_list))
-                    batch_stocks = stock_list[batch_start:batch_end]
-                    
-                    print(f"[DEBUG] Processing batch {batch_start+1}-{batch_end} ({len(batch_stocks)} stocks)")
-                    
-                    # Create futures for this batch
-                    futures = []
-                    for stock in batch_stocks:
-                        if current_query_abort["aborted"]:
-                            raise HTTPException(status_code=400, detail="Query was aborted")
+            # SAFE ProcessPoolExecutor usage with proper async handling
+            def run_parallel_chunks():
+                """Run chunks in separate processes safely"""
+                try:
+                    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+                        current_dir = str(Path(__file__).parent.absolute())
                         
-                        future = executor.submit(process_single_stock_safe, stock, parsed_query)
-                        futures.append((stock, future))
-                    
-                    # Collect results from this batch
-                    batch_matches = []
-                    batch_errors = []
-                    
-                    for stock, future in futures:
-                        try:
-                            result = future.result(timeout=30)  # 30 second timeout per stock
-                            if result["success"]:
-                                batch_matches.extend(result["matches"])
-                            else:
-                                batch_errors.append({"stock": stock, "error": result["error"]})
-                        except concurrent.futures.TimeoutError:
-                            batch_errors.append({"stock": stock, "error": "Processing timeout"})
-                        except Exception as e:
-                            batch_errors.append({"stock": stock, "error": str(e)})
+                        # Submit all chunks
+                        futures = [
+                            executor.submit(process_query_batch_parallel, chunk, parsed_query, current_dir)
+                            for chunk in chunks
+                        ]
                         
-                        processed_count += 1
-                    
-                    # Add batch results to totals
-                    all_matches.extend(batch_matches)
-                    errors.extend(batch_errors)
-                    
-                    # Update progress after each batch
-                    update_progress({
-                        "phase": "processing_and_analyzing",
-                        "message": f"Parallel query: {processed_count}/{total_stocks} stocks, {len(all_matches)} matches found",
-                        "processed": processed_count,
-                        "total": total_stocks,
-                        "matches": len(all_matches)
-                    })
-                    
-                    # Allow other tasks to run
-                    await asyncio.sleep(0.1)
+                        # Collect results as they complete
+                        results = []
+                        for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                            try:
+                                result = future.result(timeout=120)  # 2 minute timeout per chunk
+                                results.append(result)
+                                print(f"[DEBUG] Completed chunk {i+1}/{len(chunks)}")
+                            except Exception as e:
+                                print(f"[ERROR] Chunk {i+1} failed: {e}")
+                                results.append({"matches": [], "errors": [], "processed": 0, "processing_time": 0})
+                        
+                        return results
+                except Exception as e:
+                    print(f"[ERROR] ProcessPoolExecutor failed: {e}")
+                    return []
+            
+            # Run parallel processing in thread pool to avoid ASGI issues
+            loop = asyncio.get_event_loop()
+            chunk_results = await loop.run_in_executor(None, run_parallel_chunks)
+            
+            # Process results
+            completed_chunks = 0
+            for chunk_result in chunk_results:
+                completed_chunks += 1
+                
+                print(f"[DEBUG] Processing result from chunk {completed_chunks}/{len(chunks)}")
+                print(f"[DEBUG] Chunk results: {chunk_result['processed']} processed, {len(chunk_result['matches'])} matches, {len(chunk_result['errors'])} errors")
+                
+                # Aggregate results
+                all_matches.extend(chunk_result["matches"])
+                errors.extend(chunk_result["errors"])
+                processed_count += chunk_result["processed"]
+                
+                # Update progress for this chunk
+                update_progress({
+                    "phase": "processing_and_analyzing",
+                    "message": f"Parallel query: {processed_count}/{total_stocks} stocks, {len(all_matches)} matches found",
+                    "processed": processed_count,
+                    "total": total_stocks,
+                    "matches": len(all_matches)
+                })
+                
+                # Check for abort
+                if current_query_abort["aborted"]:
+                    raise HTTPException(status_code=400, detail="Query was aborted")
+                
+                # Allow progress updates
+                await asyncio.sleep(0.1)
                     
         except Exception as e:
             logger.error(f"Parallel processing error: {e}")
-            # Fallback to sequential processing
+            print(f"[WARNING] Parallel processing failed: {e}")
+            # Fallback to safe ThreadPoolExecutor
             print(f"[WARNING] Falling back to sequential processing due to error: {e}")
             
             for stock in stock_list[processed_count:]:
@@ -404,23 +654,49 @@ async def process_query(request: QueryRequest):
     except HTTPException:
         raise
     except Exception as error:
-        logger.error(f"Query endpoint error: {error}")
+        logger.error(f"Query endpoint error: {error}", exc_info=True)
+        error_msg = f"Query processing failed: {str(error)}"
         update_progress({
             "phase": "error",
-            "message": "Query processing failed",
-            "isRunning": False
+            "message": error_msg,
+            "isRunning": False,
+            "error_details": str(error)
         })
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(error)}")
+        raise HTTPException(status_code=500, detail={
+            "error": "Query processing failed",
+            "details": str(error),
+            "type": "processing_error"
+        })
+    finally:
+        # Always release the query lock
+        try:
+            query_lock.release()
+            current_query_id = None
+        except:
+            pass  # Lock may not be held in some error cases
 
 @app.post("/query/latest")
 async def process_latest_query(request: QueryRequest):
     """Process query for latest day only - optimized for speed."""
+    global current_query_id
+    
+    # Check if another query is already running
+    if not query_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409, 
+            detail="Another query is already running. Please wait for it to complete."
+        )
+    
     try:
         query = request.query
         stocks = request.stocks
         
         if not query:
             raise HTTPException(status_code=400, detail="Query is required")
+        
+        # Generate unique query ID
+        import uuid
+        current_query_id = str(uuid.uuid4())[:8]
         
         # Reset abort flag
         current_query_abort["aborted"] = False
@@ -473,95 +749,83 @@ async def process_latest_query(request: QueryRequest):
             "total": total_stocks
         })
         
-        # SAFE PARALLEL PROCESSING: Use ThreadPoolExecutor for latest scan
-        print(f"[DEBUG] Starting SAFE PARALLEL latest scan with {PERFORMANCE_CONFIG['max_cpu_workers']} workers")
+        # MAXIMUM PERFORMANCE: Parallel latest scan processing using ProcessPoolExecutor
+        print(f"[DEBUG] Starting PARALLEL latest scan with {PERFORMANCE_CONFIG['max_cpu_workers']} CPU workers")
         scan_start_time = time.time()
         
-        # Use ThreadPoolExecutor for better async compatibility
-        max_workers = min(PERFORMANCE_CONFIG["max_cpu_workers"], 8)
-        batch_size = 100  # Larger batches for latest scan (only 1 candle per stock)
+        # Split stocks into optimal chunks for maximum CPU usage
+        scan_chunk_size = max(10, len(stock_list) // (PERFORMANCE_CONFIG["max_cpu_workers"] * 2))
+        scan_chunks = [stock_list[i:i + scan_chunk_size] for i in range(0, len(stock_list), scan_chunk_size)]
         
+        print(f"[DEBUG] Latest scan: {len(scan_chunks)} chunks, {scan_chunk_size} stocks per chunk")
+        
+        # SAFE ProcessPoolExecutor usage for latest scan
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Process stocks in batches
-                for batch_start in range(0, len(stock_list), batch_size):
-                    batch_end = min(batch_start + batch_size, len(stock_list))
-                    batch_stocks = stock_list[batch_start:batch_end]
-                    
-                    print(f"[DEBUG] Processing latest scan batch {batch_start+1}-{batch_end} ({len(batch_stocks)} stocks)")
-                    
-                    # Create futures for this batch (latest scan only)
-                    futures = []
-                    for stock in batch_stocks:
-                        if current_query_abort["aborted"]:
-                            raise HTTPException(status_code=400, detail="Query was aborted")
+            def run_scan_chunks():
+                """Run scan chunks in separate processes safely"""
+                try:
+                    with concurrent.futures.ProcessPoolExecutor(max_workers=PERFORMANCE_CONFIG["max_cpu_workers"]) as executor:
+                        current_dir = str(Path(__file__).parent.absolute())
                         
-                        future = executor.submit(process_single_stock_latest_safe, stock, parsed_query)
-                        futures.append((stock, future))
-                    
-                    # Collect results from this batch
-                    batch_matches = []
-                    batch_errors = []
-                    
-                    for stock, future in futures:
-                        try:
-                            result = future.result(timeout=10)  # 10 second timeout for latest scan
-                            if result["success"]:
-                                batch_matches.extend(result["matches"])
-                            else:
-                                batch_errors.append({"stock": stock, "error": result["error"]})
-                        except concurrent.futures.TimeoutError:
-                            batch_errors.append({"stock": stock, "error": "Processing timeout"})
-                        except Exception as e:
-                            batch_errors.append({"stock": stock, "error": str(e)})
+                        # Submit all chunks
+                        futures = [
+                            executor.submit(process_latest_scan_batch_parallel, chunk, parsed_query, current_dir)
+                            for chunk in scan_chunks
+                        ]
                         
-                        processed_count += 1
-                    
-                    # Add batch results to totals
-                    all_matches.extend(batch_matches)
-                    errors.extend(batch_errors)
-                    
-                    # Update progress after each batch
-                    update_progress({
-                        "phase": "processing_and_analyzing",
-                        "message": f"Parallel latest scan: {processed_count}/{total_stocks} stocks, {len(all_matches)} matches found",
-                        "processed": processed_count,
-                        "total": total_stocks,
-                        "matches": len(all_matches)
-                    })
-                    
-                    # Allow other tasks to run
-                    await asyncio.sleep(0.05)  # Shorter sleep for latest scan
-                    
-        except Exception as e:
-            logger.error(f"Parallel latest scan error: {e}")
-            # Fallback to sequential processing
-            print(f"[WARNING] Falling back to sequential processing due to error: {e}")
+                        # Collect results as they complete
+                        results = []
+                        for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                            try:
+                                result = future.result(timeout=60)  # 1 minute timeout per chunk for latest scan
+                                results.append(result)
+                                print(f"[DEBUG] Completed scan chunk {i+1}/{len(scan_chunks)}")
+                            except Exception as e:
+                                print(f"[ERROR] Scan chunk {i+1} failed: {e}")
+                                results.append({"matches": [], "errors": [], "processed": 0, "processing_time": 0})
+                        
+                        return results
+                except Exception as e:
+                    print(f"[ERROR] Scan ProcessPoolExecutor failed: {e}")
+                    return []
             
-            for stock in stock_list[processed_count:]:
+            # Run parallel processing in thread pool to avoid ASGI issues
+            loop = asyncio.get_event_loop()
+            scan_results = await loop.run_in_executor(None, run_scan_chunks)
+            
+            # Process scan results
+            completed_chunks = 0
+            for chunk_result in scan_results:
+                completed_chunks += 1
+                
+                print(f"[DEBUG] Processing scan result from chunk {completed_chunks}/{len(scan_chunks)}")
+                print(f"[DEBUG] Chunk results: {chunk_result['processed']} processed, {len(chunk_result['matches'])} matches, {len(chunk_result['errors'])} errors")
+                
+                # Aggregate results
+                all_matches.extend(chunk_result["matches"])
+                errors.extend(chunk_result["errors"])
+                processed_count += chunk_result["processed"]
+                
+                # Update progress for this chunk
+                update_progress({
+                    "phase": "processing_and_analyzing",
+                    "message": f"Parallel latest scan: {processed_count}/{total_stocks} stocks, {len(all_matches)} matches found",
+                    "processed": processed_count,
+                    "total": total_stocks,
+                    "matches": len(all_matches)
+                })
+                
+                # Check for abort
                 if current_query_abort["aborted"]:
                     raise HTTPException(status_code=400, detail="Query was aborted")
                 
-                try:
-                    result = process_single_stock_latest_safe(stock, parsed_query)
-                    if result["success"]:
-                        all_matches.extend(result["matches"])
-                    else:
-                        errors.append({"stock": stock, "error": result["error"]})
-                except Exception as error:
-                    errors.append({"stock": stock, "error": str(error)})
+                # Allow progress updates
+                await asyncio.sleep(0.1)
                 
-                processed_count += 1
-                
-                if processed_count % 50 == 0:
-                    update_progress({
-                        "phase": "processing_and_analyzing",
-                        "message": f"Sequential latest scan: {processed_count}/{total_stocks} stocks, {len(all_matches)} matches found",
-                        "processed": processed_count,
-                        "total": total_stocks,
-                        "matches": len(all_matches)
-                    })
-                    await asyncio.sleep(0)
+        except Exception as e:
+            logger.error(f"Latest scan parallel processing error: {e}")
+            print(f"[WARNING] Latest scan parallel processing failed: {e}")
+            # Continue without error - results will be empty but won't crash
         
         scan_end_time = time.time()
         total_scan_time = scan_end_time - scan_start_time
@@ -607,12 +871,25 @@ async def process_latest_query(request: QueryRequest):
         raise
     except Exception as error:
         logger.error(f"Latest day query processing error: {error}", exc_info=True)
+        error_msg = f"Latest day scan failed: {str(error)}"
         update_progress({
             "phase": "error",
-            "message": "Latest day scan failed",
-            "isRunning": False
+            "message": error_msg,
+            "isRunning": False,
+            "error_details": str(error)
         })
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(error)}")
+        raise HTTPException(status_code=500, detail={
+            "error": "Latest day scan failed",
+            "details": str(error),
+            "type": "scan_error"
+        })
+    finally:
+        # Always release the query lock
+        try:
+            query_lock.release()
+            current_query_id = None
+        except:
+            pass  # Lock may not be held in some error cases
 
 @app.get("/query/examples")
 async def get_query_examples_endpoint():
@@ -860,229 +1137,253 @@ def process_single_stock_safe(stock, parsed_query):
 
 def process_query_batch_parallel(stock_batch, parsed_query_dict, base_path=""):
     """Parallel full query processing function for ProcessPoolExecutor - maximizes CPU usage."""
-    import json
-    import time
-    import sys
-    import os
-    from pathlib import Path
-    
-    batch_start = time.time()
-    matches = []
-    errors = []
-    processed = 0
-    
-    # Add current directory to path for imports
-    if base_path and base_path not in sys.path:
-        sys.path.insert(0, base_path)
-    
-    # Import the query service function
     try:
-        # Try to import directly first
-        from services.query_service import find_matching_candles
-    except ImportError:
+        import json
+        import time
+        import sys
+        import os
+        from pathlib import Path
+        import traceback
+        
+        batch_start = time.time()
+        matches = []
+        errors = []
+        processed = 0
+        
+        # Add current directory to path for imports
+        if base_path and base_path not in sys.path:
+            sys.path.insert(0, base_path)
+        
+        # Import the query service function
         try:
-            # Try with absolute path
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            services_path = os.path.join(current_dir, 'services')
-            if services_path not in sys.path:
-                sys.path.insert(0, services_path)
-            from query_service import find_matching_candles
+            # Try to import directly first
+            from services.query_service import find_matching_candles
         except ImportError:
-            # Simple fallback implementation for basic conditions
-            def find_matching_candles(candles, parsed_query, stock):
-                matches = []
-                for candle in candles:
-                    try:
-                        # Simple evaluation for basic conditions
-                        conditions = parsed_query.get("conditions", [])
-                        if not conditions:
+            try:
+                # Try with absolute path
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                services_path = os.path.join(current_dir, 'services')
+                if services_path not in sys.path:
+                    sys.path.insert(0, services_path)
+                from query_service import find_matching_candles
+            except ImportError:
+                # Simple fallback implementation for basic conditions
+                def find_matching_candles(candles, parsed_query, stock):
+                    matches = []
+                    for candle in candles:
+                        try:
+                            # Simple evaluation for basic conditions
+                            conditions = parsed_query.get("conditions", [])
+                            if not conditions:
+                                continue
+                            
+                            results = []
+                            for condition in conditions:
+                                left = condition["left"]
+                                operator = condition["operator"] 
+                                right = condition["right"]
+                                
+                                # Get values from candle
+                                left_val = candle.get(left.get("value", ""), 0) if left.get("type") == "field" else float(left.get("value", 0))
+                                right_val = candle.get(right.get("value", ""), 0) if right.get("type") == "field" else float(right.get("value", 0))
+                                
+                                # Simple comparison
+                                if operator == ">":
+                                    results.append(left_val > right_val)
+                                elif operator == "<":
+                                    results.append(left_val < right_val)
+                                elif operator == ">=":
+                                    results.append(left_val >= right_val)
+                                elif operator == "<=":
+                                    results.append(left_val <= right_val)
+                                elif operator == "==":
+                                    results.append(left_val == right_val)
+                                else:
+                                    results.append(False)
+                            
+                            # Simple AND logic for now
+                            if all(results):
+                                matches.append({
+                                    "stock": stock,
+                                    "date": candle.get("timestamp", ""),
+                                    "data": candle
+                                })
+                        except:
                             continue
-                        
-                        results = []
-                        for condition in conditions:
-                            left = condition["left"]
-                            operator = condition["operator"] 
-                            right = condition["right"]
-                            
-                            # Get values from candle
-                            left_val = candle.get(left.get("value", ""), 0) if left.get("type") == "field" else float(left.get("value", 0))
-                            right_val = candle.get(right.get("value", ""), 0) if right.get("type") == "field" else float(right.get("value", 0))
-                            
-                            # Simple comparison
-                            if operator == ">":
-                                results.append(left_val > right_val)
-                            elif operator == "<":
-                                results.append(left_val < right_val)
-                            elif operator == ">=":
-                                results.append(left_val >= right_val)
-                            elif operator == "<=":
-                                results.append(left_val <= right_val)
-                            elif operator == "==":
-                                results.append(left_val == right_val)
-                            else:
-                                results.append(False)
-                        
-                        # Simple AND logic for now
-                        if all(results):
-                            matches.append({
-                                "stock": stock,
-                                "date": candle.get("timestamp", ""),
-                                "data": candle
-                            })
-                    except:
-                        continue
-                return matches
-    
-    print(f"[DEBUG] Processing full query batch of {len(stock_batch)} stocks")
-    
-    for stock in stock_batch:
-        try:
-            # Check for precalculated data (full historical data for query)
-            precalculated_file = Path(f"precalculatedStorage/{stock}_piped.json")
-            if precalculated_file.exists():
-                with open(precalculated_file, 'r') as f:
-                    mapped_data = json.load(f)
-                candles = mapped_data.get("data", [])
-                
-                if candles:
-                    # Process ALL candles for full query (not just latest)
-                    stock_matches = find_matching_candles(candles, parsed_query_dict, stock)
-                    matches.extend(stock_matches)
+                    return matches
+        
+        print(f"[DEBUG] Processing full query batch of {len(stock_batch)} stocks")
+        
+        for stock in stock_batch:
+            try:
+                # Check for precalculated data (full historical data for query)
+                precalculated_file = Path(f"precalculatedStorage/{stock}_piped.json")
+                if precalculated_file.exists():
+                    with open(precalculated_file, 'r') as f:
+                        mapped_data = json.load(f)
+                    candles = mapped_data.get("data", [])
+                    
+                    if candles:
+                        # Process ALL candles for full query (not just latest)
+                        stock_matches = find_matching_candles(candles, parsed_query_dict, stock)
+                        matches.extend(stock_matches)
+                    else:
+                        errors.append({"stock": stock, "error": "No candle data available"})
                 else:
-                    errors.append({"stock": stock, "error": "No candle data available"})
-            else:
-                errors.append({"stock": stock, "error": "Precalculated data not found"})
-            
-            processed += 1
-            
-        except Exception as e:
-            errors.append({"stock": stock, "error": str(e)})
-            processed += 1
+                    errors.append({"stock": stock, "error": "Precalculated data not found"})
+                
+                processed += 1
+                
+            except Exception as e:
+                errors.append({"stock": stock, "error": str(e)})
+                processed += 1
     
-    batch_end = time.time()
-    print(f"[DEBUG] Full query batch completed in {batch_end - batch_start:.2f}s, processed {processed} stocks, found {len(matches)} matches")
-    
-    return {
-        "matches": matches,
-        "errors": errors,
-        "processed": processed,
-        "processing_time": batch_end - batch_start
-    }
+        batch_end = time.time()
+        print(f"[DEBUG] Full query batch completed in {batch_end - batch_start:.2f}s, processed {processed} stocks, found {len(matches)} matches")
+        
+        return {
+            "matches": matches,
+            "errors": errors,
+            "processed": processed,
+            "processing_time": batch_end - batch_start
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] Critical error in process_query_batch_parallel: {e}")
+        traceback.print_exc()
+        return {
+            "matches": [],
+            "errors": [{"error": f"Batch processing failed: {str(e)}"}],
+            "processed": 0,
+            "processing_time": 0
+        }
 
 
 def process_latest_scan_batch_parallel(stock_batch, parsed_query_dict, base_path=""):
     """Parallel latest scan processing function for ProcessPoolExecutor - maximizes CPU usage."""
-    import json
-    import time
-    import sys
-    import os
-    from pathlib import Path
-    
-    batch_start = time.time()
-    matches = []
-    errors = []
-    processed = 0
-    
-    # Add current directory to path for imports
-    if base_path and base_path not in sys.path:
-        sys.path.insert(0, base_path)
-    
-    # Import the query service function
     try:
-        # Try to import directly first
-        from services.query_service import find_matching_candles
-    except ImportError:
+        import json
+        import time
+        import sys
+        import os
+        from pathlib import Path
+        import traceback
+        
+        batch_start = time.time()
+        matches = []
+        errors = []
+        processed = 0
+        
+        # Add current directory to path for imports
+        if base_path and base_path not in sys.path:
+            sys.path.insert(0, base_path)
+        
+        # Import the query service function
         try:
-            # Try with absolute path
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            services_path = os.path.join(current_dir, 'services')
-            if services_path not in sys.path:
-                sys.path.insert(0, services_path)
-            from query_service import find_matching_candles
+            # Try to import directly first
+            from services.query_service import find_matching_candles
         except ImportError:
-            # Simple fallback implementation for basic conditions
-            def find_matching_candles(candles, parsed_query, stock):
-                matches = []
-                for candle in candles:
-                    try:
-                        # Simple evaluation for basic conditions
-                        conditions = parsed_query.get("conditions", [])
-                        if not conditions:
+            try:
+                # Try with absolute path
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                services_path = os.path.join(current_dir, 'services')
+                if services_path not in sys.path:
+                    sys.path.insert(0, services_path)
+                from query_service import find_matching_candles
+            except ImportError:
+                # Simple fallback implementation for basic conditions
+                def find_matching_candles(candles, parsed_query, stock):
+                    matches = []
+                    for candle in candles:
+                        try:
+                            # Simple evaluation for basic conditions
+                            conditions = parsed_query.get("conditions", [])
+                            if not conditions:
+                                continue
+                            
+                            results = []
+                            for condition in conditions:
+                                left = condition["left"]
+                                operator = condition["operator"] 
+                                right = condition["right"]
+                                
+                                # Get values from candle
+                                left_val = candle.get(left.get("value", ""), 0) if left.get("type") == "field" else float(left.get("value", 0))
+                                right_val = candle.get(right.get("value", ""), 0) if right.get("type") == "field" else float(right.get("value", 0))
+                                
+                                # Simple comparison
+                                if operator == ">":
+                                    results.append(left_val > right_val)
+                                elif operator == "<":
+                                    results.append(left_val < right_val)
+                                elif operator == ">=":
+                                    results.append(left_val >= right_val)
+                                elif operator == "<=":
+                                    results.append(left_val <= right_val)
+                                elif operator == "==":
+                                    results.append(left_val == right_val)
+                                else:
+                                    results.append(False)
+                            
+                            # Simple AND logic for now
+                            if all(results):
+                                matches.append({
+                                    "stock": stock,
+                                    "date": candle.get("timestamp", ""),
+                                    "data": candle
+                                })
+                        except:
                             continue
-                        
-                        results = []
-                        for condition in conditions:
-                            left = condition["left"]
-                            operator = condition["operator"] 
-                            right = condition["right"]
-                            
-                            # Get values from candle
-                            left_val = candle.get(left.get("value", ""), 0) if left.get("type") == "field" else float(left.get("value", 0))
-                            right_val = candle.get(right.get("value", ""), 0) if right.get("type") == "field" else float(right.get("value", 0))
-                            
-                            # Simple comparison
-                            if operator == ">":
-                                results.append(left_val > right_val)
-                            elif operator == "<":
-                                results.append(left_val < right_val)
-                            elif operator == ">=":
-                                results.append(left_val >= right_val)
-                            elif operator == "<=":
-                                results.append(left_val <= right_val)
-                            elif operator == "==":
-                                results.append(left_val == right_val)
-                            else:
-                                results.append(False)
-                        
-                        # Simple AND logic for now
-                        if all(results):
-                            matches.append({
-                                "stock": stock,
-                                "date": candle.get("timestamp", ""),
-                                "data": candle
-                            })
-                    except:
-                        continue
-                return matches
-    
-    print(f"[DEBUG] Processing latest scan batch of {len(stock_batch)} stocks")
-    
-    for stock in stock_batch:
-        try:
-            # Check for precalculated data
-            precalculated_file = Path(f"precalculatedStorage/{stock}_piped.json")
-            if precalculated_file.exists():
-                with open(precalculated_file, 'r') as f:
-                    mapped_data = json.load(f)
-                candles = mapped_data.get("data", [])
-                
-                if candles:
-                    # Only check the LATEST candle (most recent)
-                    latest_candle = candles[-1]
+                    return matches
+        
+        print(f"[DEBUG] Processing latest scan batch of {len(stock_batch)} stocks")
+        
+        for stock in stock_batch:
+            try:
+                # Check for precalculated data
+                precalculated_file = Path(f"precalculatedStorage/{stock}_piped.json")
+                if precalculated_file.exists():
+                    with open(precalculated_file, 'r') as f:
+                        mapped_data = json.load(f)
+                    candles = mapped_data.get("data", [])
                     
-                    # Check if latest candle matches the query
-                    stock_matches = find_matching_candles([latest_candle], parsed_query_dict, stock)
-                    matches.extend(stock_matches)
+                    if candles:
+                        # Only check the LATEST candle (most recent)
+                        latest_candle = candles[-1]
+                        
+                        # Check if latest candle matches the query
+                        stock_matches = find_matching_candles([latest_candle], parsed_query_dict, stock)
+                        matches.extend(stock_matches)
+                    else:
+                        errors.append({"stock": stock, "error": "No candle data available"})
                 else:
-                    errors.append({"stock": stock, "error": "No candle data available"})
-            else:
-                errors.append({"stock": stock, "error": "Precalculated data not found"})
-            
-            processed += 1
-            
-        except Exception as e:
-            errors.append({"stock": stock, "error": str(e)})
-            processed += 1
+                    errors.append({"stock": stock, "error": "Precalculated data not found"})
+                
+                processed += 1
+                
+            except Exception as e:
+                errors.append({"stock": stock, "error": str(e)})
+                processed += 1
     
-    batch_end = time.time()
-    print(f"[DEBUG] Latest scan batch completed in {batch_end - batch_start:.2f}s, processed {processed} stocks, found {len(matches)} matches")
-    
-    return {
-        "matches": matches,
-        "errors": errors,
-        "processed": processed,
-        "processing_time": batch_end - batch_start
-    }
+        batch_end = time.time()
+        print(f"[DEBUG] Latest scan batch completed in {batch_end - batch_start:.2f}s, processed {processed} stocks, found {len(matches)} matches")
+        
+        return {
+            "matches": matches,
+            "errors": errors,
+            "processed": processed,
+            "processing_time": batch_end - batch_start
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] Critical error in process_latest_scan_batch_parallel: {e}")
+        traceback.print_exc()
+        return {
+            "matches": [],
+            "errors": [{"error": f"Scan batch processing failed: {str(e)}"}],
+            "processed": 0,
+            "processing_time": 0
+        }
 
 
 def write_stock_batch_parallel(stock_results_chunk, precalc_dir_str):
@@ -1137,12 +1438,24 @@ def process_stock_batch_cpu_intensive(stock_batch_data):
                 name = indicator.get("name", "").lower()
                 params = indicator.get("params", {})
                 period = params.get("period", 14)
-                indicator_key = f"{timeframe}_{name}_{period}"
+                
+                # Generate appropriate indicator key based on indicator type
+                if name == "supertrend":
+                    multiplier = params.get("multiplier", 3)
+                    indicator_key = f"{timeframe}_{name}_{period}_{multiplier}"
+                elif name == "bb":
+                    std_dev = params.get("stdDev", 2)
+                    indicator_key = f"{timeframe}_{name}_{period}_{std_dev}"
+                else:
+                    indicator_key = f"{timeframe}_{name}_{period}"
+                
                 indicator_configs.append({
                     "name": name,
                     "key": indicator_key,
                     "timeframe": timeframe,
-                    "period": period
+                    "period": period,
+                    "multiplier": params.get("multiplier", 3),
+                    "std_dev": params.get("stdDev", 2)
                 })
             
             # Extract price data for calculations
@@ -1150,58 +1463,92 @@ def process_stock_batch_cpu_intensive(stock_batch_data):
             highs = [float(candle.get("high", 0)) for candle in stock_data]
             lows = [float(candle.get("low", 0)) for candle in stock_data]
             
-            # Process all candles for this stock with CPU-intensive calculations
+            # Always calculate weekly and monthly OHLCV data regardless of indicators
+            weekly_ohlcv, monthly_ohlcv = calculate_weekly_monthly_ohlcv(stock_data)
+            
+            # Pre-calculate all indicators ONCE per stock for performance
+            calculated_indicators = {}
+            for config in indicator_configs:
+                name = config["name"]
+                indicator_key = config["key"]
+                period = config["period"]
+                
+                if name == "rsi":
+                    calculated_indicators[indicator_key] = calculate_rsi(closes, period)
+                elif name == "sma":
+                    calculated_indicators[indicator_key] = calculate_sma(closes, period)
+                elif name == "ema":
+                    calculated_indicators[indicator_key] = calculate_ema(closes, period)
+                elif name == "bb":
+                    std_dev = config.get("std_dev", 2)
+                    upper, middle, lower = calculate_bollinger_bands(closes, period, std_dev)
+                    calculated_indicators[f"{indicator_key}_upper"] = upper
+                    calculated_indicators[f"{indicator_key}_middle"] = middle
+                    calculated_indicators[f"{indicator_key}_lower"] = lower
+                elif name == "supertrend":
+                    multiplier = config.get("multiplier", 3)
+                    calculated_indicators[indicator_key] = calculate_supertrend(highs, lows, closes, period, multiplier)
+            
+            # Process all candles for this stock - just map pre-calculated values
             for idx, candle in enumerate(stock_data):
+                timestamp = candle.get("timestamp", 0)
+                
+                # Find corresponding weekly and monthly data
+                week_key = get_week_start_timestamp(timestamp)
+                month_key = get_month_start_timestamp(timestamp)
+                
+                weekly_candle = weekly_ohlcv.get(week_key, {})
+                monthly_candle = monthly_ohlcv.get(month_key, {})
+                
                 enhanced_candle = {
-                    "timestamp": candle.get("timestamp"),
-                    "date": candle.get("timestamp"),
+                    "timestamp": timestamp,
+                    "date": timestamp,
                     "open": candle.get("open"),
                     "high": candle.get("high"),
                     "low": candle.get("low"),
                     "close": candle.get("close"),
-                    "volume": candle.get("volume")
+                    "volume": candle.get("volume"),
+                    # Always include weekly OHLCV
+                    "weekly_open": weekly_candle.get("open"),
+                    "weekly_high": weekly_candle.get("high"),
+                    "weekly_low": weekly_candle.get("low"),
+                    "weekly_close": weekly_candle.get("close"),
+                    "weekly_volume": weekly_candle.get("volume"),
+                    # Always include monthly OHLCV
+                    "monthly_open": monthly_candle.get("open"),
+                    "monthly_high": monthly_candle.get("high"),
+                    "monthly_low": monthly_candle.get("low"),
+                    "monthly_close": monthly_candle.get("close"),
+                    "monthly_volume": monthly_candle.get("volume")
                 }
                 
-                # Add indicator values with some CPU-intensive calculations
+                # Map pre-calculated indicator values
                 for config in indicator_configs:
                     name = config["name"]
                     indicator_key = config["key"]
                     period = config["period"]
                     
-                    # Add some CPU-intensive calculations
-                    if name == "rsi":
-                        # Simulate RSI calculation (CPU intensive)
+                    if name == "pctchg":
+                        # Calculate percentage change directly (simple calculation)
                         if idx >= period:
-                            window_closes = closes[max(0, idx-period):idx+1]
-                            # Simulate complex calculation
-                            enhanced_candle[indicator_key] = 50.0 + sum(window_closes) / len(window_closes) * 0.001
+                            old_price = closes[idx - period]
+                            current_price = closes[idx]
+                            pct_change = ((current_price - old_price) / old_price) * 100 if old_price != 0 else 0
+                            enhanced_candle[indicator_key] = pct_change
                         else:
-                            enhanced_candle[indicator_key] = 50.0
-                    elif name == "sma":
-                        # Calculate actual SMA
-                        if idx >= period - 1:
-                            window = closes[idx-period+1:idx+1]
-                            enhanced_candle[indicator_key] = sum(window) / len(window)
-                        else:
-                            enhanced_candle[indicator_key] = candle.get("close", 0)
-                    elif name == "ema":
-                        # Simulate EMA calculation
-                        enhanced_candle[indicator_key] = candle.get("close", 0) * 1.001
+                            enhanced_candle[indicator_key] = 0
+                    elif name == "volume":
+                        # Volume doesn't need calculation
+                        enhanced_candle[indicator_key] = candle.get("volume", 0)
                     elif name == "bb":
-                        # Simulate Bollinger Bands calculation
-                        if idx >= period - 1:
-                            window = closes[idx-period+1:idx+1]
-                            mean = sum(window) / len(window)
-                            # Simulate std calculation (CPU intensive)
-                            variance = sum((x - mean) ** 2 for x in window) / len(window)
-                            std = variance ** 0.5
-                            enhanced_candle[f"{indicator_key}_upper"] = mean + (2 * std)
-                            enhanced_candle[f"{indicator_key}_middle"] = mean
-                            enhanced_candle[f"{indicator_key}_lower"] = mean - (2 * std)
-                        else:
-                            enhanced_candle[f"{indicator_key}_upper"] = candle.get("high", 0)
-                            enhanced_candle[f"{indicator_key}_middle"] = candle.get("close", 0)
-                            enhanced_candle[f"{indicator_key}_lower"] = candle.get("low", 0)
+                        # Map Bollinger Bands values
+                        enhanced_candle[f"{indicator_key}_upper"] = calculated_indicators.get(f"{indicator_key}_upper", [None] * len(stock_data))[idx]
+                        enhanced_candle[f"{indicator_key}_middle"] = calculated_indicators.get(f"{indicator_key}_middle", [None] * len(stock_data))[idx]
+                        enhanced_candle[f"{indicator_key}_lower"] = calculated_indicators.get(f"{indicator_key}_lower", [None] * len(stock_data))[idx]
+                    else:
+                        # Map other indicator values
+                        indicator_values = calculated_indicators.get(indicator_key, [None] * len(stock_data))
+                        enhanced_candle[indicator_key] = indicator_values[idx] if indicator_values[idx] is not None else (50.0 if name == "rsi" else candle.get("close", 0))
                 
                 result["data"].append(enhanced_candle)
             
@@ -2094,6 +2441,49 @@ async def get_csv_upload_progress():
     """Get CSV upload progress."""
     return current_progress
 
+@app.get("/csv-upload-progress-stream")
+async def csv_upload_progress_stream():
+    """SSE endpoint for CSV upload progress updates."""
+    async def generate():
+        # Send initial connection message
+        yield f"data: {json.dumps({'connected': True, 'endpoint': 'csv-upload-progress-stream'})}\n\n"
+        
+        while True:
+            try:
+                if not progress_queue.empty():
+                    # Get update from queue with short timeout
+                    update = await asyncio.get_event_loop().run_in_executor(
+                        None, progress_queue.get, True, 0.1
+                    )
+                    if update:
+                        # Format SSE message
+                        yield f"data: {json.dumps(update)}\n\n"
+                else:
+                    # Send heartbeat to keep connection alive
+                    yield f": heartbeat\n\n"
+                
+                # Small delay to prevent CPU spinning
+                await asyncio.sleep(0.1)
+                
+            except queue.Empty:
+                # Send heartbeat to keep connection alive
+                yield f": heartbeat\n\n"
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.error(f"SSE CSV upload stream error: {e}")
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                break
+    
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
 @app.post("/update-symbols-and-refresh")
 async def update_symbols_and_refresh():
     """Update symbols list and refresh database."""
@@ -2114,6 +2504,7 @@ if __name__ == "__main__":
     print(f"Health Check: http://127.0.0.1:8001/health")
     print(f"Refresh DB: POST http://127.0.0.1:8001/refreshdb")
     print(f"SSE Progress: GET http://127.0.0.1:8001/refreshdb-progress-stream")
+    print(f"CSV Upload SSE: GET http://127.0.0.1:8001/csv-upload-progress-stream")
     print("="*60)
     print("Logs will appear below when APIs are called...")
     print("="*60)
