@@ -136,7 +136,7 @@ Path("uploads").mkdir(exist_ok=True)
 
 # Technical indicator calculation functions
 def calculate_atr(highs, lows, closes, period=14):
-    """Calculate Average True Range"""
+    """Calculate Average True Range using Wilder's smoothing method"""
     true_ranges = []
     for i in range(len(closes)):
         if i == 0:
@@ -147,94 +147,104 @@ def calculate_atr(highs, lows, closes, period=14):
             lc = abs(lows[i] - closes[i-1])
             true_ranges.append(max(hl, hc, lc))
     
-    # Calculate ATR using SMA of True Range
+    # Calculate ATR using Wilder's smoothing method
     atr_values = []
+    atr = None
+    
     for i in range(len(true_ranges)):
         if i < period - 1:
             atr_values.append(None)
+        elif i == period - 1:
+            # Initial ATR = average of first 'period' true ranges
+            atr = sum(true_ranges[0:period]) / period
+            atr_values.append(atr)
         else:
-            window = true_ranges[i-period+1:i+1]
-            atr_values.append(sum(window) / len(window))
+            # Wilder's smoothing: ATR = (Previous ATR * (period-1) + Current TR) / period
+            atr = (atr * (period - 1) + true_ranges[i]) / period
+            atr_values.append(atr)
     
     return atr_values
 
 def calculate_supertrend(highs, lows, closes, period=10, multiplier=2):
-    """Calculate SuperTrend indicator"""
+    """Calculate SuperTrend indicator using the standard algorithm"""
     atr_values = calculate_atr(highs, lows, closes, period)
-    supertrend_values = []
-    trend_values = []
     
+    # Arrays to store intermediate calculations
     basic_upper_band = []
     basic_lower_band = []
     final_upper_band = []
     final_lower_band = []
+    supertrend_values = []
+    trend_direction = []
     
     for i in range(len(closes)):
         if i < period - 1 or atr_values[i] is None:
-            supertrend_values.append(None)
-            trend_values.append(None)
             basic_upper_band.append(None)
             basic_lower_band.append(None)
             final_upper_band.append(None)
             final_lower_band.append(None)
+            supertrend_values.append(None)
+            trend_direction.append(None)
         else:
-            # Calculate basic bands
-            hl2 = (highs[i] + lows[i]) / 2
-            bub = hl2 + (multiplier * atr_values[i])
-            blb = hl2 - (multiplier * atr_values[i])
+            # Step 1: Calculate basic upper and lower bands
+            hl2 = (highs[i] + lows[i]) / 2  # Typical price
+            basic_upper = hl2 + (multiplier * atr_values[i])
+            basic_lower = hl2 - (multiplier * atr_values[i])
             
-            basic_upper_band.append(bub)
-            basic_lower_band.append(blb)
+            basic_upper_band.append(basic_upper)
+            basic_lower_band.append(basic_lower)
             
-            # Calculate final bands
-            if i == period - 1:
-                fub = bub
-                flb = blb
+            # Step 2: Calculate final upper and lower bands
+            if i == period - 1:  # First calculation
+                final_upper = basic_upper
+                final_lower = basic_lower
             else:
-                # Final upper band: use current if lower than previous OR if previous close was above previous upper band
-                fub = bub if bub < final_upper_band[i-1] or closes[i-1] > final_upper_band[i-1] else final_upper_band[i-1]
-                # Final lower band: use current if higher than previous OR if previous close was below previous lower band
-                flb = blb if blb > final_lower_band[i-1] or closes[i-1] < final_lower_band[i-1] else final_lower_band[i-1]
-            
-            final_upper_band.append(fub)
-            final_lower_band.append(flb)
-            
-            # Calculate SuperTrend with correct logic
-            if i == period - 1:
-                # Initial SuperTrend: if close <= lower band, trend is down (use upper band)
-                # if close > lower band, trend is up (use lower band)
-                if closes[i] <= flb:
-                    supertrend = fub
-                    trend = -1  # Bearish
+                # Final Upper Band = Basic Upper Band if Basic Upper Band < Previous Final Upper Band 
+                # OR Previous Close > Previous Final Upper Band, else Previous Final Upper Band
+                if basic_upper < final_upper_band[i-1] or closes[i-1] > final_upper_band[i-1]:
+                    final_upper = basic_upper
                 else:
-                    supertrend = flb
-                    trend = 1   # Bullish
-            else:
-                prev_trend = trend_values[i-1]
+                    final_upper = final_upper_band[i-1]
                 
-                # SuperTrend logic based on previous trend
-                if prev_trend == 1:
-                    # Previous trend was bullish - check if it should continue
-                    if closes[i] <= flb:
-                        # Trend changes to bearish
-                        supertrend = fub
-                        trend = -1
-                    else:
-                        # Trend continues bullish
-                        supertrend = flb
-                        trend = 1
+                # Final Lower Band = Basic Lower Band if Basic Lower Band > Previous Final Lower Band 
+                # OR Previous Close < Previous Final Lower Band, else Previous Final Lower Band
+                if basic_lower > final_lower_band[i-1] or closes[i-1] < final_lower_band[i-1]:
+                    final_lower = basic_lower
                 else:
-                    # Previous trend was bearish - check if it should continue
-                    if closes[i] >= fub:
-                        # Trend changes to bullish
-                        supertrend = flb
-                        trend = 1
-                    else:
-                        # Trend continues bearish
-                        supertrend = fub
-                        trend = -1
+                    final_lower = final_lower_band[i-1]
             
-            trend_values.append(trend)
+            final_upper_band.append(final_upper)
+            final_lower_band.append(final_lower)
+            
+            # Step 3: Determine trend direction and SuperTrend value
+            if i == period - 1:  # First calculation
+                # Initial SuperTrend calculation
+                if closes[i] <= final_lower:
+                    trend = -1  # Bearish
+                    supertrend = final_upper
+                else:
+                    trend = 1   # Bullish
+                    supertrend = final_lower
+            else:
+                prev_trend = trend_direction[i-1]
+                
+                # Classic SuperTrend trend continuation logic
+                if prev_trend == 1:  # Previous trend was bullish
+                    if closes[i] <= final_lower:
+                        trend = -1  # Switch to bearish
+                        supertrend = final_upper
+                    else:
+                        trend = 1   # Continue bullish
+                        supertrend = final_lower
+                else:  # Previous trend was bearish
+                    if closes[i] >= final_upper:
+                        trend = 1   # Switch to bullish
+                        supertrend = final_lower
+                    else:
+                        trend = -1  # Continue bearish
+                        supertrend = final_upper
+            
+            trend_direction.append(trend)
             supertrend_values.append(supertrend)
     
     return supertrend_values
