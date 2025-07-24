@@ -66,7 +66,14 @@
       "mcp__ide__executeCode",
       "Bash(start cmd /k:*)",
       "Bash(del test_path.py)",
-      "Bash(rg:*)"
+      "Bash(rg:*)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:www.insightbig.com)",
+      "WebFetch(domain:tradingtact.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:gist.github.com)",
+      "WebFetch(domain:pinewizards.com)",
+      "Bash(del analyze_worth.js calculate_supertrend.js detailed_supertrend_analysis.js)"
     ],
     "deny": []
   }

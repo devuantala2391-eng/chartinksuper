@@ -158,7 +158,7 @@ def calculate_atr(highs, lows, closes, period=14):
     
     return atr_values
 
-def calculate_supertrend(highs, lows, closes, period=10, multiplier=3):
+def calculate_supertrend(highs, lows, closes, period=10, multiplier=2):
     """Calculate SuperTrend indicator"""
     atr_values = calculate_atr(highs, lows, closes, period)
     supertrend_values = []
@@ -187,30 +187,55 @@ def calculate_supertrend(highs, lows, closes, period=10, multiplier=3):
             basic_lower_band.append(blb)
             
             # Calculate final bands
-            if i == 0 or final_upper_band[i-1] is None:
+            if i == period - 1:
                 fub = bub
-            else:
-                fub = bub if bub < final_upper_band[i-1] or closes[i-1] > final_upper_band[i-1] else final_upper_band[i-1]
-            
-            if i == 0 or final_lower_band[i-1] is None:
                 flb = blb
             else:
+                # Final upper band: use current if lower than previous OR if previous close was above previous upper band
+                fub = bub if bub < final_upper_band[i-1] or closes[i-1] > final_upper_band[i-1] else final_upper_band[i-1]
+                # Final lower band: use current if higher than previous OR if previous close was below previous lower band
                 flb = blb if blb > final_lower_band[i-1] or closes[i-1] < final_lower_band[i-1] else final_lower_band[i-1]
             
             final_upper_band.append(fub)
             final_lower_band.append(flb)
             
-            # Determine trend and SuperTrend value
-            if i == 0 or trend_values[i-1] is None:
-                trend = 1 if closes[i] <= fub else -1
-            else:
-                if trend_values[i-1] == 1:
-                    trend = -1 if closes[i] > fub else 1
+            # Calculate SuperTrend with correct logic
+            if i == period - 1:
+                # Initial SuperTrend: if close <= lower band, trend is down (use upper band)
+                # if close > lower band, trend is up (use lower band)
+                if closes[i] <= flb:
+                    supertrend = fub
+                    trend = -1  # Bearish
                 else:
-                    trend = 1 if closes[i] < flb else -1
+                    supertrend = flb
+                    trend = 1   # Bullish
+            else:
+                prev_trend = trend_values[i-1]
+                
+                # SuperTrend logic based on previous trend
+                if prev_trend == 1:
+                    # Previous trend was bullish - check if it should continue
+                    if closes[i] <= flb:
+                        # Trend changes to bearish
+                        supertrend = fub
+                        trend = -1
+                    else:
+                        # Trend continues bullish
+                        supertrend = flb
+                        trend = 1
+                else:
+                    # Previous trend was bearish - check if it should continue
+                    if closes[i] >= fub:
+                        # Trend changes to bullish
+                        supertrend = flb
+                        trend = 1
+                    else:
+                        # Trend continues bearish
+                        supertrend = fub
+                        trend = -1
             
             trend_values.append(trend)
-            supertrend_values.append(flb if trend == 1 else fub)
+            supertrend_values.append(supertrend)
     
     return supertrend_values
 
@@ -1441,7 +1466,7 @@ def process_stock_batch_cpu_intensive(stock_batch_data):
                 
                 # Generate appropriate indicator key based on indicator type
                 if name == "supertrend":
-                    multiplier = params.get("multiplier", 3)
+                    multiplier = params.get("multiplier", 2)
                     indicator_key = f"{timeframe}_{name}_{period}_{multiplier}"
                 elif name == "bb":
                     std_dev = params.get("stdDev", 2)
@@ -1454,7 +1479,7 @@ def process_stock_batch_cpu_intensive(stock_batch_data):
                     "key": indicator_key,
                     "timeframe": timeframe,
                     "period": period,
-                    "multiplier": params.get("multiplier", 3),
+                    "multiplier": params.get("multiplier", 2),
                     "std_dev": params.get("stdDev", 2)
                 })
             
@@ -1486,7 +1511,7 @@ def process_stock_batch_cpu_intensive(stock_batch_data):
                     calculated_indicators[f"{indicator_key}_middle"] = middle
                     calculated_indicators[f"{indicator_key}_lower"] = lower
                 elif name == "supertrend":
-                    multiplier = config.get("multiplier", 3)
+                    multiplier = config.get("multiplier", 2)
                     calculated_indicators[indicator_key] = calculate_supertrend(highs, lows, closes, period, multiplier)
             
             # Process all candles for this stock - just map pre-calculated values
