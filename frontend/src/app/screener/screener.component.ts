@@ -1784,76 +1784,63 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   getTooltipData(match: any): TooltipData {
     const tooltipData: TooltipData = {};
     
-    
-    // Use actual indicator values from the backend if available
-    if (match.indicators) {
-      // First, try to get values from the actual indicators data
-      this.conditions.forEach((condition, index) => {
-        if (condition.field && condition.indicatorParams) {
-          const key = `${condition.field}_${condition.indicatorParams.join('_')}`;
-          const indicatorKey = this.generateIndicatorKey(condition.field, condition.timePeriod, condition.indicatorParams, condition.indicatorComponent);
-          
-          // Try to find the actual value in the indicators
-          if (match.indicators[indicatorKey] !== undefined && match.indicators[indicatorKey] !== null) {
-            tooltipData[key] = parseFloat(match.indicators[indicatorKey]);
-          } else {
-            // If not found, use mock value as fallback
-            tooltipData[key] = this.generateMockValue(condition.field, match);
-          }
-        } else if (condition.field) {
-          // For simple fields like close, open, etc.
-          if (condition.field === 'close') {
-            tooltipData[condition.field] = parseFloat(match.close);
-          } else if (match.indicators[condition.field] !== undefined && match.indicators[condition.field] !== null) {
-            // Use actual value from indicators
-            tooltipData[condition.field] = parseFloat(match.indicators[condition.field]);
-          } else {
-            // Generate mock values for other fields
-            tooltipData[condition.field] = this.generateMockValue(condition.field, match);
-          }
-        }
+    // The backend returns indicator data directly in the match object, not under an 'indicators' property
+    this.conditions.forEach((condition, index) => {
+      if (condition.field && condition.indicatorParams) {
+        const key = `${condition.field}_${condition.indicatorParams.join('_')}`;
+        const indicatorKey = this.generateIndicatorKey(condition.field, condition.timePeriod, condition.indicatorParams, condition.indicatorComponent);
         
-        // Add value field if it's a field comparison
-        if (condition.valueType === 'field' && condition.valueField && condition.valueIndicatorParams) {
-          const valueKey = `${condition.valueField}_${condition.valueIndicatorParams.join('_')}`;
-          const valueIndicatorKey = this.generateIndicatorKey(condition.valueField, condition.valueTimePeriod || 'daily', condition.valueIndicatorParams, condition.valueIndicatorComponent);
-          
-          if (match.indicators[valueIndicatorKey] !== undefined && match.indicators[valueIndicatorKey] !== null) {
-            tooltipData[valueKey] = parseFloat(match.indicators[valueIndicatorKey]);
-          } else if (match.indicators[condition.valueField] !== undefined && match.indicators[condition.valueField] !== null) {
-            tooltipData[valueKey] = parseFloat(match.indicators[condition.valueField]);
-          } else {
-            tooltipData[valueKey] = this.generateMockValue(condition.valueField, match);
-          }
-        }
-      });
-      
-      // Also include any other relevant indicators that were calculated
-      Object.keys(match.indicators).forEach(key => {
-        if (!tooltipData[key] && match.indicators[key] !== undefined && match.indicators[key] !== null) {
-          tooltipData[key] = parseFloat(match.indicators[key]);
-        }
-      });
-    } else {
-      // Fallback to mock data if no indicators are provided (backward compatibility)
-      this.conditions.forEach((condition, index) => {
-        if (condition.field && condition.indicatorParams) {
-          const key = `${condition.field}_${condition.indicatorParams.join('_')}`;
+        // Try to find the actual value directly in the match object
+        if (match[indicatorKey] !== undefined && match[indicatorKey] !== null) {
+          tooltipData[key] = parseFloat(match[indicatorKey]);
+        } else if (match[key] !== undefined && match[key] !== null) {
+          // Fallback to the simple key format
+          tooltipData[key] = parseFloat(match[key]);
+        } else {
+          // If not found, use mock value as fallback
           tooltipData[key] = this.generateMockValue(condition.field, match);
-        } else if (condition.field) {
-          if (condition.field === 'close') {
-            tooltipData[condition.field] = parseFloat(match.close);
-          } else {
-            tooltipData[condition.field] = this.generateMockValue(condition.field, match);
-          }
         }
+      } else if (condition.field) {
+        // For simple fields like close, open, etc.
+        if (condition.field === 'close') {
+          tooltipData[condition.field] = parseFloat(match.close);
+        } else if (match[condition.field] !== undefined && match[condition.field] !== null) {
+          // Use actual value from match object
+          tooltipData[condition.field] = parseFloat(match[condition.field]);
+        } else {
+          // Generate mock values for other fields
+          tooltipData[condition.field] = this.generateMockValue(condition.field, match);
+        }
+      }
+      
+      // Add value field if it's a field comparison
+      if (condition.valueType === 'field' && condition.valueField && condition.valueIndicatorParams) {
+        const valueKey = `${condition.valueField}_${condition.valueIndicatorParams.join('_')}`;
+        const valueIndicatorKey = this.generateIndicatorKey(condition.valueField, condition.valueTimePeriod || 'daily', condition.valueIndicatorParams, condition.valueIndicatorComponent);
         
-        if (condition.valueType === 'field' && condition.valueField && condition.valueIndicatorParams) {
-          const valueKey = `${condition.valueField}_${condition.valueIndicatorParams.join('_')}`;
+        if (match[valueIndicatorKey] !== undefined && match[valueIndicatorKey] !== null) {
+          tooltipData[valueKey] = parseFloat(match[valueIndicatorKey]);
+        } else if (match[valueKey] !== undefined && match[valueKey] !== null) {
+          tooltipData[valueKey] = parseFloat(match[valueKey]);
+        } else if (match[condition.valueField] !== undefined && match[condition.valueField] !== null) {
+          tooltipData[valueKey] = parseFloat(match[condition.valueField]);
+        } else {
           tooltipData[valueKey] = this.generateMockValue(condition.valueField, match);
         }
-      });
-    }
+      }
+    });
+    
+    // Also include any other relevant indicators that were calculated (look for indicator patterns)
+    Object.keys(match).forEach(key => {
+      // Skip basic OHLCV fields and metadata
+      if (!['date', 'day', 'open', 'high', 'low', 'close', 'volume', 'stock'].includes(key) && 
+          !tooltipData[key] && 
+          match[key] !== undefined && 
+          match[key] !== null &&
+          !isNaN(parseFloat(match[key]))) {
+        tooltipData[key] = parseFloat(match[key]);
+      }
+    });
     
     return tooltipData;
   }
