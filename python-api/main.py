@@ -1518,15 +1518,24 @@ def process_latest_scan_batch_parallel(stock_batch, parsed_query_dict, base_path
                         mapped_data = json.load(f)
                     candles = mapped_data.get("data", [])
                     
+                    # Filter out future dates for latest scan (only include data up to current time)
+                    import time
+                    current_time = int(time.time() * 1000)  # Current timestamp in milliseconds
+                    candles = [candle for candle in candles if candle.get("timestamp", 0) <= current_time]
+                    
                     if candles:
-                        # For "crossed above/below" conditions, we need the last TWO candles
-                        # For other conditions, just the latest candle is sufficient
-                        if len(candles) >= 2:
-                            # Pass last two candles to enable crossed above/below comparisons
+                        # Check if query contains "crossed" conditions that need historical comparison
+                        query_has_crossed_conditions = any(
+                            condition.get("operator", "") in ["crossed above", "crossed below"]
+                            for condition in parsed_query_dict.get("conditions", [])
+                        )
+                        
+                        if query_has_crossed_conditions and len(candles) >= 2:
+                            # Pass last two candles for crossed above/below comparisons
                             last_two_candles = candles[-2:]
                             stock_matches = find_matching_candles(last_two_candles, parsed_query_dict, stock)
                         else:
-                            # Fallback to single candle if only one available
+                            # For non-crossed conditions or insufficient data, use only latest candle
                             latest_candle = candles[-1]
                             stock_matches = find_matching_candles([latest_candle], parsed_query_dict, stock)
                         matches.extend(stock_matches)
@@ -1782,17 +1791,20 @@ def process_stock_batch_cpu_intensive(stock_batch_data):
                             week_key = get_week_start_timestamp(timestamp)
                             week_index = week_keys.index(week_key) if week_key in week_keys else -1
                             indicator_values = calculated_indicators.get(indicator_key, [])
-                            enhanced_candle[indicator_key] = indicator_values[week_index] if week_index >= 0 and week_index < len(indicator_values) and indicator_values[week_index] is not None else (50.0 if name == "rsi" else candle.get("close", 0))
+                            # Return None for insufficient data instead of fallback values
+                            enhanced_candle[indicator_key] = indicator_values[week_index] if week_index >= 0 and week_index < len(indicator_values) and indicator_values[week_index] is not None else None
                         elif timeframe == "monthly":
                             # Find the index of this daily candle's monthly period
                             month_keys = sorted(monthly_ohlcv.keys())
                             month_key = get_month_start_timestamp(timestamp)
                             month_index = month_keys.index(month_key) if month_key in month_keys else -1
                             indicator_values = calculated_indicators.get(indicator_key, [])
-                            enhanced_candle[indicator_key] = indicator_values[month_index] if month_index >= 0 and month_index < len(indicator_values) and indicator_values[month_index] is not None else (50.0 if name == "rsi" else candle.get("close", 0))
+                            # Return None for insufficient data instead of fallback values
+                            enhanced_candle[indicator_key] = indicator_values[month_index] if month_index >= 0 and month_index < len(indicator_values) and indicator_values[month_index] is not None else None
                         else:  # daily
                             indicator_values = calculated_indicators.get(indicator_key, [None] * len(stock_data))
-                            enhanced_candle[indicator_key] = indicator_values[idx] if indicator_values[idx] is not None else (50.0 if name == "rsi" else candle.get("close", 0))
+                            # Return None for insufficient data instead of fallback values
+                            enhanced_candle[indicator_key] = indicator_values[idx] if indicator_values[idx] is not None else None
                 
                 result["data"].append(enhanced_candle)
             

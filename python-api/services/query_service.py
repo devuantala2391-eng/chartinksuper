@@ -100,18 +100,33 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
                     left_field_name = None
                     if left["type"] == "field":
                         left_field_name = left["field"]
-                        left_value = float(candle.get(left_field_name, 0))
+                        raw_left_value = candle.get(left_field_name)
+                        # Skip if indicator value is None (insufficient data)
+                        if raw_left_value is None:
+                            left_value = None
+                        else:
+                            left_value = float(raw_left_value)
                     elif left["type"] == "indicator":
                         # Handle indicator values
                         left_field_name = left["name"]
-                        left_value = float(candle.get(left_field_name, 0))
+                        raw_left_value = candle.get(left_field_name)
+                        # Skip if indicator value is None (insufficient data)
+                        if raw_left_value is None:
+                            left_value = None
+                        else:
+                            left_value = float(raw_left_value)
                     
                     # Get right value
                     right_value = None
                     if right["type"] == "value":
                         right_value = right["value"]
                     elif right["type"] == "field":
-                        right_value = float(candle.get(right["field"], 0))
+                        raw_right_value = candle.get(right["field"])
+                        # Skip if indicator value is None (insufficient data)
+                        if raw_right_value is None:
+                            right_value = None
+                        else:
+                            right_value = float(raw_right_value)
                     
                     # Evaluate condition
                     if left_value is not None and right_value is not None:
@@ -120,17 +135,23 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
                             result = False
                             if i > 0 and left_field_name:  # Need previous candle for comparison
                                 prev_candle = candles[i-1]
-                                prev_left_value = float(prev_candle.get(left_field_name, 0))
-                                # Current above threshold AND previous was at or below threshold
-                                result = (left_value > right_value) and (prev_left_value <= right_value)
+                                prev_raw_value = prev_candle.get(left_field_name)
+                                # Skip if previous value is None (insufficient data)
+                                if prev_raw_value is not None:
+                                    prev_left_value = float(prev_raw_value)
+                                    # Current above threshold AND previous was at or below threshold
+                                    result = (left_value > right_value) and (prev_left_value <= right_value)
                         elif operator == "crossed below":
                             # For crossed below: current value < threshold AND previous value >= threshold
                             result = False
                             if i > 0 and left_field_name:  # Need previous candle for comparison
                                 prev_candle = candles[i-1]
-                                prev_left_value = float(prev_candle.get(left_field_name, 0))
-                                # Current below threshold AND previous was at or above threshold
-                                result = (left_value < right_value) and (prev_left_value >= right_value)
+                                prev_raw_value = prev_candle.get(left_field_name)
+                                # Skip if previous value is None (insufficient data)
+                                if prev_raw_value is not None:
+                                    prev_left_value = float(prev_raw_value)
+                                    # Current below threshold AND previous was at or above threshold
+                                    result = (left_value < right_value) and (prev_left_value >= right_value)
                         elif operator == ">":
                             result = left_value > right_value
                         elif operator == "<":
