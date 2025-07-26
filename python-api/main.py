@@ -1,21 +1,35 @@
 import sys
 import io
+import os
 
-# Force UTF-8 encoding for stdout
-if sys.stdout.encoding != 'utf-8':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-if sys.stderr.encoding != 'utf-8':
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+# Set UTF-8 encoding environment variables
+os.environ['PYTHONIOENCODING'] = 'utf-8'
+os.environ['PYTHONUNBUFFERED'] = '1'
+
+# Force UTF-8 encoding for stdout/stderr only when not already wrapped
+if hasattr(sys.stdout, 'buffer') and sys.stdout.encoding != 'utf-8':
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    except:
+        pass  # Already wrapped or unavailable
+
+if hasattr(sys.stderr, 'buffer') and sys.stderr.encoding != 'utf-8':
+    try:
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+    except:
+        pass  # Already wrapped or unavailable
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 import uvicorn
 import asyncio
 import logging
 from typing import List, Dict, Any, Optional
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -27,6 +41,7 @@ import time
 import concurrent.futures
 import threading
 import multiprocessing
+from concurrent.futures import ThreadPoolExecutor
 import os
 
 from services.query_service import (
@@ -103,19 +118,72 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+async def startup_event():
+    """Initialize app state on startup."""
+    print("FastAPI server started")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up on shutdown."""
+    print("FastAPI server shutdown")
+
 # Simple request logging middleware
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start_time = time.time()
+    response = None
     
-    # Process request
-    response = await call_next(request)
-    
-    # Log only essential info
-    process_time = time.time() - start_time
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {request.method} {request.url.path} - {response.status_code} - {process_time:.3f}s")
-    
-    return response
+    try:
+        # Process request
+        response = await call_next(request)
+        
+        # Log only essential info
+        process_time = time.time() - start_time
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] {request.method} {request.url.path} - {response.status_code} - {process_time:.3f}s")
+        
+        return response
+    except Exception as e:
+        process_time = time.time() - start_time
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] ERROR in {request.method} {request.url.path} - {process_time:.3f}s")
+        print(f"Error type: {type(e).__name__}")
+        print(f"Error details: {str(e)}")
+        
+        # If it's an HTTPException, re-raise it
+        if isinstance(e, HTTPException):
+            raise
+        
+        # For other exceptions, return a proper error response
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error", "error": str(e)}
+        )
+
+# Helper function to sanitize data for JSON serialization
+def sanitize_for_json(obj):
+    """Recursively sanitize data to ensure JSON compatibility."""
+    if isinstance(obj, dict):
+        return {k: sanitize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize_for_json(item) for item in obj]
+    elif isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    elif hasattr(obj, '__dict__'):
+        return sanitize_for_json(obj.__dict__)
+    return obj
+
+# Custom JSON response that handles edge cases
+class SafeJSONResponse(JSONResponse):
+    def render(self, content: Any) -> bytes:
+        return json.dumps(
+            sanitize_for_json(content),
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=None,
+            separators=(",", ":")
+        ).encode("utf-8")
 
 # HIGH PERFORMANCE CONFIGURATION - Maximum CPU with optimized I/O
 CPU_COUNT = multiprocessing.cpu_count()
@@ -403,7 +471,7 @@ def calculate_weekly_monthly_ohlcv(stock_data):
         weekly_data[week_key] = {
             "open": first_candle.get("open"),  # Open of first trading day
             "high": max(candle.get("high", 0) for candle in candles),  # Highest high of the week
-            "low": min(candle.get("low", float('inf')) for candle in candles),  # Lowest low of the week
+            "low": min((candle.get("low") for candle in candles if candle.get("low") is not None), default=0),  # Lowest low of the week
             "close": last_candle.get("close"),  # Close of last trading day in the data
             "volume": sum(candle.get("volume", 0) for candle in candles),  # Total volume
             "count": len(candles),
@@ -432,7 +500,9 @@ def calculate_weekly_monthly_ohlcv(stock_data):
                 }
             else:
                 monthly_data[month_key]["high"] = max(monthly_data[month_key]["high"], candle.get("high", 0))
-                monthly_data[month_key]["low"] = min(monthly_data[month_key]["low"], candle.get("low", float('inf')))
+                low_value = candle.get("low")
+                if low_value is not None:
+                    monthly_data[month_key]["low"] = min(monthly_data[month_key]["low"], low_value)
                 monthly_data[month_key]["close"] = candle.get("close")  # Last close in the month
                 monthly_data[month_key]["volume"] += candle.get("volume", 0)
                 monthly_data[month_key]["count"] += 1
@@ -842,39 +912,31 @@ async def process_latest_query(request: QueryRequest):
         
         print(f"[DEBUG] Latest scan: {len(scan_chunks)} chunks, {scan_chunk_size} stocks per chunk")
         
-        # SAFE ProcessPoolExecutor usage for latest scan
+        # Run processing synchronously to avoid async executor issues
+        scan_results = []
         try:
-            def run_scan_chunks():
-                """Run scan chunks in separate processes safely"""
-                try:
-                    with concurrent.futures.ProcessPoolExecutor(max_workers=PERFORMANCE_CONFIG["max_cpu_workers"]) as executor:
-                        current_dir = str(Path(__file__).parent.absolute())
+            with concurrent.futures.ProcessPoolExecutor(max_workers=PERFORMANCE_CONFIG["max_cpu_workers"]) as executor:
+                current_dir = str(Path(__file__).parent.absolute())
+                
+                # Submit all chunks
+                futures = [
+                    executor.submit(process_latest_scan_batch_parallel, chunk, parsed_query, current_dir)
+                    for chunk in scan_chunks
+                ]
+                
+                # Collect results as they complete
+                for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                    try:
+                        result = future.result(timeout=60)  # 1 minute timeout per chunk for latest scan
+                        scan_results.append(result)
+                        print(f"[DEBUG] Completed scan chunk {i+1}/{len(scan_chunks)}")
                         
-                        # Submit all chunks
-                        futures = [
-                            executor.submit(process_latest_scan_batch_parallel, chunk, parsed_query, current_dir)
-                            for chunk in scan_chunks
-                        ]
-                        
-                        # Collect results as they complete
-                        results = []
-                        for i, future in enumerate(concurrent.futures.as_completed(futures)):
-                            try:
-                                result = future.result(timeout=60)  # 1 minute timeout per chunk for latest scan
-                                results.append(result)
-                                print(f"[DEBUG] Completed scan chunk {i+1}/{len(scan_chunks)}")
-                            except Exception as e:
-                                print(f"[ERROR] Scan chunk {i+1} failed: {e}")
-                                results.append({"matches": [], "errors": [], "processed": 0, "processing_time": 0})
-                        
-                        return results
-                except Exception as e:
-                    print(f"[ERROR] Scan ProcessPoolExecutor failed: {e}")
-                    return []
-            
-            # Run parallel processing in thread pool to avoid ASGI issues
-            loop = asyncio.get_event_loop()
-            scan_results = await loop.run_in_executor(None, run_scan_chunks)
+                        # Yield control periodically to keep async loop responsive
+                        if i % 5 == 0:
+                            await asyncio.sleep(0)
+                    except Exception as e:
+                        print(f"[ERROR] Scan chunk {i+1} failed: {e}")
+                        scan_results.append({"matches": [], "errors": [], "processed": 0, "processing_time": 0})
             
             # Process scan results
             completed_chunks = 0
@@ -929,7 +991,7 @@ async def process_latest_query(request: QueryRequest):
         
         logger.info(f"Latest day scan completed: {len(all_matches)} matches found")
         
-        return {
+        response_data = {
             "success": True,
             "query": query,
             "scanType": "latest_day",
@@ -949,6 +1011,8 @@ async def process_latest_query(request: QueryRequest):
             "totalMatches": len(all_matches),
             "errors": errors[:10] if errors else []  # Limit error reporting
         }
+        
+        return SafeJSONResponse(content=response_data)
         
     except HTTPException:
         raise
@@ -1022,8 +1086,22 @@ async def precalculate_indicators(request: PrecalculateRequest):
         with open("precalculatedIndicators.json", 'w') as f:
             json.dump(precalc_data, f, indent=2)
         
-        # Start high-performance background processing
-        asyncio.create_task(process_indicators_background(indicators))
+        # Start high-performance background processing in a separate thread
+        # This avoids ASGI task group issues completely
+        def run_background_task():
+            """Run the async task in a new event loop in a separate thread."""
+            try:
+                # Create a new event loop for this thread
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(process_indicators_background(indicators))
+                loop.close()
+            except Exception as e:
+                print(f"Background task error: {e}")
+        
+        # Start the background thread
+        thread = threading.Thread(target=run_background_task, daemon=True)
+        thread.start()
         
         return {
             "success": True,

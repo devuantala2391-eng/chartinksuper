@@ -73,7 +73,8 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:gist.github.com)",
       "WebFetch(domain:pinewizards.com)",
-      "Bash(del analyze_worth.js calculate_supertrend.js detailed_supertrend_analysis.js)"
+      "Bash(del analyze_worth.js calculate_supertrend.js detailed_supertrend_analysis.js)",
+      "Bash(pip show:*)"
     ],
     "deny": []
   }
