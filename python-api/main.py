@@ -1519,11 +1519,16 @@ def process_latest_scan_batch_parallel(stock_batch, parsed_query_dict, base_path
                     candles = mapped_data.get("data", [])
                     
                     if candles:
-                        # Only check the LATEST candle (most recent)
-                        latest_candle = candles[-1]
-                        
-                        # Check if latest candle matches the query
-                        stock_matches = find_matching_candles([latest_candle], parsed_query_dict, stock)
+                        # For "crossed above/below" conditions, we need the last TWO candles
+                        # For other conditions, just the latest candle is sufficient
+                        if len(candles) >= 2:
+                            # Pass last two candles to enable crossed above/below comparisons
+                            last_two_candles = candles[-2:]
+                            stock_matches = find_matching_candles(last_two_candles, parsed_query_dict, stock)
+                        else:
+                            # Fallback to single candle if only one available
+                            latest_candle = candles[-1]
+                            stock_matches = find_matching_candles([latest_candle], parsed_query_dict, stock)
                         matches.extend(stock_matches)
                     else:
                         errors.append({"stock": stock, "error": "No candle data available"})

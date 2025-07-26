@@ -12,8 +12,11 @@ def parse_query(query: str) -> Dict[str, Any]:
     # The actual implementation would need to parse complex query syntax
     # For now, return a basic structure
     
-    # Simple regex patterns for basic conditions
-    condition_pattern = r'(\w+(?:\(\d+\))?)\s*([><=!]+)\s*(\w+(?:\(\d+\))?|\d+\.?\d*)'
+    # Enhanced regex patterns for conditions including crossed above/below
+    # First try to match "crossed above" and "crossed below" patterns
+    crossed_pattern = r'(\w+(?:\(\d+(?:,\d+)*\))?)\s+(crossed\s+(?:above|below))\s+(\w+(?:\(\d+(?:,\d+)*\))?|\d+\.?\d*)'
+    # Basic comparison operators
+    basic_pattern = r'(\w+(?:\(\d+(?:,\d+)*\))?)\s*([><=!]+)\s*(\w+(?:\(\d+(?:,\d+)*\))?|\d+\.?\d*)'
     
     conditions = []
     logical_operators = []
@@ -25,25 +28,49 @@ def parse_query(query: str) -> Dict[str, Any]:
         if part in ['and', 'or']:
             logical_operators.append(part)
         else:
-            match = re.match(condition_pattern, part.strip())
-            if match:
-                left_field = match.group(1)
-                operator = match.group(2)
-                right_field = match.group(3)
+            part = part.strip()
+            
+            # Try crossed pattern first
+            crossed_match = re.match(crossed_pattern, part)
+            if crossed_match:
+                left_field = crossed_match.group(1)
+                operator = crossed_match.group(2).replace(' ', ' ')  # "crossed above" or "crossed below"
+                right_field = crossed_match.group(3)
                 
                 conditions.append({
                     "left": {
-                        "type": "field" if not re.match(r'\w+\(\d+\)', left_field) else "indicator",
+                        "type": "field" if '_' in left_field else "indicator",
                         "field": left_field,
-                        "name": left_field.split('(')[0] if '(' in left_field else left_field
+                        "name": left_field.split('_')[1] if '_' in left_field else left_field.split('(')[0]
                     },
                     "operator": operator,
                     "right": {
-                        "type": "field" if not right_field.replace('.', '').isdigit() else "value",
-                        "field": right_field if not right_field.replace('.', '').isdigit() else None,
-                        "value": float(right_field) if right_field.replace('.', '').isdigit() else None
+                        "type": "field" if not right_field.replace('.', '').replace('-', '').isdigit() else "value",
+                        "field": right_field if not right_field.replace('.', '').replace('-', '').isdigit() else None,
+                        "value": float(right_field) if right_field.replace('.', '').replace('-', '').isdigit() else None
                     }
                 })
+            else:
+                # Try basic pattern
+                basic_match = re.match(basic_pattern, part)
+                if basic_match:
+                    left_field = basic_match.group(1)
+                    operator = basic_match.group(2)
+                    right_field = basic_match.group(3)
+                    
+                    conditions.append({
+                        "left": {
+                            "type": "field" if '_' in left_field else "indicator",
+                            "field": left_field,
+                            "name": left_field.split('_')[1] if '_' in left_field else left_field.split('(')[0]
+                        },
+                        "operator": operator,
+                        "right": {
+                            "type": "field" if not right_field.replace('.', '').replace('-', '').isdigit() else "value",
+                            "field": right_field if not right_field.replace('.', '').replace('-', '').isdigit() else None,
+                            "value": float(right_field) if right_field.replace('.', '').replace('-', '').isdigit() else None
+                        }
+                    })
     
     return {
         "conditions": conditions,
@@ -58,7 +85,7 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
         conditions = parsed_query.get("conditions", [])
         logical_operators = parsed_query.get("logicalOperators", [])
         
-        for candle in candles:
+        for i, candle in enumerate(candles):
             try:
                 results = []
                 
@@ -70,12 +97,14 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
                     
                     # Get left value
                     left_value = None
+                    left_field_name = None
                     if left["type"] == "field":
-                        left_value = float(candle.get(left["field"], 0))
+                        left_field_name = left["field"]
+                        left_value = float(candle.get(left_field_name, 0))
                     elif left["type"] == "indicator":
                         # Handle indicator values
-                        indicator_name = left["name"]
-                        left_value = float(candle.get(indicator_name, 0))
+                        left_field_name = left["name"]
+                        left_value = float(candle.get(left_field_name, 0))
                     
                     # Get right value
                     right_value = None
@@ -86,7 +115,23 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
                     
                     # Evaluate condition
                     if left_value is not None and right_value is not None:
-                        if operator == ">":
+                        if operator == "crossed above":
+                            # For crossed above: current value > threshold AND previous value <= threshold
+                            result = False
+                            if i > 0 and left_field_name:  # Need previous candle for comparison
+                                prev_candle = candles[i-1]
+                                prev_left_value = float(prev_candle.get(left_field_name, 0))
+                                # Current above threshold AND previous was at or below threshold
+                                result = (left_value > right_value) and (prev_left_value <= right_value)
+                        elif operator == "crossed below":
+                            # For crossed below: current value < threshold AND previous value >= threshold
+                            result = False
+                            if i > 0 and left_field_name:  # Need previous candle for comparison
+                                prev_candle = candles[i-1]
+                                prev_left_value = float(prev_candle.get(left_field_name, 0))
+                                # Current below threshold AND previous was at or above threshold
+                                result = (left_value < right_value) and (prev_left_value >= right_value)
+                        elif operator == ">":
                             result = left_value > right_value
                         elif operator == "<":
                             result = left_value < right_value
