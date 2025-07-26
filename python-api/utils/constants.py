@@ -315,13 +315,13 @@ STOCK_SYMBOLS = [
 
 TOTAL_SYMBOLS = len(STOCK_SYMBOLS)
 
-# Day of week mapping
+# Day of week mapping (Python weekday: Monday=0, Tuesday=1, ..., Sunday=6)
 DAY_OF_WEEK = {
-    0: 'Sunday',
-    1: 'Monday', 
-    2: 'Tuesday',
-    3: 'Wednesday',
-    4: 'Thursday',
-    5: 'Friday',
-    6: 'Saturday'
+    0: 'Monday',
+    1: 'Tuesday', 
+    2: 'Wednesday',
+    3: 'Thursday',
+    4: 'Friday',
+    5: 'Saturday',
+    6: 'Sunday'
 }

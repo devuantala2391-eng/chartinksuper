@@ -165,6 +165,29 @@ def calculate_atr(highs, lows, closes, period=14):
     
     return atr_values
 
+def calculate_atr_sma(highs, lows, closes, period=14):
+    """Calculate ATR using Simple Moving Average for weekly SuperTrend"""
+    true_ranges = []
+    for i in range(len(closes)):
+        if i == 0:
+            true_ranges.append(highs[i] - lows[i])
+        else:
+            hl = highs[i] - lows[i]  
+            hc = abs(highs[i] - closes[i-1])
+            lc = abs(lows[i] - closes[i-1])
+            true_ranges.append(max(hl, hc, lc))
+    
+    # Calculate ATR using Simple Moving Average
+    atr_values = []
+    for i in range(len(true_ranges)):
+        if i < period - 1:
+            atr_values.append(None)
+        else:
+            window = true_ranges[i-period+1:i+1]
+            atr_values.append(sum(window) / len(window))
+    
+    return atr_values
+
 def calculate_supertrend(highs, lows, closes, period=10, multiplier=2):
     """Calculate SuperTrend indicator using the standard algorithm"""
     atr_values = calculate_atr(highs, lows, closes, period)
@@ -248,6 +271,11 @@ def calculate_supertrend(highs, lows, closes, period=10, multiplier=2):
             supertrend_values.append(supertrend)
     
     return supertrend_values
+
+def calculate_supertrend_weekly(highs, lows, closes, period=10, multiplier=2):
+    """Calculate SuperTrend for weekly timeframe using standard algorithm"""
+    # Use standard SuperTrend algorithm with Wilder's ATR for weekly calculations
+    return calculate_supertrend(highs, lows, closes, period, multiplier)
 
 def calculate_sma(values, period):
     """Calculate Simple Moving Average"""
@@ -343,51 +371,71 @@ def get_month_start_timestamp(timestamp):
     return int(month_start.timestamp() * 1000)
 
 def calculate_weekly_monthly_ohlcv(stock_data):
-    """Calculate weekly and monthly OHLCV data from daily data"""
+    """Calculate weekly and monthly OHLCV data from daily data with proper day-of-week logic"""
     if not stock_data:
         return {}, {}
+    
+    import datetime
     
     weekly_data = {}
     monthly_data = {}
     
+    # Group candles by week first, then process in chronological order
+    weekly_candles = {}
+    
     for candle in stock_data:
         timestamp = candle.get("timestamp", 0)
-        
-        # Weekly aggregation
         week_key = get_week_start_timestamp(timestamp)
-        if week_key not in weekly_data:
-            weekly_data[week_key] = {
-                "open": candle.get("open"),
-                "high": candle.get("high"),
-                "low": candle.get("low"),
-                "close": candle.get("close"),
-                "volume": candle.get("volume", 0),
-                "count": 1
-            }
-        else:
-            weekly_data[week_key]["high"] = max(weekly_data[week_key]["high"], candle.get("high", 0))
-            weekly_data[week_key]["low"] = min(weekly_data[week_key]["low"], candle.get("low", float('inf')))
-            weekly_data[week_key]["close"] = candle.get("close")  # Last close in the week
-            weekly_data[week_key]["volume"] += candle.get("volume", 0)
-            weekly_data[week_key]["count"] += 1
         
-        # Monthly aggregation
-        month_key = get_month_start_timestamp(timestamp)
-        if month_key not in monthly_data:
-            monthly_data[month_key] = {
-                "open": candle.get("open"),
-                "high": candle.get("high"),
-                "low": candle.get("low"),
-                "close": candle.get("close"),
-                "volume": candle.get("volume", 0),
-                "count": 1
-            }
-        else:
-            monthly_data[month_key]["high"] = max(monthly_data[month_key]["high"], candle.get("high", 0))
-            monthly_data[month_key]["low"] = min(monthly_data[month_key]["low"], candle.get("low", float('inf')))
-            monthly_data[month_key]["close"] = candle.get("close")  # Last close in the month
-            monthly_data[month_key]["volume"] += candle.get("volume", 0)
-            monthly_data[month_key]["count"] += 1
+        if week_key not in weekly_candles:
+            weekly_candles[week_key] = []
+        weekly_candles[week_key].append(candle)
+    
+    # Process each week's candles in chronological order
+    for week_key, candles in weekly_candles.items():
+        # Sort candles by timestamp to ensure proper order
+        candles.sort(key=lambda x: x.get("timestamp", 0))
+        
+        # Initialize weekly data with first candle (Monday or first trading day)
+        first_candle = candles[0]
+        last_candle = candles[-1]
+        
+        weekly_data[week_key] = {
+            "open": first_candle.get("open"),  # Open of first trading day
+            "high": max(candle.get("high", 0) for candle in candles),  # Highest high of the week
+            "low": min(candle.get("low", float('inf')) for candle in candles),  # Lowest low of the week
+            "close": last_candle.get("close"),  # Close of last trading day in the data
+            "volume": sum(candle.get("volume", 0) for candle in candles),  # Total volume
+            "count": len(candles),
+            "days": []  # Track which days are included
+        }
+        
+        # Add day of week information for debugging
+        for candle in candles:
+            candle_dt = datetime.datetime.fromtimestamp(candle.get("timestamp", 0) / 1000)
+            day_of_week = candle_dt.strftime('%A')  # Monday, Tuesday, etc.
+            weekly_data[week_key]["days"].append(day_of_week)
+        
+        # Monthly aggregation (unchanged logic)
+        for candle in candles:
+            timestamp = candle.get("timestamp", 0)
+            month_key = get_month_start_timestamp(timestamp)
+            
+            if month_key not in monthly_data:
+                monthly_data[month_key] = {
+                    "open": candle.get("open"),
+                    "high": candle.get("high"),
+                    "low": candle.get("low"),
+                    "close": candle.get("close"),
+                    "volume": candle.get("volume", 0),
+                    "count": 1
+                }
+            else:
+                monthly_data[month_key]["high"] = max(monthly_data[month_key]["high"], candle.get("high", 0))
+                monthly_data[month_key]["low"] = min(monthly_data[month_key]["low"], candle.get("low", float('inf')))
+                monthly_data[month_key]["close"] = candle.get("close")  # Last close in the month
+                monthly_data[month_key]["volume"] += candle.get("volume", 0)
+                monthly_data[month_key]["count"] += 1
     
     return weekly_data, monthly_data
 
@@ -963,10 +1011,12 @@ async def precalculate_indicators(request: PrecalculateRequest):
         })
         
         # Save precalculated indicators to file
+        current_time = datetime.utcnow()
         precalc_data = {
             "status": "processing",
             "indicators": indicators,
-            "lastUpdated": datetime.utcnow().isoformat()
+            "lastUpdated": current_time.isoformat(),
+            "dayOfWeek": get_day_of_week_name(current_time.timestamp() * 1000)
         }
         
         with open("precalculatedIndicators.json", 'w') as f:
@@ -1062,9 +1112,11 @@ def process_single_stock_latest_safe(stock, parsed_query):
                         results.append(False)
                 
                 if all(results):
+                    timestamp = latest_candle.get("timestamp", "")
                     matches.append({
                         "stock": stock,
-                        "date": latest_candle.get("timestamp", ""),
+                        "date": timestamp,
+                        "dayOfWeek": get_day_of_week_name(timestamp),
                         "data": latest_candle
                     })
             except:
@@ -1153,9 +1205,11 @@ def process_single_stock_safe(stock, parsed_query):
                             results.append(False)
                     
                     if all(results):
+                        timestamp = candle.get("timestamp", "")
                         matches.append({
                             "stock": stock,
-                            "date": candle.get("timestamp", ""),
+                            "date": timestamp,
+                            "dayOfWeek": get_day_of_week_name(timestamp),
                             "data": candle
                         })
                 except:
@@ -1238,9 +1292,11 @@ def process_query_batch_parallel(stock_batch, parsed_query_dict, base_path=""):
                             
                             # Simple AND logic for now
                             if all(results):
+                                timestamp = candle.get("timestamp", "")
                                 matches.append({
                                     "stock": stock,
-                                    "date": candle.get("timestamp", ""),
+                                    "date": timestamp,
+                                    "dayOfWeek": get_day_of_week_name(timestamp),
                                     "data": candle
                                 })
                         except:
@@ -1362,9 +1418,11 @@ def process_latest_scan_batch_parallel(stock_batch, parsed_query_dict, base_path
                             
                             # Simple AND logic for now
                             if all(results):
+                                timestamp = candle.get("timestamp", "")
                                 matches.append({
                                     "stock": stock,
-                                    "date": candle.get("timestamp", ""),
+                                    "date": timestamp,
+                                    "dayOfWeek": get_day_of_week_name(timestamp),
                                     "data": candle
                                 })
                         except:
@@ -1503,26 +1561,62 @@ def process_stock_batch_cpu_intensive(stock_batch_data):
             
             # Pre-calculate all indicators ONCE per stock for performance
             calculated_indicators = {}
+            
+            # Prepare weekly and monthly data arrays for indicator calculations
+            weekly_candles = []
+            monthly_candles = []
+            
+            # Convert weekly_ohlcv dict to ordered list for calculations
+            for week_key in sorted(weekly_ohlcv.keys()):
+                weekly_candles.append(weekly_ohlcv[week_key])
+            
+            # Convert monthly_ohlcv dict to ordered list for calculations  
+            for month_key in sorted(monthly_ohlcv.keys()):
+                monthly_candles.append(monthly_ohlcv[month_key])
+            
+            # Extract price arrays for different timeframes
+            weekly_highs = [float(candle.get("high", 0)) for candle in weekly_candles]
+            weekly_lows = [float(candle.get("low", 0)) for candle in weekly_candles]
+            weekly_closes = [float(candle.get("close", 0)) for candle in weekly_candles]
+            
+            monthly_highs = [float(candle.get("high", 0)) for candle in monthly_candles]
+            monthly_lows = [float(candle.get("low", 0)) for candle in monthly_candles]
+            monthly_closes = [float(candle.get("close", 0)) for candle in monthly_candles]
+            
             for config in indicator_configs:
                 name = config["name"]
                 indicator_key = config["key"]
+                timeframe = config["timeframe"]
                 period = config["period"]
                 
+                # Choose the correct data arrays based on timeframe
+                if timeframe == "weekly":
+                    calc_highs, calc_lows, calc_closes = weekly_highs, weekly_lows, weekly_closes
+                elif timeframe == "monthly":
+                    calc_highs, calc_lows, calc_closes = monthly_highs, monthly_lows, monthly_closes
+                else:  # daily
+                    calc_highs, calc_lows, calc_closes = highs, lows, closes
+                
                 if name == "rsi":
-                    calculated_indicators[indicator_key] = calculate_rsi(closes, period)
+                    calculated_indicators[indicator_key] = calculate_rsi(calc_closes, period)
                 elif name == "sma":
-                    calculated_indicators[indicator_key] = calculate_sma(closes, period)
+                    calculated_indicators[indicator_key] = calculate_sma(calc_closes, period)
                 elif name == "ema":
-                    calculated_indicators[indicator_key] = calculate_ema(closes, period)
+                    calculated_indicators[indicator_key] = calculate_ema(calc_closes, period)
                 elif name == "bb":
                     std_dev = config.get("std_dev", 2)
-                    upper, middle, lower = calculate_bollinger_bands(closes, period, std_dev)
+                    upper, middle, lower = calculate_bollinger_bands(calc_closes, period, std_dev)
                     calculated_indicators[f"{indicator_key}_upper"] = upper
                     calculated_indicators[f"{indicator_key}_middle"] = middle
                     calculated_indicators[f"{indicator_key}_lower"] = lower
                 elif name == "supertrend":
                     multiplier = config.get("multiplier", 2)
-                    calculated_indicators[indicator_key] = calculate_supertrend(highs, lows, closes, period, multiplier)
+                    if timeframe == "weekly":
+                        # Use optimized weekly SuperTrend calculation
+                        calculated_indicators[indicator_key] = calculate_supertrend_weekly(calc_highs, calc_lows, calc_closes, period, multiplier)
+                    else:
+                        # Use standard SuperTrend for daily/monthly
+                        calculated_indicators[indicator_key] = calculate_supertrend(calc_highs, calc_lows, calc_closes, period, multiplier)
             
             # Process all candles for this stock - just map pre-calculated values
             for idx, candle in enumerate(stock_data):
@@ -1538,6 +1632,7 @@ def process_stock_batch_cpu_intensive(stock_batch_data):
                 enhanced_candle = {
                     "timestamp": timestamp,
                     "date": timestamp,
+                    "dayOfWeek": get_day_of_week_name(timestamp),
                     "open": candle.get("open"),
                     "high": candle.get("high"),
                     "low": candle.get("low"),
@@ -1577,14 +1672,44 @@ def process_stock_batch_cpu_intensive(stock_batch_data):
                         # Skip adding duplicate indicator_key since volume is already present
                         pass
                     elif name == "bb":
-                        # Map Bollinger Bands values
-                        enhanced_candle[f"{indicator_key}_upper"] = calculated_indicators.get(f"{indicator_key}_upper", [None] * len(stock_data))[idx]
-                        enhanced_candle[f"{indicator_key}_middle"] = calculated_indicators.get(f"{indicator_key}_middle", [None] * len(stock_data))[idx]
-                        enhanced_candle[f"{indicator_key}_lower"] = calculated_indicators.get(f"{indicator_key}_lower", [None] * len(stock_data))[idx]
+                        # Map Bollinger Bands values based on timeframe
+                        timeframe = config["timeframe"]
+                        if timeframe == "weekly":
+                            # Find the index of this daily candle's weekly period
+                            week_index = next((i for i, wc in enumerate(weekly_candles) if get_week_start_timestamp(timestamp) == sorted(weekly_ohlcv.keys())[i]), -1)
+                            enhanced_candle[f"{indicator_key}_upper"] = calculated_indicators.get(f"{indicator_key}_upper", [])[week_index] if week_index >= 0 and week_index < len(calculated_indicators.get(f"{indicator_key}_upper", [])) else None
+                            enhanced_candle[f"{indicator_key}_middle"] = calculated_indicators.get(f"{indicator_key}_middle", [])[week_index] if week_index >= 0 and week_index < len(calculated_indicators.get(f"{indicator_key}_middle", [])) else None
+                            enhanced_candle[f"{indicator_key}_lower"] = calculated_indicators.get(f"{indicator_key}_lower", [])[week_index] if week_index >= 0 and week_index < len(calculated_indicators.get(f"{indicator_key}_lower", [])) else None
+                        elif timeframe == "monthly":
+                            # Find the index of this daily candle's monthly period
+                            month_index = next((i for i, mc in enumerate(monthly_candles) if get_month_start_timestamp(timestamp) == sorted(monthly_ohlcv.keys())[i]), -1)
+                            enhanced_candle[f"{indicator_key}_upper"] = calculated_indicators.get(f"{indicator_key}_upper", [])[month_index] if month_index >= 0 and month_index < len(calculated_indicators.get(f"{indicator_key}_upper", [])) else None
+                            enhanced_candle[f"{indicator_key}_middle"] = calculated_indicators.get(f"{indicator_key}_middle", [])[month_index] if month_index >= 0 and month_index < len(calculated_indicators.get(f"{indicator_key}_middle", [])) else None
+                            enhanced_candle[f"{indicator_key}_lower"] = calculated_indicators.get(f"{indicator_key}_lower", [])[month_index] if month_index >= 0 and month_index < len(calculated_indicators.get(f"{indicator_key}_lower", [])) else None
+                        else:  # daily
+                            enhanced_candle[f"{indicator_key}_upper"] = calculated_indicators.get(f"{indicator_key}_upper", [None] * len(stock_data))[idx]
+                            enhanced_candle[f"{indicator_key}_middle"] = calculated_indicators.get(f"{indicator_key}_middle", [None] * len(stock_data))[idx]
+                            enhanced_candle[f"{indicator_key}_lower"] = calculated_indicators.get(f"{indicator_key}_lower", [None] * len(stock_data))[idx]
                     else:
-                        # Map other indicator values
-                        indicator_values = calculated_indicators.get(indicator_key, [None] * len(stock_data))
-                        enhanced_candle[indicator_key] = indicator_values[idx] if indicator_values[idx] is not None else (50.0 if name == "rsi" else candle.get("close", 0))
+                        # Map other indicator values based on timeframe
+                        timeframe = config["timeframe"]
+                        if timeframe == "weekly":
+                            # Find the index of this daily candle's weekly period
+                            week_keys = sorted(weekly_ohlcv.keys())
+                            week_key = get_week_start_timestamp(timestamp)
+                            week_index = week_keys.index(week_key) if week_key in week_keys else -1
+                            indicator_values = calculated_indicators.get(indicator_key, [])
+                            enhanced_candle[indicator_key] = indicator_values[week_index] if week_index >= 0 and week_index < len(indicator_values) and indicator_values[week_index] is not None else (50.0 if name == "rsi" else candle.get("close", 0))
+                        elif timeframe == "monthly":
+                            # Find the index of this daily candle's monthly period
+                            month_keys = sorted(monthly_ohlcv.keys())
+                            month_key = get_month_start_timestamp(timestamp)
+                            month_index = month_keys.index(month_key) if month_key in month_keys else -1
+                            indicator_values = calculated_indicators.get(indicator_key, [])
+                            enhanced_candle[indicator_key] = indicator_values[month_index] if month_index >= 0 and month_index < len(indicator_values) and indicator_values[month_index] is not None else (50.0 if name == "rsi" else candle.get("close", 0))
+                        else:  # daily
+                            indicator_values = calculated_indicators.get(indicator_key, [None] * len(stock_data))
+                            enhanced_candle[indicator_key] = indicator_values[idx] if indicator_values[idx] is not None else (50.0 if name == "rsi" else candle.get("close", 0))
                 
                 result["data"].append(enhanced_candle)
             
@@ -1760,10 +1885,12 @@ async def process_indicators_background(indicators: List[Dict[str, Any]]):
         print(f"[DEBUG] PARALLEL file write phase completed in {write_end_time - write_start_time:.2f}s")
         
         # Update completion status
+        current_time = datetime.utcnow()
         precalc_data = {
             "status": "completed",
             "indicators": indicators,
-            "lastUpdated": datetime.utcnow().isoformat()
+            "lastUpdated": current_time.isoformat(),
+            "dayOfWeek": get_day_of_week_name(current_time.timestamp() * 1000)
         }
         
         with open("precalculatedIndicators.json", 'w') as f:
@@ -1812,6 +1939,7 @@ async def process_stock_indicators(stock: str, stock_data: List[Dict], indicator
             enhanced_candle = {
                 "timestamp": candle.get("timestamp"),
                 "date": candle.get("timestamp"),
+                "dayOfWeek": get_day_of_week_name(candle.get("timestamp")),
                 "open": candle.get("open"),
                 "high": candle.get("high"),
                 "low": candle.get("low"),

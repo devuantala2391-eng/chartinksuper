@@ -42,6 +42,7 @@ echo 🔄 RefreshDB: POST http://127.0.0.1:8001/refreshdb
 echo 📡 SSE Stream: GET http://127.0.0.1:8001/refreshdb-progress-stream
 echo ==========================================
 echo 🎯 Press Ctrl+C to stop the server
+echo 🔥 AUTO-RELOAD: Server will restart when you modify Python files
 echo ==========================================
 
 REM Check if main.py exists
@@ -52,9 +53,35 @@ if not exist python-api\main.py (
     exit /b 1
 )
 
-REM Change to python-api directory and start the server
+REM Check if uvicorn is available
+echo 🔍 Checking for uvicorn...
+python -c "import uvicorn" >nul 2>&1
+if %errorlevel% neq 0 (
+    echo ❌ uvicorn is not installed
+    echo 📦 Installing uvicorn with [standard] extras...
+    pip install "uvicorn[standard]"
+    python -c "import uvicorn" >nul 2>&1
+    if %errorlevel% neq 0 (
+        echo ❌ Failed to install uvicorn, falling back to direct Python execution
+        echo 💡 You can manually install uvicorn later with: pip install "uvicorn[standard]"
+        cd python-api
+        python -u main.py
+        goto :end
+    ) else (
+        echo ✅ uvicorn installed successfully
+    )
+) else (
+    echo ✅ uvicorn is available
+)
+
+REM Change to python-api directory and start the server with uvicorn
 cd python-api
-python -u main.py
+echo 🔄 Starting with auto-reload enabled...
+echo 💡 The server will automatically restart when you modify Python files
+echo 🔧 Using uvicorn with --reload flag for development
+python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload --log-level info
+
+:end
 
 REM If we get here, the server stopped
 echo.

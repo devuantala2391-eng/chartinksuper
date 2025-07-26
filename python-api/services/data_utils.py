@@ -1,12 +1,14 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from utils.constants import DAY_OF_WEEK
 
 def get_day_of_week_name(timestamp):
-    """Get the name of the day from a timestamp."""
+    """Get the name of the day from a timestamp using IST (Indian Standard Time)."""
     if not timestamp:
         return None
     try:
-        date = datetime.fromtimestamp(int(timestamp) / 1000, tz=timezone.utc)
+        # Use IST timezone (UTC+5:30) for Indian stock market data
+        ist_offset = timezone(timedelta(hours=5, minutes=30))
+        date = datetime.fromtimestamp(int(timestamp) / 1000, tz=ist_offset)
         return DAY_OF_WEEK.get(date.weekday())
     except (ValueError, TypeError):
         return None
