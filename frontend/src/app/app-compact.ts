@@ -258,22 +258,6 @@ export class AppCompact implements OnInit {
         });
         break;
         
-      case 'rsi-oversold':
-        this.conditions.push({
-          id: this.nextId++,
-          field: 'rsi',
-          operator: '<',
-          value: '30',
-          logicalOperator: 'and',
-          indicatorType: 'parameterized',
-          indicatorName: 'rsi',
-          indicatorParams: ['14'],
-          timeUnit: 'day',
-          valueType: 'number',
-          daysAgo: 0,
-          leftMultiplier: 1
-        });
-        break;
     }
   }
   
@@ -283,8 +267,6 @@ export class AppCompact implements OnInit {
       this.loadPreset('volume-surge');
     } else if (this.naturalLanguageQuery.toLowerCase().includes('price breakout')) {
       this.loadPreset('price-breakout');
-    } else if (this.naturalLanguageQuery.toLowerCase().includes('rsi oversold')) {
-      this.loadPreset('rsi-oversold');
     }
   }
   

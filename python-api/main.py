@@ -25,6 +25,18 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 import uvicorn
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Utility function to get default size from environment
+def get_default_size() -> int:
+    """Get default size parameter from environment variables."""
+    try:
+        return int(os.getenv('DEFAULT_SIZE', '200'))
+    except (ValueError, TypeError):
+        return 200  # Fallback to 200 if env var is invalid
 import asyncio
 import logging
 from typing import List, Dict, Any, Optional
@@ -69,6 +81,7 @@ sys.stderr = sys.__stderr__
 # Pydantic models for request/response
 class ChartinkApiRequest(BaseModel):
     payload: List[List[str]]
+    size: Optional[int] = None  # Optional size parameter
 
 class QueryRequest(BaseModel):
     query: str
@@ -79,6 +92,7 @@ class PrecalculateRequest(BaseModel):
 
 class RefreshDbRequest(BaseModel):
     symbols: Optional[List[str]] = None
+    size: Optional[int] = None  # Optional size parameter
 
 # Global progress state
 current_progress = {
@@ -509,7 +523,7 @@ def calculate_weekly_monthly_ohlcv(stock_data):
     
     return weekly_data, monthly_data
 
-def update_progress(updates: Dict[str, Any]):
+def update_progress(updates: Dict[str, Any], clear_queue: bool = False):
     """Update progress and notify SSE connections with rate limiting."""
     global current_progress
     current_progress.update(updates)
@@ -522,6 +536,14 @@ def update_progress(updates: Dict[str, Any]):
     
     # Add timestamp for client-side deduplication
     current_progress["timestamp"] = time.time()
+    
+    # Clear the queue if requested (for starting fresh scans)
+    if clear_queue:
+        while not progress_queue.empty():
+            try:
+                progress_queue.get_nowait()
+            except queue.Empty:
+                break
     
     # Broadcast update to all SSE connections with queue management
     try:
@@ -570,14 +592,15 @@ async def chartink_api(request: ChartinkApiRequest):
     """Process Chartink API requests to fetch and save stock data."""
     try:
         payload = request.payload
+        size = request.size or get_default_size()  # Use provided size or default from env
         
         if not payload or not isinstance(payload, list) or len(payload) == 0:
             raise HTTPException(status_code=400, detail="Invalid or missing payload")
         
-        # Process the payload using the chartink service
-        results = await chartink_service.process_payload(payload)
+        # Process the payload using the chartink service with configurable size
+        results = await chartink_service.process_payload(payload, size=size)
         
-        return {"success": True, "results": results}
+        return {"success": True, "results": results, "size": size}
         
     except Exception as error:
         logger.error(f"Chartink API error: {error}")
@@ -610,7 +633,7 @@ async def process_query(request: QueryRequest):
         # Reset abort flag
         current_query_abort["aborted"] = False
         
-        # Reset progress
+        # Reset progress and clear old data from queue
         update_progress({
             "isRunning": True,
             "phase": "initializing",
@@ -619,7 +642,7 @@ async def process_query(request: QueryRequest):
             "total": TOTAL_SYMBOLS,
             "matches": 0,
             "startTime": datetime.utcnow().timestamp() * 1000
-        })
+        }, clear_queue=True)
         
         logger.info(f"Processing query: {query}")
         
@@ -854,7 +877,7 @@ async def process_latest_query(request: QueryRequest):
         # Reset abort flag
         current_query_abort["aborted"] = False
         
-        # Reset progress
+        # Reset progress and clear old data from queue
         update_progress({
             "isRunning": True,
             "phase": "initializing",
@@ -863,7 +886,7 @@ async def process_latest_query(request: QueryRequest):
             "total": TOTAL_SYMBOLS,
             "matches": 0,
             "startTime": datetime.utcnow().timestamp() * 1000
-        })
+        }, clear_queue=True)
         
         logger.info(f"Processing LATEST DAY query: {query}")
         
@@ -2149,6 +2172,7 @@ async def refresh_database(request: RefreshDbRequest):
     try:
         request_time = datetime.now()
         symbols = request.symbols or STOCK_SYMBOLS
+        size = request.size or get_default_size()  # Use provided size or default from env
         total_symbols = len(symbols)
         
         print(f"\n{'='*80}")
@@ -2191,7 +2215,7 @@ async def refresh_database(request: RefreshDbRequest):
         }
         
         # Start background processing
-        task = asyncio.create_task(process_refresh_in_background(symbols, request_time))
+        task = asyncio.create_task(process_refresh_in_background(symbols, request_time, size))
         print(f"[REFRESHDB] {datetime.now().strftime('%H:%M:%S.%f')[:-3]} - Background task created")
         print(f"[REFRESHDB] {datetime.now().strftime('%H:%M:%S.%f')[:-3]} - Returning response: {response}")
         print(f"{'='*80}\n")
@@ -2211,8 +2235,9 @@ async def refresh_database(request: RefreshDbRequest):
         })
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(error)}")
 
-async def process_refresh_in_background(symbols: List[str], request_time: datetime):
+async def process_refresh_in_background(symbols: List[str], request_time: datetime, size: int = None):
     """Process database refresh in background with progress updates."""
+    size = size or get_default_size()  # Use provided size or default from env
     successful = 0
     failed = 0
     processed = 0
@@ -2277,7 +2302,8 @@ async def process_refresh_in_background(symbols: List[str], request_time: dateti
         results = await chartink_service.process_payload(
             payload, 
             concurrent_limit=None,  # Process all stocks concurrently
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            size=size
         )
         
         api_end = datetime.now()
@@ -2475,11 +2501,13 @@ async def upload_csv(csvFile: UploadFile = File(...)):
         })
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(error)}")
 
-async def process_csv_symbols_in_background(extracted_symbols: List[str]):
+async def process_csv_symbols_in_background(extracted_symbols: List[str], size: int = None):
     """Process extracted symbols by updating constants and refreshing database"""
+    size = size or get_default_size()  # Use provided size or default from env
     try:
         print(f"\n{'='*60}")
         print(f"BACKGROUND PROCESSING STARTED - {len(extracted_symbols)} symbols")
+        print(f"Using size: {size}")
         print(f"{'='*60}\n")
         
         # Update progress - updating constants
@@ -2572,7 +2600,8 @@ async def process_csv_symbols_in_background(extracted_symbols: List[str]):
         results = await chartink_service.process_payload(
             payload, 
             concurrent_limit=None,  # Process all stocks concurrently
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            size=size
         )
         
         print(f"\n[DATA FETCH COMPLETED] Successfully processed {len(results)} symbols")

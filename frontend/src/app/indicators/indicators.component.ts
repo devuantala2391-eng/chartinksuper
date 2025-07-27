@@ -33,8 +33,8 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
   indicators: PrecalculatedIndicator[] = [];
   newIndicator: PrecalculatedIndicator = {
     timeframe: 'daily',
-    name: 'rsi',
-    params: { period: 14 }
+    name: 'supertrend',
+    params: { period: 10, multiplier: 3 }
   };
   loading = false;
   error: string | null = null;
@@ -51,7 +51,6 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
   private apiUrl = 'http://localhost:8001/api';
 
   availableIndicators = [
-    { value: 'rsi', label: 'Relative Strength Index (RSI)' },
     { value: 'supertrend', label: 'SuperTrend' },
     { value: 'bb', label: 'Bollinger Bands' },
     { value: 'pctchg', label: '% Change' },
@@ -149,8 +148,8 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
     // Reset form
     this.newIndicator = {
       timeframe: 'daily',
-      name: 'rsi',
-      params: { period: 14 }
+      name: 'supertrend',
+      params: { period: 10, multiplier: 3 }
     };
   }
 
@@ -399,9 +398,6 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
   onIndicatorTypeChange() {
     // Reset params when indicator type changes
     switch (this.newIndicator.name) {
-      case 'rsi':
-        this.newIndicator.params = { period: 14 };
-        break;
       case 'supertrend':
         this.newIndicator.params = { period: 10, multiplier: 3 };
         break;

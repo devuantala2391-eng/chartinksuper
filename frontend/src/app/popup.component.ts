@@ -372,7 +372,6 @@ export class PopupComponent implements OnInit {
     { value: 'low', label: 'Low' },
     { value: 'close', label: 'Close' },
     { value: 'volume', label: 'Volume' },
-    { value: 'rsi', label: 'RSI' },
     { value: 'supertrend', label: 'SuperTrend' },
     { value: 'bb', label: 'Bollinger Bands' },
     { value: 'pctchg', label: '% Change' }
@@ -462,7 +461,6 @@ export class PopupComponent implements OnInit {
   
   getParamLabel(indicator: string, index: number): string {
     const labels: { [key: string]: string[] } = {
-      'rsi': ['Period'],
       'bb': ['Period', 'Std Dev'],
       'supertrend': ['Period', 'Multiplier'],
       'pctchg': ['Period']

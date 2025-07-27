@@ -6,6 +6,75 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+def resolve_field_name(field_name: str) -> str:
+    """Resolve field name variations to actual field names in the data."""
+    # Field name mappings for common variations
+    field_mappings = {
+        # Daily price fields
+        'daily_close': 'close',
+        'daily_open': 'open', 
+        'daily_high': 'high',
+        'daily_low': 'low',
+        'daily_volume': 'volume',
+        
+        # Weekly price fields (these exist as-is)
+        'weekly_close': 'weekly_close',
+        'weekly_open': 'weekly_open',
+        'weekly_high': 'weekly_high', 
+        'weekly_low': 'weekly_low',
+        'weekly_volume': 'weekly_volume',
+        
+        # Monthly price fields (these exist as-is)
+        'monthly_close': 'monthly_close',
+        'monthly_open': 'monthly_open',
+        'monthly_high': 'monthly_high',
+        'monthly_low': 'monthly_low', 
+        'monthly_volume': 'monthly_volume'
+    }
+    
+    # Return mapped name if exists, otherwise return original
+    return field_mappings.get(field_name.lower(), field_name)
+
+def parse_right_side_expression(expression: str) -> Dict[str, Any]:
+    """Parse the right side of a condition which could be a number, field, or time-offset expression."""
+    expression = expression.strip()
+    
+    # Check if it's a time-offset expression like "1 day ago daily_close"
+    time_offset_pattern = r'(\d+)\s+(day|week|month)s?\s+ago\s+(.+)'
+    time_match = re.match(time_offset_pattern, expression)
+    
+    if time_match:
+        offset_value = int(time_match.group(1))
+        offset_unit = time_match.group(2)
+        field_name = time_match.group(3).strip()
+        
+        # Resolve field name variations (e.g., 'daily_close' -> 'close')
+        resolved_field_name = resolve_field_name(field_name)
+        
+        return {
+            "type": "time_offset_field",
+            "field": resolved_field_name,
+            "offset_value": offset_value,
+            "offset_unit": offset_unit,
+            "value": None
+        }
+    
+    # Check if it's a simple number
+    if expression.replace('.', '').replace('-', '').isdigit():
+        return {
+            "type": "value",
+            "field": None,
+            "value": float(expression)
+        }
+    
+    # Otherwise, it's a simple field reference
+    resolved_field_name = resolve_field_name(expression)
+    return {
+        "type": "field",
+        "field": resolved_field_name,
+        "value": None
+    }
+
 def parse_query(query: str) -> Dict[str, Any]:
     """Parse a query string into structured conditions."""
     # This is a placeholder implementation
@@ -14,7 +83,8 @@ def parse_query(query: str) -> Dict[str, Any]:
     
     # Enhanced regex patterns for conditions including crossed above/below
     # First try to match "crossed above" and "crossed below" patterns
-    crossed_pattern = r'(\w+(?:\(\d+(?:,\d+)*\))?)\s+(crossed\s+(?:above|below))\s+(\w+(?:\(\d+(?:,\d+)*\))?|\d+\.?\d*)'
+    # Support both simple values and complex expressions like "1 day ago daily_close"
+    crossed_pattern = r'(\w+(?:\(\d+(?:,\d+)*\))?)\s+(crossed\s+(?:above|below))\s+(.+)'
     # Basic comparison operators
     basic_pattern = r'(\w+(?:\(\d+(?:,\d+)*\))?)\s*([><=!]+)\s*(\w+(?:\(\d+(?:,\d+)*\))?|\d+\.?\d*)'
     
@@ -37,6 +107,9 @@ def parse_query(query: str) -> Dict[str, Any]:
                 operator = crossed_match.group(2).replace(' ', ' ')  # "crossed above" or "crossed below"
                 right_field = crossed_match.group(3)
                 
+                # Parse the right side expression (could be number, field, or time-offset)
+                right_parsed = parse_right_side_expression(right_field)
+                
                 conditions.append({
                     "left": {
                         "type": "field" if '_' in left_field else "indicator",
@@ -44,11 +117,7 @@ def parse_query(query: str) -> Dict[str, Any]:
                         "name": left_field.split('_')[1] if '_' in left_field else left_field.split('(')[0]
                     },
                     "operator": operator,
-                    "right": {
-                        "type": "field" if not right_field.replace('.', '').replace('-', '').isdigit() else "value",
-                        "field": right_field if not right_field.replace('.', '').replace('-', '').isdigit() else None,
-                        "value": float(right_field) if right_field.replace('.', '').replace('-', '').isdigit() else None
-                    }
+                    "right": right_parsed
                 })
             else:
                 # Try basic pattern
@@ -127,6 +196,35 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
                             right_value = None
                         else:
                             right_value = float(raw_right_value)
+                    elif right["type"] == "time_offset_field":
+                        # Handle time offset expressions like "1 day ago daily_close"
+                        offset_value = right["offset_value"]
+                        offset_unit = right["offset_unit"]
+                        field_name = right["field"]
+                        
+                        # Calculate the offset index based on unit
+                        if offset_unit == "day":
+                            offset_index = i - offset_value
+                        elif offset_unit == "week":
+                            # For weekly offset, we need to find data from that many weeks ago
+                            # This is approximate - each week has ~5 trading days
+                            offset_index = i - (offset_value * 5)
+                        elif offset_unit == "month":
+                            # For monthly offset, approximately 20-22 trading days per month
+                            offset_index = i - (offset_value * 21)
+                        else:
+                            offset_index = -1  # Invalid
+                        
+                        # Check if the offset index is valid and get the historical value
+                        if offset_index >= 0 and offset_index < len(candles):
+                            historical_candle = candles[offset_index]
+                            raw_right_value = historical_candle.get(field_name)
+                            if raw_right_value is None:
+                                right_value = None
+                            else:
+                                right_value = float(raw_right_value)
+                        else:
+                            right_value = None  # Not enough historical data
                     
                     # Evaluate condition
                     if left_value is not None and right_value is not None:

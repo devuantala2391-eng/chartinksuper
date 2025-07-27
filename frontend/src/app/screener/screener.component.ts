@@ -109,7 +109,6 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     { value: 'low', label: 'Low' },
     { value: 'close', label: 'Close' },
     { value: 'volume', label: 'Volume' },
-    { value: 'rsi', label: 'RSI' },
     { value: 'supertrend', label: 'SuperTrend' },
     { value: 'bb', label: 'Bollinger Bands' },
     { value: 'pctchg', label: '% Change' }
@@ -117,7 +116,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   
   // Parameterized indicators
   parameterizedIndicators = [
-    'rsi', 'supertrend', 'bb', 'pctchg'
+    'supertrend', 'bb', 'pctchg'
   ];
   
   // Multi-component indicators - indicators that have multiple output values
@@ -128,7 +127,6 @@ export class ScreenerComponent implements OnInit, OnDestroy {
 
   // Default parameters for indicators
   indicatorDefaults: { [key: string]: string[] } = {
-    'rsi': ['14'],
     'bb': ['20', '2'],
     'supertrend': ['10', '3'],
     'pctchg': ['1']
@@ -181,16 +179,16 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   conditions: Condition[] = [
     { 
       id: 1, 
-      field: 'rsi', 
+      field: 'supertrend', 
       operator: '>', 
-      value: '60', 
+      value: '100', 
       logicalOperator: 'and', 
       leftExpressionType: 'simple',
       timePeriod: 'daily', 
       valueType: 'number',
       indicatorType: 'parameterized',
-      indicatorName: 'rsi',
-      indicatorParams: ['14']
+      indicatorName: 'supertrend',
+      indicatorParams: ['10', '3']
     }
   ];
   
@@ -291,7 +289,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   addCondition() {
     const newCondition: Condition = {
       id: this.nextId++,
-      field: 'rsi',
+      field: 'supertrend',
       operator: '>',
       value: '',
       logicalOperator: 'and',
@@ -299,8 +297,8 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       timePeriod: 'daily',
       valueType: 'number',
       indicatorType: 'parameterized',
-      indicatorName: 'rsi',
-      indicatorParams: ['14']
+      indicatorName: 'supertrend',
+      indicatorParams: ['10', '3']
     };
     
     this.conditions.push(newCondition);
@@ -884,21 +882,6 @@ export class ScreenerComponent implements OnInit, OnDestroy {
           valueIndicatorParams: ['10', '3']
         });
         break;
-      case 'rsi-oversold':
-        this.conditions.push({
-          id: this.nextId++,
-          field: 'rsi',
-          operator: '<',
-          value: '30',
-          logicalOperator: 'and',
-          leftExpressionType: 'simple',
-          timePeriod: 'daily',
-          valueType: 'number',
-          indicatorType: 'parameterized',
-          indicatorName: 'rsi',
-          indicatorParams: ['14']
-        });
-        break;
     }
     
     this.generateQuery();
@@ -953,7 +936,6 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     }
     
     const labels: { [key: string]: string[] } = {
-      'rsi': ['Period'],
       'sma': ['Period'],
       'ema': ['Period'],
       'wma': ['Period'],
@@ -987,8 +969,6 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       this.loadPreset('volume-surge');
     } else if (this.naturalLanguageQuery.toLowerCase().includes('price breakout')) {
       this.loadPreset('price-breakout');
-    } else if (this.naturalLanguageQuery.toLowerCase().includes('rsi oversold')) {
-      this.loadPreset('rsi-oversold');
     }
   }
   
@@ -1849,8 +1829,6 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     const combinedHash = stockHash + dateHash; // Combine both for unique values per stock-date
     
     switch (field) {
-      case 'rsi':
-        return Math.min(100, Math.max(0, 30 + (combinedHash % 40)));
       case 'sma':
       case 'ema':
       case 'wma':

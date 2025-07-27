@@ -6,6 +6,17 @@ import asyncio
 from typing import List, Dict, Any, Optional
 import logging
 import threading
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+def get_default_size() -> int:
+    """Get default size parameter from environment variables."""
+    try:
+        return int(os.getenv('DEFAULT_SIZE', '200'))
+    except (ValueError, TypeError):
+        return 200  # Fallback to 200 if env var is invalid
 
 logger = logging.getLogger(__name__)
 
@@ -151,10 +162,10 @@ class ChartinkService:
             
             return {symbol: error_msg}
 
-    async def process_payload(self, payload: List[List[str]], concurrent_limit: int = None, progress_callback=None) -> Dict[str, str]:
+    async def process_payload(self, payload: List[List[str]], concurrent_limit: int = None, progress_callback=None, size: int = None) -> Dict[str, str]:
         """Process symbols with controlled concurrency using semaphore."""
         from datetime import datetime
-        size = 2000
+        size = size or get_default_size()  # Use provided size or default from env
         
         # Extract symbols from payload
         symbols = []

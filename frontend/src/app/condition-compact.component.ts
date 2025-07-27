@@ -245,7 +245,6 @@ export class ConditionCompactComponent {
     { value: 'low', label: 'Low', hint: 'Lowest price' },
     { value: 'close', label: 'Close', hint: 'Closing price' },
     { value: 'volume', label: 'Volume', hint: 'Trading volume' },
-    { value: 'rsi', label: 'RSI', hint: 'Relative Strength Index' },
     { value: 'supertrend', label: 'SuperTrend', hint: 'Trend indicator' },
     { value: 'bb', label: 'Bollinger Bands', hint: 'Bollinger Bands (upper/middle/lower)' },
     { value: 'pctchg', label: '% Change', hint: 'Percentage change' }
@@ -438,7 +437,7 @@ export class ConditionCompactComponent {
   }
   
   updateIndicatorInfo() {
-    const parameterizedIndicators = ['rsi', 'bb', 'supertrend', 'pctchg'];
+    const parameterizedIndicators = ['bb', 'supertrend', 'pctchg'];
     
     if (parameterizedIndicators.includes(this.condition.field)) {
       this.condition.indicatorType = 'parameterized';
@@ -447,7 +446,6 @@ export class ConditionCompactComponent {
       // Set default params if not already set
       if (!this.condition.indicatorParams) {
         const defaults: { [key: string]: string[] } = {
-          'rsi': ['14'],
           'bb': ['20', '2'],
           'supertrend': ['10', '3'],
           'pctchg': ['1']
@@ -462,7 +460,7 @@ export class ConditionCompactComponent {
   }
   
   updateValueIndicatorInfo() {
-    const parameterizedIndicators = ['rsi', 'bb', 'supertrend', 'pctchg'];
+    const parameterizedIndicators = ['bb', 'supertrend', 'pctchg'];
     
     if (this.condition.valueField && parameterizedIndicators.includes(this.condition.valueField)) {
       this.condition.valueIndicatorType = 'parameterized';
@@ -471,7 +469,6 @@ export class ConditionCompactComponent {
       // Set default params if not already set
       if (!this.condition.valueIndicatorParams) {
         const defaults: { [key: string]: string[] } = {
-          'rsi': ['14'],
           'bb': ['20', '2'],
           'supertrend': ['10', '3'],
           'pctchg': ['1']
