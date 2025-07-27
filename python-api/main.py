@@ -1774,14 +1774,35 @@ def process_stock_batch_cpu_intensive(stock_batch_data):
                     period = config["period"]
                     
                     if name == "pctchg":
-                        # Calculate percentage change directly (simple calculation)
-                        if idx >= period:
-                            old_price = closes[idx - period]
-                            current_price = closes[idx]
-                            pct_change = ((current_price - old_price) / old_price) * 100 if old_price != 0 else 0
-                            enhanced_candle[indicator_key] = pct_change
-                        else:
-                            enhanced_candle[indicator_key] = 0
+                        # Calculate percentage change based on timeframe
+                        timeframe = config["timeframe"]
+                        if timeframe == "weekly":
+                            # Weekly percentage change: compare current close with close from 5 trading days ago
+                            if idx >= 5:
+                                current_price = closes[idx]
+                                old_price = closes[idx - 5]
+                                pct_change = ((current_price - old_price) / old_price) * 100 if old_price != 0 else 0
+                                enhanced_candle[indicator_key] = pct_change
+                            else:
+                                enhanced_candle[indicator_key] = 0
+                        elif timeframe == "monthly":
+                            # Monthly percentage change: compare current close with close from 19 trading days ago
+                            if idx >= 19:
+                                current_price = closes[idx]
+                                old_price = closes[idx - 19]
+                                pct_change = ((current_price - old_price) / old_price) * 100 if old_price != 0 else 0
+                                enhanced_candle[indicator_key] = pct_change
+                            else:
+                                enhanced_candle[indicator_key] = 0
+                        else:  # daily
+                            # Daily percentage change: compare current close with previous close
+                            if idx >= period:
+                                old_price = closes[idx - period]
+                                current_price = closes[idx]
+                                pct_change = ((current_price - old_price) / old_price) * 100 if old_price != 0 else 0
+                                enhanced_candle[indicator_key] = pct_change
+                            else:
+                                enhanced_candle[indicator_key] = 0
                     elif name == "volume":
                         # Volume doesn't need calculation - it's already available as "volume" key
                         # Skip adding duplicate indicator_key since volume is already present

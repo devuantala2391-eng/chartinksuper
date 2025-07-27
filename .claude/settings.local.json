@@ -74,7 +74,11 @@
       "WebFetch(domain:gist.github.com)",
       "WebFetch(domain:pinewizards.com)",
       "Bash(del analyze_worth.js calculate_supertrend.js detailed_supertrend_analysis.js)",
-      "Bash(pip show:*)"
+      "Bash(pip show:*)",
+      "Bash(if [ -f WORTH_piped.json ])",
+      "Bash(then tail -50 WORTH_piped.json)",
+      "Bash(else echo \"WORTH_piped.json not found\")",
+      "Bash(fi)"
     ],
     "deny": []
   }
