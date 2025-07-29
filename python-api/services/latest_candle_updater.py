@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Any
 import threading
 from services.chartink_service import ChartinkService
 from utils.constants import STOCK_SYMBOLS
+from services.latest_day_precalculator import latest_day_precalculator
 
 logger = logging.getLogger(__name__)
 
@@ -239,8 +240,6 @@ class LatestCandleUpdater:
         logger.info("="*60)
         logger.info(f"✅ Update cycle completed in {duration:.2f} seconds")
         logger.info(f"📊 Results: {updated_count} updated, {unchanged_count} unchanged, {error_count} errors")
-        logger.info(f"⏰ Next update in {self.update_interval} minutes at {(datetime.now() + timedelta(minutes=self.update_interval)).strftime('%H:%M:%S')}")
-        logger.info("="*60)
         
         # Store update stats
         self.last_update_time = datetime.now()
@@ -251,6 +250,53 @@ class LatestCandleUpdater:
             "unchanged": unchanged_count,
             "errors": error_count
         }
+        
+        # Extract symbols that were successfully updated
+        updated_symbols = [
+            symbol for symbol, msg in results.items() 
+            if "Updated successfully" in msg
+        ]
+        
+        logger.info(f"🔍 Candle update summary:")
+        logger.info(f"📊 {len(updated_symbols)} symbols had candle updates")
+        
+        # Always trigger precalculation for ALL stocks after job completes
+        logger.info("="*60)
+        logger.info(f"🔄 Starting precalculated storage update for ALL stocks...")
+        logger.info(f"📋 Processing all {len(STOCK_SYMBOLS)} symbols in precalculatedStorage")
+        
+        precalc_start = datetime.now()
+        
+        try:
+            # Update precalculated storage for ALL symbols (not just updated ones)
+            # This ensures all stocks get their latest indicators calculated
+            precalc_results = await latest_day_precalculator.update_all_latest_precalculated(
+                symbols=STOCK_SYMBOLS  # Process ALL stocks
+            )
+            
+            precalc_end = datetime.now()
+            precalc_duration = (precalc_end - precalc_start).total_seconds()
+            
+            # Count precalc results
+            precalc_success = sum(1 for msg in precalc_results.values() if "Updated" in msg)
+            precalc_errors = sum(1 for msg in precalc_results.values() if "Error" in msg)
+            
+            logger.info(f"✅ Precalculation completed in {precalc_duration:.2f} seconds")
+            logger.info(f"📊 Precalc Results: {precalc_success} successful, {precalc_errors} errors")
+            
+            # Show some sample results for debugging
+            if precalc_results:
+                sample_results = list(precalc_results.items())[:3]
+                for symbol, msg in sample_results:
+                    logger.info(f"   {symbol}: {msg}")
+                        
+        except Exception as e:
+            logger.error(f"❌ Error during precalculation: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+        
+        logger.info(f"⏰ Next update in {self.update_interval} minutes at {(datetime.now() + timedelta(minutes=self.update_interval)).strftime('%H:%M:%S')}")
+        logger.info("="*60)
         
         return results
     
