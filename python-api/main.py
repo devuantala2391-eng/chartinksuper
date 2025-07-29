@@ -47,7 +47,7 @@ from pathlib import Path
 import shutil
 import csv
 from io import StringIO
-from datetime import datetime
+from datetime import datetime, timedelta
 import sys
 import time
 import concurrent.futures
@@ -64,6 +64,7 @@ from services.indicator_cache import clear_cache
 from services.data_utils import get_next_day_timestamp, get_day_of_week_name
 from utils.constants import STOCK_SYMBOLS, TOTAL_SYMBOLS
 from services.chartink_service import ChartinkService
+from services.latest_candle_updater import latest_candle_updater
 
 # Simple logging setup
 logging.basicConfig(
@@ -93,6 +94,10 @@ class PrecalculateRequest(BaseModel):
 class RefreshDbRequest(BaseModel):
     symbols: Optional[List[str]] = None
     size: Optional[int] = None  # Optional size parameter
+
+class PeriodicUpdateRequest(BaseModel):
+    interval_minutes: Optional[int] = 2
+    force_run: Optional[bool] = True  # Default to True for testing
 
 # Global progress state
 current_progress = {
@@ -2804,20 +2809,259 @@ async def update_symbols_and_refresh():
         logger.error(f"Update symbols error: {error}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(error)}")
 
+# Latest Candle Update Endpoints
+@app.post("/api/update-latest-candles")
+async def update_latest_candles(symbols: Optional[List[str]] = None):
+    """Update latest candles for specified symbols or all symbols."""
+    try:
+        logger.info("Starting latest candle update via API")
+        
+        if symbols:
+            # Update specific symbols
+            results = await latest_candle_updater.update_all_symbols(symbols)
+            logger.info(f"Updated latest candles for {len(symbols)} symbols")
+        else:
+            # Update all symbols
+            results = await latest_candle_updater.update_all_symbols()
+            logger.info("Updated latest candles for all symbols")
+        
+        # Count statistics
+        updated_count = sum(1 for msg in results.values() if "Updated successfully" in msg)
+        unchanged_count = sum(1 for msg in results.values() if "No update needed" in msg)
+        error_count = sum(1 for msg in results.values() if "Error:" in msg or "Failed" in msg)
+        
+        return {
+            "success": True,
+            "summary": {
+                "total": len(results),
+                "updated": updated_count,
+                "unchanged": unchanged_count,
+                "errors": error_count
+            },
+            "details": results
+        }
+        
+    except Exception as error:
+        logger.error(f"Latest candle update error: {error}")
+        raise HTTPException(status_code=500, detail=f"Latest candle update failed: {str(error)}")
+
+@app.post("/api/start-periodic-updates")
+async def start_periodic_updates(
+    interval_minutes: int = 2,
+    force_run: bool = True,
+    request_body: Optional[PeriodicUpdateRequest] = None
+):
+    """Start periodic latest candle updates every N minutes."""
+    try:
+        # Use values from JSON body if provided, otherwise use query parameters
+        if request_body:
+            if request_body.interval_minutes is not None:
+                interval_minutes = request_body.interval_minutes
+            if request_body.force_run is not None:
+                force_run = request_body.force_run
+        
+        if latest_candle_updater.is_running:
+            return {
+                "success": False,
+                "message": "Periodic updates are already running"
+            }
+        
+        # Use threading to start the periodic updates
+        import threading
+        import asyncio
+        
+        def run_updates():
+            """Run the periodic updates in a separate thread with its own event loop."""
+            try:
+                # Create new event loop for this thread
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+                # Run the periodic updates
+                loop.run_until_complete(latest_candle_updater.start_periodic_updates(interval_minutes, force_run))
+            except Exception as e:
+                logger.error(f"Periodic updates thread error: {e}")
+            finally:
+                loop.close()
+        
+        # Start the updates in a separate daemon thread
+        update_thread = threading.Thread(target=run_updates, daemon=True)
+        update_thread.start()
+        
+        logger.info(f"Started periodic latest candle updates every {interval_minutes} minutes (force_run={force_run})")
+        
+        return {
+            "success": True,
+            "message": f"Periodic updates started (every {interval_minutes} minutes)",
+            "interval_minutes": interval_minutes
+        }
+        
+    except Exception as error:
+        logger.error(f"Failed to start periodic updates: {error}")
+        raise HTTPException(status_code=500, detail=f"Failed to start periodic updates: {str(error)}")
+
+@app.post("/api/stop-periodic-updates")
+async def stop_periodic_updates():
+    """Stop periodic latest candle updates."""
+    try:
+        latest_candle_updater.stop_periodic_updates()
+        
+        return {
+            "success": True,
+            "message": "Periodic updates stopped"
+        }
+        
+    except Exception as error:
+        logger.error(f"Failed to stop periodic updates: {error}")
+        raise HTTPException(status_code=500, detail=f"Failed to stop periodic updates: {str(error)}")
+
+@app.get("/api/periodic-updates-status")
+async def get_periodic_updates_status():
+    """Get the current status of periodic updates."""
+    return {
+        "is_running": latest_candle_updater.is_running,
+        "is_market_hours": latest_candle_updater.is_market_hours(),
+        "force_run": latest_candle_updater.force_run,
+        "update_interval": latest_candle_updater.update_interval,
+        "last_update_time": getattr(latest_candle_updater, 'last_update_time', None),
+        "next_update_time": getattr(latest_candle_updater, 'next_update_time', None)
+    }
+
+# SSE endpoint for real-time scheduler updates
+@app.get("/api/scheduler-updates-stream")
+async def scheduler_updates_stream():
+    """Stream real-time scheduler updates via Server-Sent Events."""
+    async def generate():
+        while True:
+            try:
+                # Get current status
+                now = datetime.now()
+                is_running = latest_candle_updater.is_running
+                is_market_hours = latest_candle_updater.is_market_hours()
+                
+                # Calculate next update time if running
+                next_update_seconds = 0
+                if is_running and hasattr(latest_candle_updater, 'last_update_time'):
+                    last_update = latest_candle_updater.last_update_time
+                    if last_update:
+                        next_update = last_update + timedelta(minutes=latest_candle_updater.update_interval)
+                        next_update_seconds = max(0, (next_update - now).total_seconds())
+                
+                # Create status update
+                status_data = {
+                    "timestamp": now.isoformat(),
+                    "is_running": is_running,
+                    "is_market_hours": is_market_hours,
+                    "force_run": latest_candle_updater.force_run,
+                    "update_interval": latest_candle_updater.update_interval,
+                    "next_update_seconds": int(next_update_seconds),
+                    "last_update_time": latest_candle_updater.last_update_time.isoformat() if hasattr(latest_candle_updater, 'last_update_time') and latest_candle_updater.last_update_time else None,
+                    "update_stats": getattr(latest_candle_updater, 'last_update_stats', None)
+                }
+                
+                yield f"data: {json.dumps(status_data)}\n\n"
+                
+                # Wait 1 second before next update
+                await asyncio.sleep(1)
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"SSE stream error: {e}")
+                await asyncio.sleep(5)
+    
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+# Background timer that logs to console periodically
+import threading
+import time as time_module
+from datetime import datetime, time as datetime_time
+
+def background_timer_thread():
+    """Background thread to display periodic timer updates."""
+    last_log_time = 0
+    auto_start_attempted = False
+    last_update_time = None
+    
+    while True:
+        try:
+            current_time = time_module.time()
+            
+            # Log timer status every 10 seconds for better visibility
+            if current_time - last_log_time >= 10:
+                now = datetime.now()
+                
+                # Check market hours
+                current_time_obj = now.time()
+                is_market_hours = (
+                    now.weekday() < 5 and  # Monday-Friday
+                    datetime_time(9, 15) <= current_time_obj <= datetime_time(15, 30)
+                )
+                
+                # Auto-start scheduler during market hours (once per session)
+                if is_market_hours and not latest_candle_updater.is_running and not auto_start_attempted:
+                    logger.info("🚀 MARKET IS OPEN - Auto-starting periodic candle updates...")
+                    logger.info("💡 Use: POST http://127.0.0.1:8001/api/start-periodic-updates")
+                    auto_start_attempted = True
+                
+                # Calculate next update time (every 2 minutes)
+                seconds_since_start = int(now.timestamp()) % 120  # 2 minutes = 120 seconds
+                seconds_to_next = 120 - seconds_since_start
+                minutes = seconds_to_next // 60
+                seconds = seconds_to_next % 60
+                
+                # Create progress bar
+                progress = (seconds_since_start / 120) * 100
+                bar_length = 15
+                filled = int(bar_length * progress / 100)
+                bar = "█" * filled + "░" * (bar_length - filled)
+                
+                # Status display
+                market_status = "🟢 OPEN" if is_market_hours else "🔴 CLOSED"
+                scheduler_status = "🔄 ACTIVE" if latest_candle_updater.is_running else "⏸️ STOPPED"
+                
+                logger.info(f"📊 LATEST CANDLE TIMER | {now.strftime('%H:%M:%S')} | Market: {market_status} | Scheduler: {scheduler_status}")
+                logger.info(f"⏳ Next Update: {minutes:02d}:{seconds:02d} | Progress: [{bar}] {int(progress)}%")
+                
+                last_log_time = current_time
+            
+            time_module.sleep(1)
+            
+        except Exception as e:
+            logger.error(f"Timer display error: {e}")
+            time_module.sleep(5)
+
 if __name__ == "__main__":
-    print("="*60)
-    print("STARTING CHARTINKSUPER FASTAPI SERVER (SIMPLE MODE)")
-    print("="*60)
-    print(f"Server URL: http://127.0.0.1:8001")
-    print(f"API Docs: http://127.0.0.1:8001/docs")
-    print(f"Health Check: http://127.0.0.1:8001/health")
-    print(f"Refresh DB: POST http://127.0.0.1:8001/refreshdb")
-    print(f"SSE Progress: GET http://127.0.0.1:8001/refreshdb-progress-stream")
-    print(f"CSV Upload SSE: GET http://127.0.0.1:8001/csv-upload-progress-stream")
-    print("="*60)
-    print("Logs will appear below when APIs are called...")
-    print("="*60)
+    print("="*80)
+    print("🚀 STARTING CHARTINKSUPER FASTAPI SERVER")
+    print("="*80)
+    print(f"🌐 Server URL: http://127.0.0.1:8001")
+    print(f"📚 API Docs: http://127.0.0.1:8001/docs")
+    print(f"🔍 Health Check: http://127.0.0.1:8001/health")
+    print(f"🔄 Refresh DB: POST http://127.0.0.1:8001/refreshdb")
+    print(f"📡 SSE Progress: GET http://127.0.0.1:8001/refreshdb-progress-stream")
+    print(f"🕒 Latest Candle Updates: POST http://127.0.0.1:8001/api/start-periodic-updates")
+    print("="*80)
+    print("🎯 LATEST CANDLE UPDATE SERVICE:")
+    print("   • Updates every 2 minutes during market hours (9:15 AM - 3:30 PM)")
+    print("   • Fetches only today's latest candle (size=1) for efficiency")
+    print("   • Timer status will appear in logs every 30 seconds")
+    print("="*80)
+    print("📋 Starting server... Timer logs will appear below:")
+    print("="*80)
     sys.stdout.flush()
+    
+    # Start background timer thread
+    timer_thread = threading.Thread(target=background_timer_thread, daemon=True)
+    timer_thread.start()
     
     # Simple uvicorn run without complex logging
     import uvicorn
@@ -2825,7 +3069,7 @@ if __name__ == "__main__":
         app,  # Use app directly instead of "main:app" 
         host="127.0.0.1",
         port=8001,
-        log_level="critical",  # Suppress uvicorn logs
-        access_log=False,      # Disable access logs (we have our own)
-        reload=False           # Disable reload to avoid watchfiles logs
+        log_level="info",  # Show some logs for better visibility
+        access_log=False,  # Disable access logs (we have our own)
+        reload=False       # Disable reload to avoid watchfiles logs
     )

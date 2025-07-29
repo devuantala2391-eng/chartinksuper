@@ -64,3 +64,8 @@ dist/
 
 # FastAPI/Uvicorn
 .pytest_cache/
+
+
+# Angular
+.angular/
+frontend/.angular/

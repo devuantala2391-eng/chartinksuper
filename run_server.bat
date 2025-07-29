@@ -79,6 +79,8 @@ cd python-api
 echo 🔄 Starting with auto-reload enabled...
 echo 💡 The server will automatically restart when you modify Python files
 echo 🔧 Using uvicorn with --reload flag for development
+echo 🕒 Latest Candle Timer will appear in logs every 30 seconds
+echo 💡 To start periodic updates: POST http://127.0.0.1:8001/api/start-periodic-updates
 python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload --log-level info
 
 :end
