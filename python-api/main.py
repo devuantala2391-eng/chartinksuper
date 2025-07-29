@@ -58,7 +58,7 @@ import os
 
 from services.query_service import (
     parse_query, find_matching_candles, get_query_examples, 
-    extract_indicators_from_query, process_stocks_with_indicators
+    extract_indicators_from_query, process_stocks_with_indicators, is_historical_query
 )
 from services.indicator_cache import clear_cache
 from services.data_utils import get_next_day_timestamp, get_day_of_week_name
@@ -1164,9 +1164,29 @@ def process_single_stock_latest_safe(stock, parsed_query):
         if not candles:
             return {"success": False, "error": "No candle data available"}
         
-        # OPTIMIZATION: Only process the LATEST candle for latest scan
-        latest_candle = [candles[-1]]  # Last candle only
-        matches = find_matching_candles(latest_candle, parsed_query, stock)
+        # Check if query contains "crossed" conditions that need historical comparison
+        query_has_crossed_conditions = any(
+            condition.get("operator", "") in ["crossed above", "crossed below"]
+            for condition in parsed_query.get("conditions", [])
+        )
+        
+        if query_has_crossed_conditions and len(candles) >= 2:
+            # Pass last two candles for crossed above/below comparisons
+            last_two_candles = candles[-2:]
+            matches = find_matching_candles(last_two_candles, parsed_query, stock)
+            # For latest API, only return matches from the LATEST candle (last one)
+            # Skip this filter for historical queries (e.g., "1 day ago")
+            if not is_historical_query(parsed_query):
+                matches = [match for match in matches 
+                          if match.get("date") == candles[-1].get("timestamp")]
+        else:
+            # OPTIMIZATION: Only process the LATEST candle for latest scan
+            # BUT for historical queries, we need all candles to find the historical match
+            if is_historical_query(parsed_query):
+                matches = find_matching_candles(candles, parsed_query, stock)
+            else:
+                latest_candle = [candles[-1]]  # Last candle only
+                matches = find_matching_candles(latest_candle, parsed_query, stock)
         
         return {"success": True, "matches": matches}
         
@@ -1562,10 +1582,19 @@ def process_latest_scan_batch_parallel(stock_batch, parsed_query_dict, base_path
                             # Pass last two candles for crossed above/below comparisons
                             last_two_candles = candles[-2:]
                             stock_matches = find_matching_candles(last_two_candles, parsed_query_dict, stock)
+                            # For latest API, only return matches from the LATEST candle (last one)
+                            # Skip this filter for historical queries (e.g., "1 day ago")
+                            if not is_historical_query(parsed_query_dict):
+                                stock_matches = [match for match in stock_matches 
+                                               if match.get("date") == candles[-1].get("timestamp")]
                         else:
                             # For non-crossed conditions or insufficient data, use only latest candle
-                            latest_candle = candles[-1]
-                            stock_matches = find_matching_candles([latest_candle], parsed_query_dict, stock)
+                            # BUT for historical queries, we need all candles to find the historical match
+                            if is_historical_query(parsed_query_dict):
+                                stock_matches = find_matching_candles(candles, parsed_query_dict, stock)
+                            else:
+                                latest_candle = candles[-1]
+                                stock_matches = find_matching_candles([latest_candle], parsed_query_dict, stock)
                         matches.extend(stock_matches)
                     else:
                         errors.append({"stock": stock, "error": "No candle data available"})

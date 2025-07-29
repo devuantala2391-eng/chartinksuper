@@ -786,25 +786,59 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     this.groupedResults.clear();
     this.expandedDates.clear();
     
-    matches.forEach(match => {
-      const date = new Date(match.timestamp).toLocaleDateString();
-      if (!this.groupedResults.has(date)) {
-        this.groupedResults.set(date, []);
+    // Debug what we're actually receiving
+    console.log('DEBUG: groupByDate called with', matches.length, 'matches');
+    
+    // First, let's see if all matches have the same timestamp
+    const uniqueTimestamps = new Set();
+    const uniqueDates = new Set();
+    
+    matches.forEach((match, index) => {
+      const timestamp = match.timestamp || match.date;
+      uniqueTimestamps.add(timestamp);
+      
+      // Check both potential date fields
+      if (match.date) uniqueDates.add(match.date);
+      if (match.timestamp) uniqueDates.add(match.timestamp);
+      
+      if (index < 3) {
+        console.log(`Match ${index}:`, {
+          stock: match.stock,
+          date: match.date,
+          timestamp: match.timestamp,
+          effectiveTimestamp: timestamp
+        });
       }
-      this.groupedResults.get(date)?.push(match);
     });
     
-    // Expand the latest date by default
-    const sortedDates = this.getGroupedDates();
-    if (sortedDates.length > 0) {
-      this.expandedDates.add(sortedDates[0]);
+    console.log('Unique timestamps found:', Array.from(uniqueTimestamps));
+    console.log('Unique dates found:', Array.from(uniqueDates));
+    
+    // Force all matches to use the same date (latest date from any match)
+    const timestamps = Array.from(uniqueTimestamps).map(t => Number(t)).sort((a, b) => b - a);
+    const latestTimestamp = timestamps[0];
+    
+    console.log('Using latest timestamp for all matches:', latestTimestamp);
+    
+    if (latestTimestamp) {
+      const utcDate = new Date(latestTimestamp);
+      const dateKey = utcDate.getUTCFullYear() + '-' + 
+                     String(utcDate.getUTCMonth() + 1).padStart(2, '0') + '-' + 
+                     String(utcDate.getUTCDate()).padStart(2, '0');
+      
+      console.log('Single date key:', dateKey);
+      
+      // Group ALL matches under the same date
+      this.groupedResults.set(dateKey, matches);
+      
+      // Expand the date by default
+      this.expandedDates.add(dateKey);
     }
   }
 
   getGroupedDates(): string[] {
-    return Array.from(this.groupedResults.keys()).sort((a, b) => 
-      new Date(b).getTime() - new Date(a).getTime()
-    );
+    // Sort by date string in descending order (newest first)
+    return Array.from(this.groupedResults.keys()).sort((a, b) => b.localeCompare(a));
   }
 
   clearResults() {
