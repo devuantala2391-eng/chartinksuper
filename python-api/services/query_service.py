@@ -6,6 +6,44 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+def find_previous_week_index(candles: List[Dict], current_index: int, weeks_ago: int) -> int:
+    """Find the index of a candle from specified weeks ago using weekend flags."""
+    if weeks_ago <= 0 or current_index < 0:
+        return -1
+    
+    weeks_found = 0
+    
+    # Start from current position and go backwards
+    for i in range(current_index - 1, -1, -1):
+        candle = candles[i]
+        # Check if this candle has weekend flag (Friday)
+        if candle.get('weekend', False):
+            weeks_found += 1
+            if weeks_found == weeks_ago:
+                return i
+    
+    # If we couldn't find enough weeks, return -1
+    return -1
+
+def find_previous_month_index(candles: List[Dict], current_index: int, months_ago: int) -> int:
+    """Find the index of a candle from specified months ago using monthend flags."""
+    if months_ago <= 0 or current_index < 0:
+        return -1
+    
+    months_found = 0
+    
+    # Start from current position and go backwards
+    for i in range(current_index - 1, -1, -1):
+        candle = candles[i]
+        # Check if this candle has monthend flag
+        if candle.get('monthend', False):
+            months_found += 1
+            if months_found == months_ago:
+                return i
+    
+    # If we couldn't find enough months, return -1
+    return -1
+
 def get_day_of_week_name(timestamp_str: str) -> str:
     """Convert timestamp to day of week name."""
     try:
@@ -102,10 +140,13 @@ def parse_right_side_expression(expression: str) -> Dict[str, Any]:
 def is_historical_query(parsed_query):
     """Check if the parsed query contains historical time offset conditions."""
     conditions = parsed_query.get("conditions", [])
-    return any(
-        condition.get("left", {}).get("type") == "time_offset_field" 
-        for condition in conditions
-    )
+    # Check both left and right sides for time offset fields
+    for condition in conditions:
+        left_type = condition.get("left", {}).get("type")
+        right_type = condition.get("right", {}).get("type")
+        if left_type == "time_offset_field" or right_type == "time_offset_field":
+            return True
+    return False
 
 def parse_query(query: str) -> Dict[str, Any]:
     """Parse a query string into structured conditions."""
@@ -121,8 +162,8 @@ def parse_query(query: str) -> Dict[str, Any]:
     # Pattern for time-offset queries on the left side like "1 day ago daily_supertrend_10_2 > 200"
     time_offset_pattern = r'(\d+)\s+(day|week|month)s?\s+ago\s+(\w+(?:\(\d+(?:,\d+)*\))?)\s*([><=!]+)\s*(\w+(?:\(\d+(?:,\d+)*\))?|\d+\.?\d*)'
     
-    # Basic comparison operators
-    basic_pattern = r'(\w+(?:\(\d+(?:,\d+)*\))?)\s*([><=!]+)\s*(\w+(?:\(\d+(?:,\d+)*\))?|\d+\.?\d*)'
+    # Basic comparison operators - updated to handle complex right side expressions
+    basic_pattern = r'(\w+(?:\(\d+(?:,\d+)*\))?)\s*([><=!]+)\s*(.+)'
     
     conditions = []
     logical_operators = []
@@ -187,6 +228,9 @@ def parse_query(query: str) -> Dict[str, Any]:
                         operator = basic_match.group(2)
                         right_field = basic_match.group(3)
                         
+                        # Parse the right side expression (could be number, field, or time-offset)
+                        right_parsed = parse_right_side_expression(right_field)
+                        
                         conditions.append({
                             "left": {
                                 "type": "field" if '_' in left_field else "indicator",
@@ -194,11 +238,7 @@ def parse_query(query: str) -> Dict[str, Any]:
                                 "name": left_field.split('_')[1] if '_' in left_field else left_field.split('(')[0]
                             },
                             "operator": operator,
-                            "right": {
-                                "type": "field" if not right_field.replace('.', '').replace('-', '').isdigit() else "value",
-                                "field": right_field if not right_field.replace('.', '').replace('-', '').isdigit() else None,
-                                "value": float(right_field) if right_field.replace('.', '').replace('-', '').isdigit() else None
-                            }
+                            "right": right_parsed
                         })
     
     return {
@@ -214,7 +254,8 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
         conditions = parsed_query.get("conditions", [])
         logical_operators = parsed_query.get("logicalOperators", [])
         
-        # Check if this is a historical query (has time_offset_field on left side)
+        # Check if this is a historical query (has time_offset_field on left side ONLY)
+        # Right-side time offsets should use the normal evaluation path
         has_left_time_offset = any(
             condition.get("left", {}).get("type") == "time_offset_field" 
             for condition in conditions
@@ -294,9 +335,11 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
                             if offset_unit == "day":
                                 offset_index = i - offset_value
                             elif offset_unit == "week":
-                                offset_index = i - (offset_value * 5)
+                                # For weekly offset, find the Friday from that many weeks ago
+                                offset_index = find_previous_week_index(candles, i, offset_value)
                             elif offset_unit == "month":
-                                offset_index = i - (offset_value * 21)
+                                # For monthly offset, find the monthend from that many months ago
+                                offset_index = find_previous_month_index(candles, i, offset_value)
                             else:
                                 offset_index = -1
                             
@@ -391,12 +434,11 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
                             if offset_unit == "day":
                                 offset_index = i - offset_value
                             elif offset_unit == "week":
-                                # For weekly offset, we need to find data from that many weeks ago
-                                # This is approximate - each week has ~5 trading days
-                                offset_index = i - (offset_value * 5)
+                                # For weekly offset, find the Friday from that many weeks ago
+                                offset_index = find_previous_week_index(candles, i, offset_value)
                             elif offset_unit == "month":
-                                # For monthly offset, approximately 20-22 trading days per month
-                                offset_index = i - (offset_value * 21)
+                                # For monthly offset, find the monthend from that many months ago
+                                offset_index = find_previous_month_index(candles, i, offset_value)
                             else:
                                 offset_index = -1  # Invalid
                             

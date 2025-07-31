@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "response-complete": {
+      "enabled": true,
+      "command": "node \".claude/hooks/task-completion.js\" response-end \"Response completed\"",
+      "description": "Plays notification sound when Claude finishes responding"
+    },
+    "task-complete": {
+      "enabled": true,
+      "command": "node \".claude/hooks/task-completion.js\" task-complete \"All tasks completed!\"",
+      "description": "Plays notification sound when specific tasks are marked complete"
+    },
+    "long-task-complete": {
+      "enabled": true,
+      "command": "powershell -c \"[console]::beep(523,200); [console]::beep(659,200); [console]::beep(784,400); msg '%username%' /TIME:10 'Claude has completed a long-running task!'\"",
+      "description": "Special notification for long-running tasks",
+      "triggerOn": ["response-time > 30s"]
+    }
+  },
+  "notifications": {
+    "sound": true,
+    "visual": true,
+    "pattern": "completion"
+  }
+}

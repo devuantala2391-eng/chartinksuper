@@ -2117,6 +2117,126 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     });
   }
 
+  // Download CSV functionality - client-side generation
+  downloadCSV() {
+    if (!this.results || !this.results.matches || this.results.matches.length === 0) {
+      Swal.fire({
+        icon: 'warning',
+        title: 'No Data',
+        text: 'No results to download',
+        confirmButtonColor: '#3085d6'
+      });
+      return;
+    }
+
+    try {
+      // Generate CSV content from existing data
+      const csvContent = this.generateCSVContent(this.results.matches);
+      
+      // Create blob and download
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const timestamp = new Date().toISOString().replace(/:/g, '-').substring(0, 19);
+      link.href = url;
+      link.download = `stock-scan-results-${timestamp}.csv`;
+      link.click();
+      
+      // Clean up
+      window.URL.revokeObjectURL(url);
+      
+      // Show success message
+      Swal.fire({
+        icon: 'success',
+        title: 'Download Complete',
+        text: `Downloaded ${this.results.matches.length} stocks to CSV`,
+        timer: 2000,
+        showConfirmButton: false
+      });
+    } catch (error) {
+      console.error('CSV generation error:', error);
+      Swal.fire({
+        icon: 'error',
+        title: 'Download Failed',
+        text: 'Failed to generate CSV file',
+        confirmButtonColor: '#dc3545'
+      });
+    }
+  }
+
+  private generateCSVContent(matches: any[]): string {
+    if (!matches || matches.length === 0) {
+      return 'No data available';
+    }
+
+    // Get all unique keys from the matches to create headers
+    const allKeys = new Set<string>();
+    matches.forEach(match => {
+      Object.keys(match).forEach(key => allKeys.add(key));
+    });
+
+    // Define preferred column order
+    const preferredOrder = ['stock', 'day', 'date', 'timestamp', 'close', 'open', 'high', 'low', 'volume'];
+    const otherKeys = Array.from(allKeys).filter(key => !preferredOrder.includes(key)).sort();
+    const orderedKeys = [...preferredOrder.filter(key => allKeys.has(key)), ...otherKeys];
+
+    // Create CSV header
+    const headers = orderedKeys.map(key => this.formatCSVHeader(key)).join(',');
+
+    // Create CSV rows
+    const rows = matches.map(match => {
+      return orderedKeys.map(key => {
+        const value = match[key];
+        if (value == null) return '';
+        
+        // Format the value appropriately
+        const formattedValue = this.formatCSVValue(value);
+        
+        // Escape commas and quotes in CSV
+        if (typeof formattedValue === 'string' && (formattedValue.includes(',') || formattedValue.includes('"') || formattedValue.includes('\n'))) {
+          return `"${formattedValue.replace(/"/g, '""')}"`;
+        }
+        
+        return formattedValue;
+      }).join(',');
+    });
+
+    return [headers, ...rows].join('\n');
+  }
+
+  private formatCSVHeader(key: string): string {
+    // Convert technical keys to readable headers
+    const headerMap: { [key: string]: string } = {
+      'stock': 'Symbol',
+      'day': 'Date',
+      'close': 'Close Price',
+      'open': 'Open Price',
+      'high': 'High Price',
+      'low': 'Low Price',
+      'volume': 'Volume',
+      'timestamp': 'Timestamp'
+    };
+
+    return headerMap[key] || key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+  }
+
+  private formatCSVValue(value: any): string {
+    if (value == null) return '';
+    
+    if (typeof value === 'number') {
+      // Format numbers with appropriate precision
+      if (value > 1000000) {
+        return value.toFixed(0); // Large numbers like volume
+      } else if (value > 100) {
+        return value.toFixed(2); // Prices
+      } else {
+        return value.toFixed(4); // Small numbers like indicators
+      }
+    }
+    
+    return String(value);
+  }
+
   ngOnDestroy() {
     // Clean up EventSource connections
     if (this.csvProgressEventSource) {

@@ -376,6 +376,9 @@
             <span class="scan-type" *ngIf="results.scanType">
               {{ results.scanType === 'latest_day' ? 'Latest Day Scan' : 'Full Backtest' }}
             </span>
+            <button class="btn-download-csv" (click)="downloadCSV()" *ngIf="results.scanType === 'latest_day'">
+              <i class="icon-download"></i> Download CSV
+            </button>
           </div>
         </div>
 

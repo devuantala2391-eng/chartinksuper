@@ -19,7 +19,7 @@ if hasattr(sys.stderr, 'buffer') and sys.stderr.encoding != 'utf-8':
     except:
         pass  # Already wrapped or unavailable
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.encoders import jsonable_encoder
@@ -584,6 +584,98 @@ async def root():
 async def health_check():
     return {"status": "healthy"}
 
+@app.post("/query/export-csv")
+async def export_query_results_csv(request: QueryRequest):
+    """Export query results as CSV for debugging."""
+    import csv
+    from io import StringIO
+    from datetime import datetime
+    
+    try:
+        # Process the query to get results
+        query = request.query
+        stocks = request.stocks
+        
+        if not query:
+            raise HTTPException(status_code=400, detail="Query is required")
+        
+        # Parse and process query (similar to /query/latest)
+        parsed_query = parse_query(query)
+        stock_list = stocks or STOCK_SYMBOLS
+        all_matches = []
+        
+        # Quick scan to get stock symbols only
+        for stock in stock_list:
+            try:
+                precalculated_file = Path(f"../precalculatedStorage/{stock}_piped.json")
+                if precalculated_file.exists():
+                    with open(precalculated_file, 'r') as f:
+                        mapped_data = json.load(f)
+                    candles = mapped_data.get("data", [])
+                    
+                    if candles:
+                        # Check latest candle with all historical data for context
+                        if is_historical_query(parsed_query):
+                            matches = find_matching_candles(candles, parsed_query, stock)
+                            # Filter to only latest day
+                            latest_timestamp = candles[-1].get("timestamp")
+                            matches = [m for m in matches if m.get("date") == latest_timestamp]
+                        else:
+                            latest_candle = candles[-1]
+                            matches = find_matching_candles([latest_candle], parsed_query, stock)
+                        
+                        if matches:
+                            all_matches.append({
+                                "stock": stock,
+                                "monthly_close": candles[-1].get("monthly_close", "N/A"),
+                                "date": datetime.fromtimestamp(candles[-1].get("timestamp", 0) / 1000).strftime("%Y-%m-%d")
+                            })
+            except:
+                continue
+        
+        # Deduplicate
+        seen_stocks = set()
+        unique_matches = []
+        for match in all_matches:
+            if match["stock"] not in seen_stocks:
+                seen_stocks.add(match["stock"])
+                unique_matches.append(match)
+        
+        # Create CSV
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        # Write header
+        writer.writerow(["Sr.", "Stock Symbol", "Monthly Close", "Date", "Query"])
+        
+        # Write data
+        for idx, match in enumerate(unique_matches, 1):
+            writer.writerow([
+                idx,
+                match["stock"],
+                match["monthly_close"],
+                match["date"],
+                query
+            ])
+        
+        # Add summary row
+        writer.writerow([])
+        writer.writerow(["Total Matches:", len(unique_matches)])
+        writer.writerow(["Generated:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+        
+        # Return as CSV file
+        output.seek(0)
+        return Response(
+            content=output.getvalue(),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f"attachment; filename=query_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            }
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"CSV export failed: {str(e)}")
+
 @app.get("/test")
 async def test_endpoint():
     """Test endpoint to verify API is working."""
@@ -799,6 +891,28 @@ async def process_query(request: QueryRequest):
         total_query_time = query_end_time - query_start_time
         print(f"[DEBUG] Query processing completed in {total_query_time:.2f}s | Rate: {len(stock_list) / total_query_time:.1f} stocks/sec")
         
+        # Deduplicate matches - keep only one match per stock-date combination
+        seen_combinations = set()
+        unique_matches = []
+        duplicate_count = 0
+        
+        for match in all_matches:
+            stock_symbol = match.get("stock", "")
+            date = match.get("date", "")
+            combination = f"{stock_symbol}_{date}"
+            
+            if combination not in seen_combinations:
+                seen_combinations.add(combination)
+                unique_matches.append(match)
+            else:
+                duplicate_count += 1
+        
+        if duplicate_count > 0:
+            print(f"[WARNING] Found and removed {duplicate_count} duplicate matches")
+        
+        # Replace all_matches with deduplicated list
+        all_matches = unique_matches
+        
         # Sort matches by date (most recent first)
         all_matches.sort(key=lambda x: int(x["date"]), reverse=True)
         
@@ -1004,6 +1118,25 @@ async def process_latest_query(request: QueryRequest):
         total_scan_time = scan_end_time - scan_start_time
         print(f"[DEBUG] Latest scan completed in {total_scan_time:.2f}s | Rate: {len(stock_list) / total_scan_time:.1f} stocks/sec")
         
+        # Deduplicate matches - keep only one match per stock
+        seen_stocks = set()
+        unique_matches = []
+        duplicate_count = 0
+        
+        for match in all_matches:
+            stock_symbol = match.get("stock", "")
+            if stock_symbol not in seen_stocks:
+                seen_stocks.add(stock_symbol)
+                unique_matches.append(match)
+            else:
+                duplicate_count += 1
+        
+        if duplicate_count > 0:
+            print(f"[WARNING] Found and removed {duplicate_count} duplicate matches")
+        
+        # Replace all_matches with deduplicated list
+        all_matches = unique_matches
+        
         # Sort matches by stock symbol for consistency  
         all_matches.sort(key=lambda x: x.get("stock", ""))
         
@@ -1184,6 +1317,10 @@ def process_single_stock_latest_safe(stock, parsed_query):
             # BUT for historical queries, we need all candles to find the historical match
             if is_historical_query(parsed_query):
                 matches = find_matching_candles(candles, parsed_query, stock)
+                # Filter to only keep matches from the latest candle
+                latest_timestamp = candles[-1].get("timestamp")
+                matches = [match for match in matches 
+                          if match.get("date") == latest_timestamp]
             else:
                 latest_candle = [candles[-1]]  # Last candle only
                 matches = find_matching_candles(latest_candle, parsed_query, stock)
@@ -1588,11 +1725,17 @@ def process_latest_scan_batch_parallel(stock_batch, parsed_query_dict, base_path
                                 stock_matches = [match for match in stock_matches 
                                                if match.get("date") == candles[-1].get("timestamp")]
                         else:
-                            # For non-crossed conditions or insufficient data, use only latest candle
-                            # BUT for historical queries, we need all candles to find the historical match
+                            # For non-crossed conditions or insufficient data
                             if is_historical_query(parsed_query_dict):
+                                # For historical queries, we need enough candles to find the historical reference
+                                # Pass all candles but only keep matches from the latest day
                                 stock_matches = find_matching_candles(candles, parsed_query_dict, stock)
+                                # Filter to only latest candle matches
+                                latest_timestamp = candles[-1].get("timestamp")
+                                stock_matches = [match for match in stock_matches 
+                                               if match.get("date") == latest_timestamp]
                             else:
+                                # For non-historical queries, only check the latest candle
                                 latest_candle = candles[-1]
                                 stock_matches = find_matching_candles([latest_candle], parsed_query_dict, stock)
                         matches.extend(stock_matches)
@@ -1778,10 +1921,34 @@ def process_stock_batch_cpu_intensive(stock_batch_data):
                 weekly_candle = weekly_ohlcv.get(week_key, {})
                 monthly_candle = monthly_ohlcv.get(month_key, {})
                 
+                # Determine weekend flag
+                day_of_week = get_day_of_week_name(timestamp)
+                
+                # Determine monthend flag - check if next candle is in a different month
+                is_monthend = False
+                if idx < len(stock_data) - 1:
+                    # Check if next candle is in a different month
+                    next_timestamp = stock_data[idx + 1].get("timestamp", 0)
+                    current_month = datetime.fromtimestamp(timestamp / 1000).month
+                    next_month = datetime.fromtimestamp(next_timestamp / 1000).month
+                    current_year = datetime.fromtimestamp(timestamp / 1000).year
+                    next_year = datetime.fromtimestamp(next_timestamp / 1000).year
+                    
+                    if next_month != current_month or next_year != current_year:
+                        is_monthend = True
+                else:
+                    # Last candle in dataset - check if it's the last trading day we have for this month
+                    # by checking if there are any subsequent dates in the current month
+                    current_month = datetime.fromtimestamp(timestamp / 1000).month
+                    current_year = datetime.fromtimestamp(timestamp / 1000).year
+                    # We'll mark it as monthend if it's the last candle and likely the last trading day
+                    # This is a conservative approach - you may want to refine this logic
+                    is_monthend = True
+                
                 enhanced_candle = {
                     "timestamp": timestamp,
                     "date": timestamp,
-                    "dayOfWeek": get_day_of_week_name(timestamp),
+                    "dayOfWeek": day_of_week,
                     "open": candle.get("open"),
                     "high": candle.get("high"),
                     "low": candle.get("low"),
@@ -1800,6 +1967,14 @@ def process_stock_batch_cpu_intensive(stock_batch_data):
                     "monthly_close": monthly_candle.get("close"),
                     "monthly_volume": monthly_candle.get("volume")
                 }
+                
+                # Add weekend flag only if it's Friday
+                if day_of_week == "Friday":
+                    enhanced_candle["weekend"] = True
+                
+                # Add monthend flag only if it's the last trading day of the month
+                if is_monthend:
+                    enhanced_candle["monthend"] = True
                 
                 # Map pre-calculated indicator values
                 for config in indicator_configs:

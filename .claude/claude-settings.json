@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -ExecutionPolicy Bypass -File \"D:\\chartinksuper\\completion_notification.ps1\""
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -c \"[console]::beep(1000,200); [console]::beep(1200,200)\""
+          }
+        ]
+      }
+    ]
+  }
+}
