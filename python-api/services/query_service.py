@@ -271,124 +271,116 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
         )
         
         if has_left_time_offset:
-            # For historical queries, we only evaluate the specific historical candle
-            # Find the offset from the most recent candle
-            max_offset = 0
-            offset_unit = "day"
+            # For time-offset queries like "1 day ago volume > 10000", 
+            # we evaluate the condition on the historical data but return the current/latest candle as match
             
-            for condition in conditions:
-                left = condition.get("left", {})
-                if left.get("type") == "time_offset_field":
-                    offset_val = left.get("offset_value", 0)
-                    offset_unit = left.get("offset_unit", "day")
-                    
-                    # Convert to days for comparison
-                    if offset_unit == "week":
-                        offset_val *= 5
-                    elif offset_unit == "month":
-                        offset_val *= 21
-                    
-                    max_offset = max(max_offset, offset_val)
-            
-            # Calculate the target index (from the end of the candles array)
-            target_index = len(candles) - 1 - max_offset
-            
-            if target_index >= 0 and target_index < len(candles):
-                # Evaluate only the target historical candle
-                candle = candles[target_index]
-                i = target_index
+            # Find the most recent candle (current day)
+            if not candles:
+                return matches
                 
-                # Process this single candle
-                try:
-                    results = []
+            current_candle = candles[-1]  # Latest candle (today)
+            i = len(candles) - 1  # Index of current candle
+                
+            # Process the current candle but evaluate conditions on historical data
+            try:
+                results = []
+                
+                # Evaluate each condition
+                for condition in conditions:
+                    left = condition["left"]
+                    operator = condition["operator"]
+                    right = condition["right"]
                     
-                    # Evaluate each condition
-                    for condition in conditions:
-                        left = condition["left"]
-                        operator = condition["operator"]
-                        right = condition["right"]
+                    # Get left value (for time-offset fields, get from historical candle)
+                    left_value = None
+                    if left["type"] == "time_offset_field":
+                        # Find the historical candle based on offset
+                        offset_val = left.get("offset_value", 0)
+                        offset_unit = left.get("offset_unit", "day")
+                        field_name = left["field"]
                         
-                        # Get left value (modified logic for historical queries)
-                        left_value = None
-                        if left["type"] == "time_offset_field":
-                            # For historical queries, the offset is already handled by target_index
-                            field_name = left["field"]
-                            raw_left_value = candle.get(field_name)
+                        # Calculate target index for historical candle
+                        # For trading days: 1 day ago = 1 candle ago (simple array offset)
+                        historical_index = i - offset_val
+                        
+                        if historical_index >= 0 and historical_index < len(candles):
+                            historical_candle = candles[historical_index]
+                            raw_left_value = historical_candle.get(field_name)
                             if raw_left_value is not None:
                                 left_value = float(raw_left_value)
-                        else:
-                            # Handle normal field/indicator types
-                            if left["type"] == "field":
-                                raw_left_value = candle.get(left["field"])
-                                if raw_left_value is not None:
-                                    left_value = float(raw_left_value)
-                            elif left["type"] == "indicator":
-                                raw_left_value = candle.get(left["name"])
-                                if raw_left_value is not None:
-                                    left_value = float(raw_left_value)
+                    else:
+                        # Handle normal field/indicator types on current candle
+                        if left["type"] == "field":
+                            raw_left_value = current_candle.get(left["field"])
+                            if raw_left_value is not None:
+                                left_value = float(raw_left_value)
+                        elif left["type"] == "indicator":
+                            raw_left_value = current_candle.get(left["name"])
+                            if raw_left_value is not None:
+                                left_value = float(raw_left_value)
                         
-                        # Get right value (same logic as before)
-                        right_value = None
-                        if right["type"] == "value":
-                            right_value = right["value"]
-                        elif right["type"] == "field":
-                            raw_right_value = candle.get(right["field"])
+                    # Get right value
+                    right_value = None
+                    if right["type"] == "value":
+                        right_value = right["value"]
+                    elif right["type"] == "field":
+                        raw_right_value = current_candle.get(right["field"])
+                        if raw_right_value is not None:
+                            right_value = float(raw_right_value)
+                    elif right["type"] == "time_offset_field":
+                        # Handle right-side time offsets
+                        offset_value = right["offset_value"]
+                        offset_unit = right["offset_unit"]
+                        field_name = right["field"]
+                        
+                        if offset_unit == "day":
+                            offset_index = i - offset_value
+                        elif offset_unit == "week":
+                            # For weekly offset, find the Friday from that many weeks ago
+                            offset_index = find_previous_week_index(candles, i, offset_value)
+                        elif offset_unit == "month":
+                            # For monthly offset, find the monthend from that many months ago
+                            offset_index = find_previous_month_index(candles, i, offset_value)
+                        else:
+                            offset_index = -1
+                        
+                        if offset_index >= 0 and offset_index < len(candles):
+                            historical_candle = candles[offset_index]
+                            raw_right_value = historical_candle.get(field_name)
                             if raw_right_value is not None:
                                 right_value = float(raw_right_value)
-                        elif right["type"] == "time_offset_field":
-                            # Handle right-side time offsets
-                            offset_value = right["offset_value"]
-                            offset_unit = right["offset_unit"]
-                            field_name = right["field"]
-                            
-                            if offset_unit == "day":
-                                offset_index = i - offset_value
-                            elif offset_unit == "week":
-                                # For weekly offset, find the Friday from that many weeks ago
-                                offset_index = find_previous_week_index(candles, i, offset_value)
-                            elif offset_unit == "month":
-                                # For monthly offset, find the monthend from that many months ago
-                                offset_index = find_previous_month_index(candles, i, offset_value)
-                            else:
-                                offset_index = -1
-                            
-                            if offset_index >= 0 and offset_index < len(candles):
-                                historical_candle = candles[offset_index]
-                                raw_right_value = historical_candle.get(field_name)
-                                if raw_right_value is not None:
-                                    right_value = float(raw_right_value)
-                        
-                        # Evaluate condition
-                        if left_value is not None and right_value is not None:
-                            if operator == ">":
-                                results.append(left_value > right_value)
-                            elif operator == "<":
-                                results.append(left_value < right_value)
-                            elif operator == ">=":
-                                results.append(left_value >= right_value)
-                            elif operator == "<=":
-                                results.append(left_value <= right_value)
-                            elif operator == "==":
-                                results.append(left_value == right_value)
-                            elif operator == "!=":
-                                results.append(left_value != right_value)
-                            else:
-                                results.append(False)
+                    
+                    # Evaluate condition (moved out of time_offset_field block)
+                    if left_value is not None and right_value is not None:
+                        if operator == ">":
+                            results.append(left_value > right_value)
+                        elif operator == "<":
+                            results.append(left_value < right_value)
+                        elif operator == ">=":
+                            results.append(left_value >= right_value)
+                        elif operator == "<=":
+                            results.append(left_value <= right_value)
+                        elif operator == "==":
+                            results.append(left_value == right_value)
+                        elif operator == "!=":
+                            results.append(left_value != right_value)
                         else:
                             results.append(False)
+                    else:
+                        results.append(False)
                     
-                    # Apply logical operators (simplified AND logic for now)
-                    if all(results):
-                        matches.append({
-                            "stock": stock,
-                            "date": candle.get("timestamp", ""),
-                            "dayOfWeek": get_day_of_week_name(candle.get("timestamp", "")),
-                            "data": candle
-                        })
+                # Apply logical operators (simplified AND logic for now)
+                if all(results):
+                    matches.append({
+                        "stock": stock,
+                        "date": current_candle.get("timestamp", ""),
+                        "dayOfWeek": get_day_of_week_name(current_candle.get("timestamp", "")),
+                        "data": current_candle
+                    })
                 
-                except Exception as e:
-                    # Skip this candle if evaluation fails
-                    pass
+            except Exception as e:
+                # Skip this candle if evaluation fails
+                pass
         else:
             # Original logic for non-historical queries
             for i, candle in enumerate(candles):
