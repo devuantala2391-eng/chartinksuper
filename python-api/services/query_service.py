@@ -187,10 +187,13 @@ def parse_query(query: str) -> Dict[str, Any]:
                 # Parse the right side expression (could be number, field, or time-offset)
                 right_parsed = parse_right_side_expression(right_field)
                 
+                # Resolve field name for left side
+                resolved_left_field = resolve_field_name(left_field)
+                
                 conditions.append({
                     "left": {
                         "type": "field" if '_' in left_field else "indicator",
-                        "field": left_field,
+                        "field": resolved_left_field,  # Use resolved field name
                         "name": left_field.split('_')[1] if '_' in left_field else left_field.split('(')[0]
                     },
                     "operator": operator,
@@ -209,10 +212,13 @@ def parse_query(query: str) -> Dict[str, Any]:
                     # Parse the right side
                     right_parsed = parse_right_side_expression(right_field)
                     
+                    # Resolve field name for left side
+                    resolved_left_field = resolve_field_name(left_field)
+                    
                     conditions.append({
                         "left": {
                             "type": "time_offset_field",
-                            "field": left_field,
+                            "field": resolved_left_field,  # Use resolved field name
                             "name": left_field.split('_')[1] if '_' in left_field else left_field.split('(')[0],
                             "offset_value": offset_value,
                             "offset_unit": offset_unit
@@ -231,10 +237,13 @@ def parse_query(query: str) -> Dict[str, Any]:
                         # Parse the right side expression (could be number, field, or time-offset)
                         right_parsed = parse_right_side_expression(right_field)
                         
+                        # Resolve field name for left side
+                        resolved_left_field = resolve_field_name(left_field)
+                        
                         conditions.append({
                             "left": {
                                 "type": "field" if '_' in left_field else "indicator",
-                                "field": left_field,
+                                "field": resolved_left_field,  # Use resolved field name
                                 "name": left_field.split('_')[1] if '_' in left_field else left_field.split('(')[0]
                             },
                             "operator": operator,

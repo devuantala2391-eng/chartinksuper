@@ -47,7 +47,7 @@ from pathlib import Path
 import shutil
 import csv
 from io import StringIO
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import sys
 import time
 import concurrent.futures
@@ -1926,24 +1926,39 @@ def process_stock_batch_cpu_intensive(stock_batch_data):
                 
                 # Determine monthend flag - check if next candle is in a different month
                 is_monthend = False
+                # Use IST timezone (UTC+5:30) for Indian stock market data
+                ist_offset = timezone(timedelta(hours=5, minutes=30))
+                
                 if idx < len(stock_data) - 1:
                     # Check if next candle is in a different month
                     next_timestamp = stock_data[idx + 1].get("timestamp", 0)
-                    current_month = datetime.fromtimestamp(timestamp / 1000).month
-                    next_month = datetime.fromtimestamp(next_timestamp / 1000).month
-                    current_year = datetime.fromtimestamp(timestamp / 1000).year
-                    next_year = datetime.fromtimestamp(next_timestamp / 1000).year
+                    current_date = datetime.fromtimestamp(timestamp / 1000, tz=ist_offset)
+                    next_date = datetime.fromtimestamp(next_timestamp / 1000, tz=ist_offset)
                     
-                    if next_month != current_month or next_year != current_year:
+                    if next_date.month != current_date.month or next_date.year != current_date.year:
                         is_monthend = True
                 else:
-                    # Last candle in dataset - check if it's the last trading day we have for this month
-                    # by checking if there are any subsequent dates in the current month
-                    current_month = datetime.fromtimestamp(timestamp / 1000).month
-                    current_year = datetime.fromtimestamp(timestamp / 1000).year
-                    # We'll mark it as monthend if it's the last candle and likely the last trading day
-                    # This is a conservative approach - you may want to refine this logic
-                    is_monthend = True
+                    # Last candle in dataset - only mark as monthend if it's actually the last day of the month
+                    current_date = datetime.fromtimestamp(timestamp / 1000, tz=ist_offset)
+                    # Get the last day of the current month
+                    if current_date.month == 12:
+                        last_day_of_month = current_date.replace(day=31)
+                    else:
+                        # Get first day of next month and subtract one day
+                        next_month = current_date.replace(month=current_date.month + 1, day=1)
+                        last_day_of_month = next_month - timedelta(days=1)
+                    
+                    # Only mark as monthend if current date is the last day of the month
+                    # or if it's a Friday and the last day is Saturday/Sunday
+                    if current_date.date() == last_day_of_month.date():
+                        is_monthend = True
+                    elif current_date.weekday() == 4:  # Friday
+                        # Check if last day of month is Saturday (5) or Sunday (6)
+                        if last_day_of_month.weekday() in [5, 6]:
+                            # Check if current Friday is the last Friday of the month
+                            days_until_month_end = (last_day_of_month.date() - current_date.date()).days
+                            if days_until_month_end <= 2:  # Friday before weekend month end
+                                is_monthend = True
                 
                 enhanced_candle = {
                     "timestamp": timestamp,
