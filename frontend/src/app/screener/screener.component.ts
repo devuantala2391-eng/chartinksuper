@@ -1711,7 +1711,41 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       if (error.status === 400) {
         const errorMessage = error.error?.error || error.error?.message || '';
         
-        // Check if it's a missing indicator error
+        // Check if it's a field validation error (new validation system)
+        if (errorMessage === 'Field validation failed' || 
+            error.error?.details?.includes('Missing fields in precalculated data')) {
+          const missingFields = error.error?.missing_fields || [];
+          const availableFields = error.error?.available_fields || [];
+          
+          if (missingFields.length > 0) {
+            // Show SweetAlert for missing fields
+            Swal.fire({
+              icon: 'error',
+              title: 'Missing Fields',
+              html: `
+                <div style="text-align: left;">
+                  <p><strong>The following fields are not available in precalculated data:</strong></p>
+                  <ul style="background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 4px; padding: 15px 30px; margin: 10px 0;">
+                    ${missingFields.map((field: string) => `<li style="color: #856404; font-family: monospace;">${field}</li>`).join('')}
+                  </ul>
+                  <details style="margin-top: 15px;">
+                    <summary style="cursor: pointer; color: #6c757d;">Show available fields</summary>
+                    <div style="max-height: 200px; overflow-y: auto; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px; padding: 10px; margin-top: 5px;">
+                      ${availableFields.map((field: string) => `<span style="display: inline-block; background: #e9ecef; padding: 2px 6px; margin: 2px; border-radius: 3px; font-size: 12px; font-family: monospace;">${field}</span>`).join('')}
+                    </div>
+                  </details>
+                  <p style="color: #6c757d; font-style: italic; margin-top: 15px;">${error.error?.hint || 'Please use available fields in your query.'}</p>
+                </div>
+              `,
+              confirmButtonColor: '#dc3545',
+              confirmButtonText: 'OK',
+              width: '600px'
+            });
+            return `Missing fields: ${missingFields.join(', ')}. These fields are not available in precalculated data.`;
+          }
+        }
+        
+        // Check if it's a missing indicator error (legacy system)
         if (errorMessage.includes('Missing required indicators') || 
             errorMessage.includes('not available in precalculated storage')) {
           const missingIndicators = error.error?.missing || [];

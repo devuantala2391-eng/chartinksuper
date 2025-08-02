@@ -58,7 +58,8 @@ import os
 
 from services.query_service import (
     parse_query, find_matching_candles, get_query_examples, 
-    extract_indicators_from_query, process_stocks_with_indicators, is_historical_query
+    extract_indicators_from_query, process_stocks_with_indicators, is_historical_query,
+    validate_query_fields
 )
 from services.indicator_cache import clear_cache
 from services.data_utils import get_next_day_timestamp, get_day_of_week_name
@@ -754,6 +755,21 @@ async def process_query(request: QueryRequest):
                     "error": "Invalid query format",
                     "details": str(error),
                     "hint": 'Example: "rsi(14) > 70 and sma(20) < close"'
+                }
+            )
+        
+        # Validate that all query fields exist in precalculated data
+        validation_result = validate_query_fields(parsed_query)
+        if not validation_result["valid"]:
+            update_progress({"isRunning": False, "phase": "error", "message": validation_result["error"]})
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "Field validation failed",
+                    "details": validation_result["error"],
+                    "missing_fields": validation_result.get("missing_fields", []),
+                    "available_fields": validation_result.get("available_fields", []),
+                    "hint": "Make sure all fields in your query are available in the precalculated data"
                 }
             )
         
@@ -3260,21 +3276,21 @@ def background_timer_thread():
 
 if __name__ == "__main__":
     print("="*80)
-    print("🚀 STARTING CHARTINKSUPER FASTAPI SERVER")
+    print("STARTING CHARTINKSUPER FASTAPI SERVER")
     print("="*80)
-    print(f"🌐 Server URL: http://127.0.0.1:8001")
-    print(f"📚 API Docs: http://127.0.0.1:8001/docs")
-    print(f"🔍 Health Check: http://127.0.0.1:8001/health")
-    print(f"🔄 Refresh DB: POST http://127.0.0.1:8001/refreshdb")
-    print(f"📡 SSE Progress: GET http://127.0.0.1:8001/refreshdb-progress-stream")
-    print(f"🕒 Latest Candle Updates: POST http://127.0.0.1:8001/api/start-periodic-updates")
+    print(f"Server URL: http://127.0.0.1:8001")
+    print(f"API Docs: http://127.0.0.1:8001/docs")
+    print(f"Health Check: http://127.0.0.1:8001/health")
+    print(f"Refresh DB: POST http://127.0.0.1:8001/refreshdb")
+    print(f"SSE Progress: GET http://127.0.0.1:8001/refreshdb-progress-stream")
+    print(f"Latest Candle Updates: POST http://127.0.0.1:8001/api/start-periodic-updates")
     print("="*80)
-    print("🎯 LATEST CANDLE UPDATE SERVICE:")
-    print("   • Updates every 2 minutes during market hours (9:15 AM - 3:30 PM)")
-    print("   • Fetches only today's latest candle (size=1) for efficiency")
-    print("   • Timer status will appear in logs every 30 seconds")
+    print("LATEST CANDLE UPDATE SERVICE:")
+    print("   - Updates every 2 minutes during market hours (9:15 AM - 3:30 PM)")
+    print("   - Fetches only today's latest candle (size=1) for efficiency")
+    print("   - Timer status will appear in logs every 30 seconds")
     print("="*80)
-    print("📋 Starting server... Timer logs will appear below:")
+    print("Starting server... Timer logs will appear below:")
     print("="*80)
     sys.stdout.flush()
     

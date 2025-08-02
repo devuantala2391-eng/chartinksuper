@@ -78,6 +78,7 @@ def resolve_field_name(field_name: str) -> str:
         'daily_high': 'high',
         'daily_low': 'low',
         'daily_volume': 'volume',
+        'daily_pctchg_1': 'daily_pctchg_1',  # Special case - computed on the fly
         
         # Weekly price fields (these exist as-is)
         'weekly_close': 'weekly_close',
@@ -96,6 +97,123 @@ def resolve_field_name(field_name: str) -> str:
     
     # Return mapped name if exists, otherwise return original
     return field_mappings.get(field_name.lower(), field_name)
+
+def get_field_value(candle: Dict[str, Any], field_name: str, candles: List[Dict[str, Any]] = None, candle_index: int = -1) -> Any:
+    """Get field value from candle, computing special fields on the fly if needed."""
+    if field_name == 'daily_pctchg_1':
+        # First, try to get the precalculated value
+        precalculated_value = candle.get('daily_pctchg_1')
+        if precalculated_value is not None:
+            return precalculated_value
+        
+        # If not precalculated, compute daily percentage change on the fly
+        if candles is None or candle_index <= 0:
+            return None
+        
+        current_close = candle.get('close')
+        prev_close = candles[candle_index - 1].get('close')
+        
+        if current_close is not None and prev_close is not None and prev_close != 0:
+            pct_change = ((float(current_close) - float(prev_close)) / float(prev_close)) * 100
+            return pct_change
+        return None
+    else:
+        # Regular field lookup
+        return candle.get(field_name)
+
+def validate_query_fields(parsed_query: Dict[str, Any], sample_stock_path: str = None) -> Dict[str, Any]:
+    """Validate if all fields in the query exist in precalculated data."""
+    import json
+    from pathlib import Path
+    
+    # Get a sample stock file to check field availability
+    if not sample_stock_path:
+        # Try different possible paths
+        possible_dirs = [
+            Path(__file__).parent.parent / "precalculatedStorage",  # From services/ directory
+            Path.cwd().parent / "precalculatedStorage",              # From python-api/ directory
+            Path.cwd() / "precalculatedStorage"                     # If running from parent directory
+        ]
+        
+        precalc_dir = None
+        for dir_path in possible_dirs:
+            if dir_path.exists():
+                precalc_dir = dir_path
+                break
+        
+        if not precalc_dir:
+            return {"valid": False, "error": "Precalculated storage directory not found"}
+            
+        sample_files = list(precalc_dir.glob("*_piped.json"))
+        if not sample_files:
+            return {"valid": False, "error": "No precalculated data found"}
+        sample_stock_path = str(sample_files[0])
+    
+    try:
+        # Load sample data to check available fields
+        with open(sample_stock_path, 'r') as f:
+            sample_data = json.load(f)
+        
+        if not sample_data.get("data") or len(sample_data["data"]) == 0:
+            return {"valid": False, "error": "No candle data found in sample stock"}
+        
+        # Get the latest candle to check available fields
+        latest_candle = sample_data["data"][-1]
+        available_fields = set(latest_candle.keys())
+        
+        # Extract all field names from the parsed query
+        required_fields = set()
+        conditions = parsed_query.get("conditions", [])
+        
+        for condition in conditions:
+            left = condition.get("left", {})
+            right = condition.get("right", {})
+            
+            # Check left side field
+            if left.get("type") in ["field", "indicator"]:
+                field_name = left.get("field", "")
+                if field_name:
+                    # Resolve field name using existing mapping
+                    resolved_name = resolve_field_name(field_name)
+                    required_fields.add(resolved_name)
+            
+            # Check right side field (for field references)
+            if right.get("type") == "field":
+                field_name = right.get("field", "")
+                if field_name:
+                    resolved_name = resolve_field_name(field_name)
+                    required_fields.add(resolved_name)
+            
+            # Check time offset fields
+            if left.get("type") == "time_offset_field":
+                field_name = left.get("field", "")
+                if field_name:
+                    resolved_name = resolve_field_name(field_name)
+                    required_fields.add(resolved_name)
+            
+            if right.get("type") == "time_offset_field":
+                field_name = right.get("field", "")
+                if field_name:
+                    resolved_name = resolve_field_name(field_name)
+                    required_fields.add(resolved_name)
+        
+        # Check for missing fields, but allow computed fields
+        computed_fields = {'daily_pctchg_1'}  # Fields that can be computed on the fly
+        available_fields_plus_computed = available_fields | computed_fields
+        missing_fields = required_fields - available_fields_plus_computed
+        
+        if missing_fields:
+            return {
+                "valid": False,
+                "error": f"Missing fields in precalculated data: {', '.join(sorted(missing_fields))}",
+                "missing_fields": list(missing_fields),
+                "available_fields": sorted(list(available_fields_plus_computed))
+            }
+        
+        return {"valid": True, "required_fields": list(required_fields)}
+        
+    except Exception as e:
+        return {"valid": False, "error": f"Validation error: {str(e)}"}
 
 def parse_right_side_expression(expression: str) -> Dict[str, Any]:
     """Parse the right side of a condition which could be a number, field, or time-offset expression."""
@@ -305,13 +423,13 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
                         
                         if historical_index >= 0 and historical_index < len(candles):
                             historical_candle = candles[historical_index]
-                            raw_left_value = historical_candle.get(field_name)
+                            raw_left_value = get_field_value(historical_candle, field_name, candles, historical_index)
                             if raw_left_value is not None:
                                 left_value = float(raw_left_value)
                     else:
                         # Handle normal field/indicator types on current candle
                         if left["type"] == "field":
-                            raw_left_value = current_candle.get(left["field"])
+                            raw_left_value = get_field_value(current_candle, left["field"], candles, i)
                             if raw_left_value is not None:
                                 left_value = float(raw_left_value)
                         elif left["type"] == "indicator":
@@ -324,7 +442,7 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
                     if right["type"] == "value":
                         right_value = right["value"]
                     elif right["type"] == "field":
-                        raw_right_value = current_candle.get(right["field"])
+                        raw_right_value = get_field_value(current_candle, right["field"], candles, i)
                         if raw_right_value is not None:
                             right_value = float(raw_right_value)
                     elif right["type"] == "time_offset_field":
@@ -398,7 +516,7 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
                         left_field_name = None
                         if left["type"] == "field":
                             left_field_name = left["field"]
-                            raw_left_value = candle.get(left_field_name)
+                            raw_left_value = get_field_value(candle, left_field_name, candles, i)
                             # Skip if indicator value is None (insufficient data)
                             if raw_left_value is None:
                                 left_value = None
@@ -419,7 +537,7 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
                         if right["type"] == "value":
                             right_value = right["value"]
                         elif right["type"] == "field":
-                            raw_right_value = candle.get(right["field"])
+                            raw_right_value = get_field_value(candle, right["field"], candles, i)
                             # Skip if indicator value is None (insufficient data)
                             if raw_right_value is None:
                                 right_value = None
@@ -446,7 +564,7 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
                             # Check if the offset index is valid and get the historical value
                             if offset_index >= 0 and offset_index < len(candles):
                                 historical_candle = candles[offset_index]
-                                raw_right_value = historical_candle.get(field_name)
+                                raw_right_value = get_field_value(historical_candle, field_name, candles, offset_index)
                                 if raw_right_value is None:
                                     right_value = None
                                 else:
@@ -461,7 +579,7 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
                                 result = False
                                 if i > 0 and left_field_name:  # Need previous candle for comparison
                                     prev_candle = candles[i-1]
-                                    prev_raw_value = prev_candle.get(left_field_name)
+                                    prev_raw_value = get_field_value(prev_candle, left_field_name, candles, i-1)
                                     # Skip if previous value is None (insufficient data)
                                     if prev_raw_value is not None:
                                         prev_left_value = float(prev_raw_value)
@@ -472,7 +590,7 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
                                 result = False
                                 if i > 0 and left_field_name:  # Need previous candle for comparison
                                     prev_candle = candles[i-1]
-                                    prev_raw_value = prev_candle.get(left_field_name)
+                                    prev_raw_value = get_field_value(prev_candle, left_field_name, candles, i-1)
                                     # Skip if previous value is None (insufficient data)
                                     if prev_raw_value is not None:
                                         prev_left_value = float(prev_raw_value)
