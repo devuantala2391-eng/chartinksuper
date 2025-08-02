@@ -2878,36 +2878,53 @@ async def process_csv_symbols_in_background(extracted_symbols: List[str], size: 
             "percentage": 95
         })
         
-        # Get default indicators for precalculation
-        default_indicators = [
-            {
-                "timeframe": "daily",
-                "name": "sma",
-                "params": {"length": 20}
-            },
-            {
-                "timeframe": "daily", 
-                "name": "ema",
-                "params": {"length": 20}
-            },
-            {
-                "timeframe": "daily",
-                "name": "rsi",
-                "params": {"length": 14}
-            },
-            {
-                "timeframe": "daily",
-                "name": "volume",
-                "params": {}
-            }
-        ]
+        # Get indicators from saved configuration or use defaults
+        indicators_to_use = []
+        precalc_file = Path("precalculatedIndicators.json")
+        
+        if precalc_file.exists():
+            try:
+                with open(precalc_file, 'r') as f:
+                    saved_config = json.load(f)
+                indicators_to_use = saved_config.get("indicators", [])
+                print(f"\n4. Loading saved indicator configuration...")
+                print(f"   Found {len(indicators_to_use)} indicators from saved configuration")
+            except Exception as e:
+                print(f"   Error loading saved configuration: {e}")
+                indicators_to_use = []
+        
+        # Only use defaults if no saved configuration exists
+        if not indicators_to_use:
+            print(f"   No saved configuration found, using defaults...")
+            indicators_to_use = [
+                {
+                    "timeframe": "daily",
+                    "name": "sma",
+                    "params": {"length": 20}
+                },
+                {
+                    "timeframe": "daily", 
+                    "name": "ema",
+                    "params": {"length": 20}
+                },
+                {
+                    "timeframe": "daily",
+                    "name": "rsi",
+                    "params": {"length": 14}
+                },
+                {
+                    "timeframe": "daily",
+                    "name": "volume",
+                    "params": {}
+                }
+            ]
         
         print(f"\n4. Starting precalculated indicators processing...")
-        print(f"   Indicators: {len(default_indicators)}")
+        print(f"   Indicators: {len(indicators_to_use)}")
         print(f"   Using {CPU_COUNT} CPU cores for maximum performance")
         
         # Start high-performance indicator processing
-        await process_indicators_background(default_indicators)
+        await process_indicators_background(indicators_to_use)
         
         # Final completion
         update_progress({

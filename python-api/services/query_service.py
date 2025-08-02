@@ -92,7 +92,17 @@ def resolve_field_name(field_name: str) -> str:
         'monthly_open': 'monthly_open',
         'monthly_high': 'monthly_high',
         'monthly_low': 'monthly_low', 
-        'monthly_volume': 'monthly_volume'
+        'monthly_volume': 'monthly_volume',
+        
+        # Bollinger Band fields - map from query format to actual field names
+        'daily_bb_upper_20_2': 'daily_bb_20_2_upper',
+        'daily_bb_middle_20_2': 'daily_bb_20_2_middle',
+        'daily_bb_lower_20_2': 'daily_bb_20_2_lower',
+        
+        # Add more BB variations if needed
+        'bb_upper_20_2': 'daily_bb_20_2_upper',
+        'bb_middle_20_2': 'daily_bb_20_2_middle',
+        'bb_lower_20_2': 'daily_bb_20_2_lower'
     }
     
     # Return mapped name if exists, otherwise return original
