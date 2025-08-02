@@ -288,7 +288,8 @@ def parse_query(query: str) -> Dict[str, Any]:
     crossed_pattern = r'(\w+(?:\(\d+(?:,\d+)*\))?)\s+(crossed\s+(?:above|below))\s+(.+)'
     
     # Pattern for time-offset queries on the left side like "1 day ago daily_supertrend_10_2 > 200"
-    time_offset_pattern = r'(\d+)\s+(day|week|month)s?\s+ago\s+(\w+(?:\(\d+(?:,\d+)*\))?)\s*([><=!]+)\s*(\w+(?:\(\d+(?:,\d+)*\))?|\d+\.?\d*)'
+    # Updated to handle time offset expressions on both sides
+    time_offset_pattern = r'(\d+)\s+(day|week|month)s?\s+ago\s+(\w+(?:_\w+)*(?:\(\d+(?:,\d+)*\))?)\s*([><=!]+)\s*(.+)'
     
     # Basic comparison operators - updated to handle complex right side expressions
     basic_pattern = r'(\w+(?:\(\d+(?:,\d+)*\))?)\s*([><=!]+)\s*(.+)'
@@ -474,7 +475,7 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
                         
                         if offset_index >= 0 and offset_index < len(candles):
                             historical_candle = candles[offset_index]
-                            raw_right_value = historical_candle.get(field_name)
+                            raw_right_value = get_field_value(historical_candle, field_name, candles, offset_index)
                             if raw_right_value is not None:
                                 right_value = float(raw_right_value)
                     
