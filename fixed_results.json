@@ -1,1 +1,0 @@
-{"success":true,"query":"daily_close crossed above weekly_open","scanType":"latest_day","parsedQuery":{"conditions":[{"left":{"type":"field","field":"close","name":"close"},"operator":"crossed above","right":{"type":"field","field":"weekly_open","value":null}}],"logicalOperators":[]},"requiredIndicators":[],"matches":[],"totalProcessed":0,"totalMatches":0,"errors":[]}

@@ -699,30 +699,108 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
                         if left_value is not None and right_value is not None:
                             if operator == "crossed above":
                                 # For crossed above: current value > threshold AND previous value <= threshold
-                                # IMPORTANT: Use current candle's weekly_open for both comparisons
                                 result = False
-                                if i > 0 and left_field_name:  # Need previous candle for comparison
-                                    prev_candle = candles[i-1]
-                                    prev_raw_value = get_field_value(prev_candle, left_field_name, candles, i-1)
-                                    # Skip if previous value is None (insufficient data)
-                                    if prev_raw_value is not None:
-                                        prev_left_value = float(prev_raw_value)
-                                        # Current above threshold AND previous was at or below threshold
-                                        # Use current candle's right_value (weekly_open) for both comparisons
-                                        result = (left_value > right_value) and (prev_left_value <= right_value)
+                                
+                                # Determine if we need weekly/monthly comparison
+                                is_weekly_field = left_field_name and 'weekly' in left_field_name
+                                is_monthly_field = left_field_name and 'monthly' in left_field_name
+                                
+                                if is_weekly_field:
+                                    # For weekly fields, find the previous week
+                                    prev_week_idx = find_previous_week_index(candles, i, 1)
+                                    if prev_week_idx >= 0:
+                                        prev_candle = candles[prev_week_idx]
+                                        prev_raw_value = get_field_value(prev_candle, left_field_name, candles, prev_week_idx)
+                                        if prev_raw_value is not None:
+                                            prev_left_value = float(prev_raw_value)
+                                            # For weekly comparison, also get the right value from previous week
+                                            if right["type"] == "field" and 'weekly' in right.get("field", ""):
+                                                prev_right_raw = get_field_value(prev_candle, right["field"], candles, prev_week_idx)
+                                                if prev_right_raw is not None:
+                                                    prev_right_value = float(prev_right_raw)
+                                                    # Previous week: left <= right, Current week: left > right
+                                                    result = (left_value > right_value) and (prev_left_value <= prev_right_value)
+                                            else:
+                                                # Static right value
+                                                result = (left_value > right_value) and (prev_left_value <= right_value)
+                                elif is_monthly_field:
+                                    # For monthly fields, find the previous month
+                                    prev_month_idx = find_previous_month_index(candles, i, 1)
+                                    if prev_month_idx >= 0:
+                                        prev_candle = candles[prev_month_idx]
+                                        prev_raw_value = get_field_value(prev_candle, left_field_name, candles, prev_month_idx)
+                                        if prev_raw_value is not None:
+                                            prev_left_value = float(prev_raw_value)
+                                            # For monthly comparison, also get the right value from previous month
+                                            if right["type"] == "field" and 'monthly' in right.get("field", ""):
+                                                prev_right_raw = get_field_value(prev_candle, right["field"], candles, prev_month_idx)
+                                                if prev_right_raw is not None:
+                                                    prev_right_value = float(prev_right_raw)
+                                                    # Previous month: left <= right, Current month: left > right
+                                                    result = (left_value > right_value) and (prev_left_value <= prev_right_value)
+                                            else:
+                                                # Static right value
+                                                result = (left_value > right_value) and (prev_left_value <= right_value)
+                                else:
+                                    # Daily comparison - use previous candle
+                                    if i > 0 and left_field_name:
+                                        prev_candle = candles[i-1]
+                                        prev_raw_value = get_field_value(prev_candle, left_field_name, candles, i-1)
+                                        if prev_raw_value is not None:
+                                            prev_left_value = float(prev_raw_value)
+                                            result = (left_value > right_value) and (prev_left_value <= right_value)
                             elif operator == "crossed below":
                                 # For crossed below: current value < threshold AND previous value >= threshold
-                                # IMPORTANT: Use current candle's weekly_open for both comparisons
                                 result = False
-                                if i > 0 and left_field_name:  # Need previous candle for comparison
-                                    prev_candle = candles[i-1]
-                                    prev_raw_value = get_field_value(prev_candle, left_field_name, candles, i-1)
-                                    # Skip if previous value is None (insufficient data)
-                                    if prev_raw_value is not None:
-                                        prev_left_value = float(prev_raw_value)
-                                        # Current below threshold AND previous was at or above threshold
-                                        # Use current candle's right_value (weekly_open) for both comparisons
-                                        result = (left_value < right_value) and (prev_left_value >= right_value)
+                                
+                                # Determine if we need weekly/monthly comparison
+                                is_weekly_field = left_field_name and 'weekly' in left_field_name
+                                is_monthly_field = left_field_name and 'monthly' in left_field_name
+                                
+                                if is_weekly_field:
+                                    # For weekly fields, find the previous week
+                                    prev_week_idx = find_previous_week_index(candles, i, 1)
+                                    if prev_week_idx >= 0:
+                                        prev_candle = candles[prev_week_idx]
+                                        prev_raw_value = get_field_value(prev_candle, left_field_name, candles, prev_week_idx)
+                                        if prev_raw_value is not None:
+                                            prev_left_value = float(prev_raw_value)
+                                            # For weekly comparison, also get the right value from previous week
+                                            if right["type"] == "field" and 'weekly' in right.get("field", ""):
+                                                prev_right_raw = get_field_value(prev_candle, right["field"], candles, prev_week_idx)
+                                                if prev_right_raw is not None:
+                                                    prev_right_value = float(prev_right_raw)
+                                                    # Previous week: left >= right, Current week: left < right
+                                                    result = (left_value < right_value) and (prev_left_value >= prev_right_value)
+                                            else:
+                                                # Static right value
+                                                result = (left_value < right_value) and (prev_left_value >= right_value)
+                                elif is_monthly_field:
+                                    # For monthly fields, find the previous month
+                                    prev_month_idx = find_previous_month_index(candles, i, 1)
+                                    if prev_month_idx >= 0:
+                                        prev_candle = candles[prev_month_idx]
+                                        prev_raw_value = get_field_value(prev_candle, left_field_name, candles, prev_month_idx)
+                                        if prev_raw_value is not None:
+                                            prev_left_value = float(prev_raw_value)
+                                            # For monthly comparison, also get the right value from previous month
+                                            if right["type"] == "field" and 'monthly' in right.get("field", ""):
+                                                prev_right_raw = get_field_value(prev_candle, right["field"], candles, prev_month_idx)
+                                                if prev_right_raw is not None:
+                                                    prev_right_value = float(prev_right_raw)
+                                                    # Previous month: left >= right, Current month: left < right
+                                                    result = (left_value < right_value) and (prev_left_value >= prev_right_value)
+                                            else:
+                                                # Static right value
+                                                result = (left_value < right_value) and (prev_left_value >= right_value)
+                                else:
+                                    # Daily comparison - use previous candle
+                                    if i > 0 and left_field_name:
+                                        prev_candle = candles[i-1]
+                                        prev_raw_value = get_field_value(prev_candle, left_field_name, candles, i-1)
+                                        if prev_raw_value is not None:
+                                            prev_left_value = float(prev_raw_value)
+                                            result = (left_value < right_value) and (prev_left_value >= right_value)
                             elif operator == ">":
                                 result = left_value > right_value
                             elif operator == "<":

@@ -1320,9 +1320,31 @@ def process_single_stock_latest_safe(stock, parsed_query):
         )
         
         if query_has_crossed_conditions and len(candles) >= 2:
-            # Pass last two candles for crossed above/below comparisons
-            last_two_candles = candles[-2:]
-            matches = find_matching_candles(last_two_candles, parsed_query, stock)
+            # For crossed conditions, we need more historical data
+            # Check if it's a weekly or monthly crossed condition
+            conditions = parsed_query.get("conditions", [])
+            needs_weekly_data = any(
+                'weekly' in str(cond.get("left", {}).get("field", "")) or 
+                'weekly' in str(cond.get("right", {}).get("field", ""))
+                for cond in conditions
+            )
+            needs_monthly_data = any(
+                'monthly' in str(cond.get("left", {}).get("field", "")) or 
+                'monthly' in str(cond.get("right", {}).get("field", ""))
+                for cond in conditions
+            )
+            
+            if needs_weekly_data:
+                # For weekly crossed conditions, pass at least 10 candles to ensure we have previous week
+                candles_to_pass = candles[-10:] if len(candles) >= 10 else candles
+            elif needs_monthly_data:
+                # For monthly crossed conditions, pass at least 30 candles
+                candles_to_pass = candles[-30:] if len(candles) >= 30 else candles
+            else:
+                # For daily crossed conditions, last 2 candles are enough
+                candles_to_pass = candles[-2:]
+            
+            matches = find_matching_candles(candles_to_pass, parsed_query, stock)
             # For latest API, only return matches from the LATEST candle (last one)
             # Skip this filter for historical queries (e.g., "1 day ago")
             if not is_historical_query(parsed_query):
@@ -1703,9 +1725,50 @@ def process_latest_scan_batch_parallel(stock_batch, parsed_query_dict, base_path
                         )
                         
                         if query_has_crossed_conditions and len(candles) >= 2:
-                            # Pass last two candles for crossed above/below comparisons
-                            last_two_candles = candles[-2:]
-                            stock_matches = find_matching_candles(last_two_candles, parsed_query_dict, stock)
+                            # For crossed conditions, we need more historical data
+                            # Calculate required candles based on time offsets and field types
+                            conditions = parsed_query_dict.get("conditions", [])
+                            max_candles_needed = 10  # Default minimum for crossed conditions
+                            
+                            for cond in conditions:
+                                # Check for weekly/monthly fields
+                                left_field = str(cond.get("left", {}).get("field", ""))
+                                right_field = str(cond.get("right", {}).get("field", ""))
+                                
+                                # Check for time offset expressions
+                                left_side = cond.get("left", {})
+                                right_side = cond.get("right", {})
+                                
+                                # Calculate needed candles based on time offsets
+                                for side in [left_side, right_side]:
+                                    if side.get("type") in ["time_offset_field", "time_offset_field_arithmetic"]:
+                                        offset_value = side.get("offset_value", 1)
+                                        offset_unit = side.get("offset_unit", "day")
+                                        
+                                        if offset_unit == "day":
+                                            candles_for_offset = offset_value + 5  # Add buffer
+                                        elif offset_unit == "week":
+                                            candles_for_offset = (offset_value * 7) + 10  # 7 days per week + buffer
+                                        elif offset_unit == "month":
+                                            candles_for_offset = (offset_value * 25) + 10  # ~25 trading days per month + buffer
+                                        else:
+                                            candles_for_offset = 10
+                                        
+                                        max_candles_needed = max(max_candles_needed, candles_for_offset)
+                                
+                                # Also check for weekly/monthly fields in crossed conditions
+                                if 'weekly' in left_field or 'weekly' in right_field:
+                                    max_candles_needed = max(max_candles_needed, 15)  # Minimum for weekly
+                                elif 'monthly' in left_field or 'monthly' in right_field:
+                                    max_candles_needed = max(max_candles_needed, 35)  # Minimum for monthly
+                            
+                            # Add safety limit to prevent performance issues
+                            max_candles_needed = min(max_candles_needed, 100)  # Maximum 100 candles
+                            
+                            # Ensure we don't request more candles than available
+                            candles_to_pass = candles[-max_candles_needed:] if len(candles) >= max_candles_needed else candles
+                            
+                            stock_matches = find_matching_candles(candles_to_pass, parsed_query_dict, stock)
                             # For latest API, only return matches from the LATEST candle (last one)
                             # Skip this filter for historical queries (e.g., "1 day ago")
                             if not is_historical_query(parsed_query_dict):
