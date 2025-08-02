@@ -576,6 +576,7 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
                         if left_value is not None and right_value is not None:
                             if operator == "crossed above":
                                 # For crossed above: current value > threshold AND previous value <= threshold
+                                # IMPORTANT: Use current candle's weekly_open for both comparisons
                                 result = False
                                 if i > 0 and left_field_name:  # Need previous candle for comparison
                                     prev_candle = candles[i-1]
@@ -584,9 +585,11 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
                                     if prev_raw_value is not None:
                                         prev_left_value = float(prev_raw_value)
                                         # Current above threshold AND previous was at or below threshold
+                                        # Use current candle's right_value (weekly_open) for both comparisons
                                         result = (left_value > right_value) and (prev_left_value <= right_value)
                             elif operator == "crossed below":
                                 # For crossed below: current value < threshold AND previous value >= threshold
+                                # IMPORTANT: Use current candle's weekly_open for both comparisons
                                 result = False
                                 if i > 0 and left_field_name:  # Need previous candle for comparison
                                     prev_candle = candles[i-1]
@@ -595,6 +598,7 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
                                     if prev_raw_value is not None:
                                         prev_left_value = float(prev_raw_value)
                                         # Current below threshold AND previous was at or above threshold
+                                        # Use current candle's right_value (weekly_open) for both comparisons
                                         result = (left_value < right_value) and (prev_left_value >= right_value)
                             elif operator == ">":
                                 result = left_value > right_value
