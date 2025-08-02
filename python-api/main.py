@@ -1522,10 +1522,10 @@ def process_query_batch_parallel(stock_batch, parsed_query_dict, base_path=""):
         if base_path and base_path not in sys.path:
             sys.path.insert(0, base_path)
         
-        # Import the query service function
+        # Import the query service functions
         try:
             # Try to import directly first
-            from services.query_service import find_matching_candles
+            from services.query_service import find_matching_candles, is_historical_query
         except ImportError:
             try:
                 # Try with absolute path
@@ -1533,9 +1533,19 @@ def process_query_batch_parallel(stock_batch, parsed_query_dict, base_path=""):
                 services_path = os.path.join(current_dir, 'services')
                 if services_path not in sys.path:
                     sys.path.insert(0, services_path)
-                from query_service import find_matching_candles
+                from query_service import find_matching_candles, is_historical_query
             except ImportError:
                 # Simple fallback implementation for basic conditions
+                def is_historical_query(parsed_query):
+                    """Check if query contains historical references."""
+                    conditions = parsed_query.get("conditions", [])
+                    for condition in conditions:
+                        left = condition.get("left", {})
+                        right = condition.get("right", {})
+                        if left.get("type") == "time_offset_field" or right.get("type") in ["time_offset_field", "time_offset_field_arithmetic"]:
+                            return True
+                    return False
+                
                 def find_matching_candles(candles, parsed_query, stock):
                     matches = []
                     for candle in candles:
@@ -1644,69 +1654,30 @@ def process_latest_scan_batch_parallel(stock_batch, parsed_query_dict, base_path
         errors = []
         processed = 0
         
-        # Add current directory to path for imports
+        # Add both base path and services path for imports
         if base_path and base_path not in sys.path:
             sys.path.insert(0, base_path)
         
-        # Import the query service function
+        # Also add services path explicitly
+        services_path = os.path.join(base_path, 'services') if base_path else 'services'
+        if services_path not in sys.path:
+            sys.path.insert(0, services_path)
+        
+        # Import the query service functions
         try:
-            # Try to import directly first
-            from services.query_service import find_matching_candles
-        except ImportError:
+            # Try to import with full module path first
+            from services.query_service import find_matching_candles, is_historical_query
+            print(f"[DEBUG] Successfully imported query service functions from services.query_service")
+        except ImportError as e1:
             try:
-                # Try with absolute path
-                current_dir = os.path.dirname(os.path.abspath(__file__))
-                services_path = os.path.join(current_dir, 'services')
-                if services_path not in sys.path:
-                    sys.path.insert(0, services_path)
-                from query_service import find_matching_candles
-            except ImportError:
-                # Simple fallback implementation for basic conditions
-                def find_matching_candles(candles, parsed_query, stock):
-                    matches = []
-                    for candle in candles:
-                        try:
-                            # Simple evaluation for basic conditions
-                            conditions = parsed_query.get("conditions", [])
-                            if not conditions:
-                                continue
-                            
-                            results = []
-                            for condition in conditions:
-                                left = condition["left"]
-                                operator = condition["operator"] 
-                                right = condition["right"]
-                                
-                                # Get values from candle
-                                left_val = candle.get(left.get("value", ""), 0) if left.get("type") == "field" else float(left.get("value", 0))
-                                right_val = candle.get(right.get("value", ""), 0) if right.get("type") == "field" else float(right.get("value", 0))
-                                
-                                # Simple comparison
-                                if operator == ">":
-                                    results.append(left_val > right_val)
-                                elif operator == "<":
-                                    results.append(left_val < right_val)
-                                elif operator == ">=":
-                                    results.append(left_val >= right_val)
-                                elif operator == "<=":
-                                    results.append(left_val <= right_val)
-                                elif operator == "==":
-                                    results.append(left_val == right_val)
-                                else:
-                                    results.append(False)
-                            
-                            # Simple AND logic for now
-                            if all(results):
-                                timestamp = candle.get("timestamp", "")
-                                matches.append({
-                                    "stock": stock,
-                                    "date": timestamp,
-                                    "dayOfWeek": get_day_of_week_name(timestamp),
-                                    "data": candle
-                                })
-                        except:
-                            continue
-                    return matches
+                # Try direct import from query_service
+                from query_service import find_matching_candles, is_historical_query
+                print(f"[DEBUG] Successfully imported query service functions from query_service")
+            except ImportError as e2:
+                print(f"[ERROR] Failed to import query service functions: {e1}, {e2}")
+                print(f"[ERROR] sys.path: {sys.path}")
+                # Re-raise to use the full service, not the fallback
+                raise ImportError(f"Cannot import query service: {e1}, {e2}")
         
         print(f"[DEBUG] Processing latest scan batch of {len(stock_batch)} stocks")
         

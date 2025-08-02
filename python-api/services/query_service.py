@@ -8,13 +8,22 @@ logger = logging.getLogger(__name__)
 
 def find_previous_week_index(candles: List[Dict], current_index: int, weeks_ago: int) -> int:
     """Find the index of a candle from specified weeks ago using weekend flags."""
-    if weeks_ago <= 0 or current_index < 0:
+    if weeks_ago <= 0 or current_index < 0 or current_index >= len(candles):
         return -1
     
     weeks_found = 0
+    current_candle = candles[current_index]
     
-    # Start from current position and go backwards
-    for i in range(current_index - 1, -1, -1):
+    # Check if current candle is Friday (has weekend flag)
+    if current_candle.get('weekend', False):
+        # If current is Friday, skip it for the count
+        start_index = current_index - 1
+    else:
+        # If current is not Friday, include current position in search
+        start_index = current_index
+    
+    # Start from appropriate position and go backwards
+    for i in range(start_index, -1, -1):
         candle = candles[i]
         # Check if this candle has weekend flag (Friday)
         if candle.get('weekend', False):
@@ -27,13 +36,22 @@ def find_previous_week_index(candles: List[Dict], current_index: int, weeks_ago:
 
 def find_previous_month_index(candles: List[Dict], current_index: int, months_ago: int) -> int:
     """Find the index of a candle from specified months ago using monthend flags."""
-    if months_ago <= 0 or current_index < 0:
+    if months_ago <= 0 or current_index < 0 or current_index >= len(candles):
         return -1
     
     months_found = 0
+    current_candle = candles[current_index]
     
-    # Start from current position and go backwards
-    for i in range(current_index - 1, -1, -1):
+    # Check if current candle is month end (has monthend flag)
+    if current_candle.get('monthend', False):
+        # If current is month end, skip it for the count
+        start_index = current_index - 1
+    else:
+        # If current is not month end, include current position in search
+        start_index = current_index
+    
+    # Start from appropriate position and go backwards
+    for i in range(start_index, -1, -1):
         candle = candles[i]
         # Check if this candle has monthend flag
         if candle.get('monthend', False):
@@ -229,7 +247,30 @@ def parse_right_side_expression(expression: str) -> Dict[str, Any]:
     """Parse the right side of a condition which could be a number, field, or time-offset expression."""
     expression = expression.strip()
     
-    # Check if it's a time-offset expression like "1 day ago daily_close"
+    # Check if it's a time-offset expression with arithmetic like "1 day ago weekly_volume * 2"
+    time_offset_arithmetic_pattern = r'(\d+)\s+(day|week|month)s?\s+ago\s+(\w+(?:_\w+)*)\s*\*\s*(\d+(?:\.\d+)?)'
+    time_arithmetic_match = re.match(time_offset_arithmetic_pattern, expression)
+    
+    if time_arithmetic_match:
+        offset_value = int(time_arithmetic_match.group(1))
+        offset_unit = time_arithmetic_match.group(2)
+        field_name = time_arithmetic_match.group(3).strip()
+        multiplier = float(time_arithmetic_match.group(4))
+        
+        # Resolve field name variations
+        resolved_field_name = resolve_field_name(field_name)
+        
+        return {
+            "type": "time_offset_field_arithmetic",
+            "field": resolved_field_name,
+            "offset_value": offset_value,
+            "offset_unit": offset_unit,
+            "operation": "*",
+            "operand": multiplier,
+            "value": None
+        }
+    
+    # Check if it's a simple time-offset expression like "1 day ago daily_close"
     time_offset_pattern = r'(\d+)\s+(day|week|month)s?\s+ago\s+(.+)'
     time_match = re.match(time_offset_pattern, expression)
     
@@ -272,7 +313,7 @@ def is_historical_query(parsed_query):
     for condition in conditions:
         left_type = condition.get("left", {}).get("type")
         right_type = condition.get("right", {}).get("type")
-        if left_type == "time_offset_field" or right_type == "time_offset_field":
+        if left_type == "time_offset_field" or right_type in ["time_offset_field", "time_offset_field_arithmetic"]:
             return True
     return False
 
@@ -478,6 +519,39 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
                             raw_right_value = get_field_value(historical_candle, field_name, candles, offset_index)
                             if raw_right_value is not None:
                                 right_value = float(raw_right_value)
+                    elif right["type"] == "time_offset_field_arithmetic":
+                        # Handle arithmetic operations on time offset fields
+                        offset_value = right["offset_value"]
+                        offset_unit = right["offset_unit"]
+                        field_name = right["field"]
+                        operation = right["operation"]
+                        operand = right["operand"]
+                        
+                        if offset_unit == "day":
+                            offset_index = i - offset_value
+                        elif offset_unit == "week":
+                            # For weekly offset, find the Friday from that many weeks ago
+                            offset_index = find_previous_week_index(candles, i, offset_value)
+                        elif offset_unit == "month":
+                            # For monthly offset, find the monthend from that many months ago
+                            offset_index = find_previous_month_index(candles, i, offset_value)
+                        else:
+                            offset_index = -1
+                        
+                        if offset_index >= 0 and offset_index < len(candles):
+                            historical_candle = candles[offset_index]
+                            raw_right_value = get_field_value(historical_candle, field_name, candles, offset_index)
+                            if raw_right_value is not None:
+                                base_value = float(raw_right_value)
+                                # Apply arithmetic operation
+                                if operation == "*":
+                                    right_value = base_value * operand
+                                else:
+                                    right_value = None
+                            else:
+                                right_value = None
+                        else:
+                            right_value = None
                     
                     # Evaluate condition (moved out of time_offset_field block)
                     if left_value is not None and right_value is not None:
@@ -582,6 +656,44 @@ def find_matching_candles(candles: List[Dict[str, Any]], parsed_query: Dict[str,
                                     right_value = float(raw_right_value)
                             else:
                                 right_value = None  # Not enough historical data
+                        elif right["type"] == "time_offset_field_arithmetic":
+                            # Handle arithmetic operations on time offset fields
+                            offset_value = right["offset_value"]
+                            offset_unit = right["offset_unit"]
+                            field_name = right["field"]
+                            operation = right["operation"]
+                            operand = right["operand"]
+                            
+                            # Calculate the offset index based on unit
+                            if offset_unit == "day":
+                                offset_index = i - offset_value
+                            elif offset_unit == "week":
+                                # For weekly offset, find the Friday from that many weeks ago
+                                offset_index = find_previous_week_index(candles, i, offset_value)
+                            elif offset_unit == "month":
+                                # For monthly offset, find the monthend from that many months ago
+                                offset_index = find_previous_month_index(candles, i, offset_value)
+                            else:
+                                offset_index = -1  # Invalid
+                            
+                            # Check if the offset index is valid and get the historical value
+                            if offset_index >= 0 and offset_index < len(candles):
+                                historical_candle = candles[offset_index]
+                                raw_right_value = get_field_value(historical_candle, field_name, candles, offset_index)
+                                if raw_right_value is not None:
+                                    base_value = float(raw_right_value)
+                                    # Apply arithmetic operation
+                                    if operation == "*":
+                                        right_value = base_value * operand
+                                    else:
+                                        right_value = None
+                                else:
+                                    right_value = None
+                            else:
+                                right_value = None  # Not enough historical data
+                        else:
+                            # Unknown right type
+                            right_value = None
                         
                         # Evaluate condition
                         if left_value is not None and right_value is not None:
