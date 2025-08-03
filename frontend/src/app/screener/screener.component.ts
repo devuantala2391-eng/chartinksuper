@@ -109,6 +109,9 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     { value: 'low', label: 'Low' },
     { value: 'close', label: 'Close' },
     { value: 'volume', label: 'Volume' },
+    { value: 'sma', label: 'Simple Moving Average (SMA)' },
+    { value: 'ema', label: 'Exponential Moving Average (EMA)' },
+    { value: 'rsi', label: 'Relative Strength Index (RSI)' },
     { value: 'supertrend', label: 'SuperTrend' },
     { value: 'bb', label: 'Bollinger Bands' },
     { value: 'pctchg', label: '% Change' }
@@ -116,7 +119,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   
   // Parameterized indicators
   parameterizedIndicators = [
-    'supertrend', 'bb', 'pctchg'
+    'sma', 'ema', 'rsi', 'supertrend', 'bb', 'pctchg'
   ];
   
   // Multi-component indicators - indicators that have multiple output values
@@ -127,6 +130,9 @@ export class ScreenerComponent implements OnInit, OnDestroy {
 
   // Default parameters for indicators
   indicatorDefaults: { [key: string]: string[] } = {
+    'sma': ['20'],
+    'ema': ['12'],
+    'rsi': ['14'],
     'bb': ['20', '2'],
     'supertrend': ['10', '3'],
     'pctchg': ['1']

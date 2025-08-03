@@ -33,8 +33,8 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
   indicators: PrecalculatedIndicator[] = [];
   newIndicator: PrecalculatedIndicator = {
     timeframe: 'daily',
-    name: 'supertrend',
-    params: { period: 10, multiplier: 3 }
+    name: 'sma',
+    params: { period: 20 }
   };
   loading = false;
   error: string | null = null;
@@ -53,6 +53,9 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
   availableIndicators = [
     { value: 'supertrend', label: 'SuperTrend' },
     { value: 'bb', label: 'Bollinger Bands' },
+    { value: 'sma', label: 'Simple Moving Average (SMA)' },
+    { value: 'ema', label: 'Exponential Moving Average (EMA)' },
+    { value: 'rsi', label: 'Relative Strength Index (RSI)' },
     { value: 'pctchg', label: '% Change' },
     { value: 'volume', label: 'Volume' }
   ];
@@ -148,8 +151,8 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
     // Reset form
     this.newIndicator = {
       timeframe: 'daily',
-      name: 'supertrend',
-      params: { period: 10, multiplier: 3 }
+      name: 'sma',
+      params: { period: 20 }
     };
   }
 
@@ -159,8 +162,8 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
       return 'Please select both timeframe and indicator type.';
     }
 
-    // Parameter validation
-    if (indicator.name !== 'volume') {
+    // Parameter validation for indicators that require a period
+    if (!['volume', 'pctchg'].includes(indicator.name)) {
       if (!indicator.params['period'] || indicator.params['period'] < 1) {
         return 'Period must be a positive number.';
       }
@@ -403,6 +406,15 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
         break;
       case 'bb':
         this.newIndicator.params = { period: 20, stdDev: 2 };
+        break;
+      case 'sma':
+        this.newIndicator.params = { period: 20 };
+        break;
+      case 'ema':
+        this.newIndicator.params = { period: 12 };
+        break;
+      case 'rsi':
+        this.newIndicator.params = { period: 14 };
         break;
       case 'pctchg':
         this.newIndicator.params = { period: 1 };
