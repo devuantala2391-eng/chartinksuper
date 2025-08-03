@@ -890,12 +890,15 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     console.log('Using latest timestamp for all matches:', latestTimestamp);
     
     if (latestTimestamp) {
-      const utcDate = new Date(latestTimestamp);
-      const dateKey = utcDate.getUTCFullYear() + '-' + 
-                     String(utcDate.getUTCMonth() + 1).padStart(2, '0') + '-' + 
-                     String(utcDate.getUTCDate()).padStart(2, '0');
+      // Convert UTC timestamp to IST date
+      // The timestamps are stored at 18:30 UTC which represents 00:00 IST of the next day
+      // So we need to add 5.5 hours (19800000 ms) to get the correct IST date
+      const istDate = new Date(latestTimestamp + 19800000); // Add 5.5 hours for IST
+      const dateKey = istDate.getUTCFullYear() + '-' + 
+                     String(istDate.getUTCMonth() + 1).padStart(2, '0') + '-' + 
+                     String(istDate.getUTCDate()).padStart(2, '0');
       
-      console.log('Single date key:', dateKey);
+      console.log('Single date key (IST):', dateKey);
       
       // Group ALL matches under the same date
       this.groupedResults.set(dateKey, matches);
@@ -1178,11 +1181,14 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   }
 
   formatDate(timestamp: string): string {
-    const date = new Date(timestamp);
-    return date.toLocaleDateString('en-IN', {
+    // Convert UTC timestamp to IST
+    // The timestamps are stored at 18:30 UTC which represents 00:00 IST of the next day
+    const istDate = new Date(Number(timestamp) + 19800000); // Add 5.5 hours for IST
+    return istDate.toLocaleDateString('en-IN', {
       day: '2-digit',
       month: 'short',
-      year: 'numeric'
+      year: 'numeric',
+      timeZone: 'UTC' // Use UTC since we already adjusted the timestamp
     });
   }
 
@@ -2294,11 +2300,20 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     // Create CSV rows
     const rows = matches.map(match => {
       return orderedKeys.map(key => {
-        const value = match[key];
+        let value = match[key];
+        
+        // Handle 'day' field which should show the date
+        if (key === 'day' && !value && match['date']) {
+          // Use the date field if day is empty
+          value = match['date'];
+          const formattedValue = this.formatCSVValue(value, 'date');
+          return formattedValue;
+        }
+        
         if (value == null) return '';
         
         // Format the value appropriately
-        const formattedValue = this.formatCSVValue(value);
+        const formattedValue = this.formatCSVValue(value, key);
         
         // Escape commas and quotes in CSV
         if (typeof formattedValue === 'string' && (formattedValue.includes(',') || formattedValue.includes('"') || formattedValue.includes('\n'))) {
@@ -2328,8 +2343,20 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     return headerMap[key] || key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
   }
 
-  private formatCSVValue(value: any): string {
+  private formatCSVValue(value: any, key?: string): string {
     if (value == null) return '';
+    
+    // Handle timestamp conversion to IST date
+    if ((key === 'date' || key === 'timestamp') && typeof value === 'number' && value > 1000000000000) {
+      // Convert timestamp to IST date
+      // Timestamps are stored at 18:30 UTC which is 00:00 IST next day
+      const istDate = new Date(value + 19800000); // Add 5.5 hours (19800000 ms) for IST
+      // Format as YYYY-MM-DD using UTC methods since we already adjusted
+      const year = istDate.getUTCFullYear();
+      const month = String(istDate.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(istDate.getUTCDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
     
     if (typeof value === 'number') {
       // Format numbers with appropriate precision

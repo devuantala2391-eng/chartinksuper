@@ -629,7 +629,9 @@ async def export_query_results_csv(request: QueryRequest):
                             all_matches.append({
                                 "stock": stock,
                                 "monthly_close": candles[-1].get("monthly_close", "N/A"),
-                                "date": datetime.fromtimestamp(candles[-1].get("timestamp", 0) / 1000).strftime("%Y-%m-%d")
+                                # Convert timestamp to IST for correct date display
+                                # Timestamps are stored at 18:30 UTC which is 00:00 IST next day
+                                "date": (datetime.fromtimestamp(candles[-1].get("timestamp", 0) / 1000, tz=timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
                             })
             except:
                 continue
