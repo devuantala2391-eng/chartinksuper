@@ -996,11 +996,17 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     if (this.parameterizedIndicators.includes(condition.field)) {
       condition.indicatorType = 'parameterized';
       condition.indicatorName = condition.field;
-      condition.indicatorParams = [...(this.indicatorDefaults[condition.field] || ['14'])];
+      
+      // Only set default parameters if they don't exist or are empty
+      if (!condition.indicatorParams || condition.indicatorParams.length === 0) {
+        condition.indicatorParams = [...(this.indicatorDefaults[condition.field] || ['14'])];
+      }
       
       // Set default component for multi-component indicators
       if (this.multiComponentIndicators[condition.field]) {
-        condition.indicatorComponent = this.multiComponentIndicators[condition.field][0]; // Default to first component
+        if (!condition.indicatorComponent) {
+          condition.indicatorComponent = this.multiComponentIndicators[condition.field][0]; // Default to first component
+        }
       } else {
         condition.indicatorComponent = undefined;
       }
@@ -1017,11 +1023,17 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     if (condition.valueField && this.parameterizedIndicators.includes(condition.valueField)) {
       condition.valueIndicatorType = 'parameterized';
       condition.valueIndicatorName = condition.valueField;
-      condition.valueIndicatorParams = [...(this.indicatorDefaults[condition.valueField] || ['14'])];
+      
+      // Only set default parameters if they don't exist or are empty
+      if (!condition.valueIndicatorParams || condition.valueIndicatorParams.length === 0) {
+        condition.valueIndicatorParams = [...(this.indicatorDefaults[condition.valueField] || ['14'])];
+      }
       
       // Set default component for multi-component indicators
       if (this.multiComponentIndicators[condition.valueField]) {
-        condition.valueIndicatorComponent = this.multiComponentIndicators[condition.valueField][0]; // Default to first component
+        if (!condition.valueIndicatorComponent) {
+          condition.valueIndicatorComponent = this.multiComponentIndicators[condition.valueField][0]; // Default to first component
+        }
       } else {
         condition.valueIndicatorComponent = undefined;
       }

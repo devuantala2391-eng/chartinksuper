@@ -1395,8 +1395,8 @@ def process_single_stock_latest_safe(stock, parsed_query):
                     right = condition["right"]
                     
                     # Get values from candle
-                    left_val = latest_candle.get(left.get("value", ""), 0) if left.get("type") == "field" else float(left.get("value", 0))
-                    right_val = latest_candle.get(right.get("value", ""), 0) if right.get("type") == "field" else float(right.get("value", 0))
+                    left_val = latest_candle.get(left.get("field", ""), 0) if left.get("type") == "field" else float(left.get("value", 0))
+                    right_val = latest_candle.get(right.get("field", ""), 0) if right.get("type") == "field" else float(right.get("value", 0))
                     
                     # Simple comparison
                     if operator == ">":
@@ -1488,8 +1488,8 @@ def process_single_stock_safe(stock, parsed_query):
                         right = condition["right"]
                         
                         # Get values from candle
-                        left_val = candle.get(left.get("value", ""), 0) if left.get("type") == "field" else float(left.get("value", 0))
-                        right_val = candle.get(right.get("value", ""), 0) if right.get("type") == "field" else float(right.get("value", 0))
+                        left_val = candle.get(left.get("field", ""), 0) if left.get("type") == "field" else float(left.get("value", 0))
+                        right_val = candle.get(right.get("field", ""), 0) if right.get("type") == "field" else float(right.get("value", 0))
                         
                         # Simple comparison
                         if operator == ">":
@@ -1557,6 +1557,7 @@ def process_query_batch_parallel(stock_batch, parsed_query_dict, base_path=""):
                     sys.path.insert(0, services_path)
                 from query_service import find_matching_candles, is_historical_query
             except ImportError:
+                print(f"[WARNING] Using fallback find_matching_candles implementation due to import failure")
                 # Simple fallback implementation for basic conditions
                 def is_historical_query(parsed_query):
                     """Check if query contains historical references."""
@@ -1584,8 +1585,24 @@ def process_query_batch_parallel(stock_batch, parsed_query_dict, base_path=""):
                                 right = condition["right"]
                                 
                                 # Get values from candle
-                                left_val = candle.get(left.get("value", ""), 0) if left.get("type") == "field" else float(left.get("value", 0))
-                                right_val = candle.get(right.get("value", ""), 0) if right.get("type") == "field" else float(right.get("value", 0))
+                                if left.get("type") == "field":
+                                    left_field = left.get("field", "")
+                                    left_raw = candle.get(left_field)
+                                    left_val = float(left_raw) if left_raw is not None else None
+                                else:
+                                    left_val = float(left.get("value", 0))
+                                
+                                if right.get("type") == "field":
+                                    right_field = right.get("field", "")
+                                    right_raw = candle.get(right_field)
+                                    right_val = float(right_raw) if right_raw is not None else None
+                                else:
+                                    right_val = float(right.get("value", 0))
+                                
+                                # Skip if either value is None
+                                if left_val is None or right_val is None:
+                                    results.append(False)
+                                    continue
                                 
                                 # Simple comparison
                                 if operator == ">":
