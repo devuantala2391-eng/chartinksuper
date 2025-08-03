@@ -858,53 +858,32 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     // Debug what we're actually receiving
     console.log('DEBUG: groupByDate called with', matches.length, 'matches');
     
-    // First, let's see if all matches have the same timestamp
-    const uniqueTimestamps = new Set();
-    const uniqueDates = new Set();
-    
-    matches.forEach((match, index) => {
+    // Group matches by their actual dates
+    matches.forEach((match) => {
       const timestamp = match.timestamp || match.date;
-      uniqueTimestamps.add(timestamp);
       
-      // Check both potential date fields
-      if (match.date) uniqueDates.add(match.date);
-      if (match.timestamp) uniqueDates.add(match.timestamp);
-      
-      if (index < 3) {
-        console.log(`Match ${index}:`, {
-          stock: match.stock,
-          date: match.date,
-          timestamp: match.timestamp,
-          effectiveTimestamp: timestamp
-        });
+      if (timestamp) {
+        // Convert UTC timestamp to IST date
+        // The timestamps are stored at 18:30 UTC which represents 00:00 IST of the next day
+        // So we need to add 5.5 hours (19800000 ms) to get the correct IST date
+        const istDate = new Date(Number(timestamp) + 19800000); // Add 5.5 hours for IST
+        const dateKey = istDate.getUTCFullYear() + '-' + 
+                       String(istDate.getUTCMonth() + 1).padStart(2, '0') + '-' + 
+                       String(istDate.getUTCDate()).padStart(2, '0');
+        
+        // Get existing matches for this date or create new array
+        const existingMatches = this.groupedResults.get(dateKey) || [];
+        existingMatches.push(match);
+        this.groupedResults.set(dateKey, existingMatches);
       }
     });
     
-    console.log('Unique timestamps found:', Array.from(uniqueTimestamps));
-    console.log('Unique dates found:', Array.from(uniqueDates));
+    console.log('Grouped results by date:', this.groupedResults.size, 'unique dates');
     
-    // Force all matches to use the same date (latest date from any match)
-    const timestamps = Array.from(uniqueTimestamps).map(t => Number(t)).sort((a, b) => b - a);
-    const latestTimestamp = timestamps[0];
-    
-    console.log('Using latest timestamp for all matches:', latestTimestamp);
-    
-    if (latestTimestamp) {
-      // Convert UTC timestamp to IST date
-      // The timestamps are stored at 18:30 UTC which represents 00:00 IST of the next day
-      // So we need to add 5.5 hours (19800000 ms) to get the correct IST date
-      const istDate = new Date(latestTimestamp + 19800000); // Add 5.5 hours for IST
-      const dateKey = istDate.getUTCFullYear() + '-' + 
-                     String(istDate.getUTCMonth() + 1).padStart(2, '0') + '-' + 
-                     String(istDate.getUTCDate()).padStart(2, '0');
-      
-      console.log('Single date key (IST):', dateKey);
-      
-      // Group ALL matches under the same date
-      this.groupedResults.set(dateKey, matches);
-      
-      // Expand the date by default
-      this.expandedDates.add(dateKey);
+    // Expand the most recent date by default
+    const sortedDates = Array.from(this.groupedResults.keys()).sort((a, b) => b.localeCompare(a));
+    if (sortedDates.length > 0) {
+      this.expandedDates.add(sortedDates[0]);
     }
   }
 
