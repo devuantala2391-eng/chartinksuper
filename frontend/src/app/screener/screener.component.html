@@ -31,18 +31,8 @@
       <!-- Compact Condition Builder -->
       <div class="condition-builder-compact">
         <div class="condition-wrapper-compact" *ngFor="let condition of conditions; let i = index">
-          <!-- AND/OR Operator (shown between conditions) -->
-          <div class="logical-operator-compact" *ngIf="i > 0">
-            <span 
-              class="highlight-text logical-op" 
-              (click)="openPopup('logicalOperator', condition.id)"
-            >
-              {{ getDisplayText(condition.logicalOperator, 'logicalOperator') }}
-            </span>
-          </div>
-
           <!-- Compact Condition Row -->
-          <div class="condition-row-compact">
+          <div class="condition-row-compact" [class.disabled]="!condition.enabled">
             <!-- Time Period -->
             <span 
               class="highlight-text time-period" 
@@ -224,6 +214,19 @@
                 />
               </ng-container>
             </ng-container>
+
+            <!-- Toggle Switch -->
+            <div class="condition-toggle">
+              <label class="toggle-switch">
+                <input 
+                  type="checkbox" 
+                  [(ngModel)]="condition.enabled"
+                  (ngModelChange)="onConditionToggle(); generateQuery(); saveConditionsToStorage()"
+                  title="{{ condition.enabled ? 'Disable condition' : 'Enable condition' }}"
+                >
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
 
             <!-- Remove Button -->
             <button 

@@ -12,7 +12,7 @@ interface Condition {
   field: string;
   operator: string;
   value: string;
-  logicalOperator: 'and' | 'or';
+  enabled: boolean;
   // Left side expression support
   leftExpressionType?: 'simple' | 'complex' | 'avg';
   leftExpression?: ComplexExpression;
@@ -188,7 +188,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       field: 'supertrend', 
       operator: '>', 
       value: '100', 
-      logicalOperator: 'and', 
+      enabled: true, 
       leftExpressionType: 'simple',
       timePeriod: 'daily', 
       valueType: 'number',
@@ -243,12 +243,27 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   constructor(private http: HttpClient, private ngZone: NgZone) {}
 
   ngOnInit() {
-    this.conditions.forEach(condition => {
-      this.onFieldChange(condition);
-      if (condition.valueField) {
-        this.onValueFieldChange(condition);
-      }
-    });
+    // Load conditions from localStorage first
+    this.loadConditionsFromStorage();
+    
+    // If no conditions were loaded, initialize default conditions
+    if (this.conditions.length === 0) {
+      this.conditions.forEach(condition => {
+        this.onFieldChange(condition);
+        if (condition.valueField) {
+          this.onValueFieldChange(condition);
+        }
+      });
+    } else {
+      // Initialize loaded conditions
+      this.conditions.forEach(condition => {
+        this.onFieldChange(condition);
+        if (condition.valueField) {
+          this.onValueFieldChange(condition);
+        }
+      });
+    }
+    
     // Generate initial query
     this.generateQuery();
   }
@@ -298,7 +313,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       field: 'supertrend',
       operator: '>',
       value: '',
-      logicalOperator: 'and',
+      enabled: true,
       leftExpressionType: 'simple',
       timePeriod: 'daily',
       valueType: 'number',
@@ -311,10 +326,58 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     
     // Initialize the condition's field settings
     this.onFieldChange(newCondition);
+    this.generateQuery();
+    this.saveConditionsToStorage();
   }
 
   removeCondition(id: number) {
     this.conditions = this.conditions.filter(c => c.id !== id);
+    this.generateQuery();
+    this.saveConditionsToStorage();
+  }
+
+  onConditionToggle() {
+    // Method called when condition is toggled on/off
+    // The generateQuery and saveConditionsToStorage are called in the template
+  }
+
+  saveConditionsToStorage() {
+    try {
+      localStorage.setItem('screener_conditions', JSON.stringify(this.conditions));
+      localStorage.setItem('screener_query', this.naturalLanguageQuery);
+    } catch (error) {
+      console.warn('Failed to save conditions to localStorage:', error);
+    }
+  }
+
+  loadConditionsFromStorage() {
+    try {
+      const savedConditions = localStorage.getItem('screener_conditions');
+      const savedQuery = localStorage.getItem('screener_query');
+      
+      if (savedConditions) {
+        const conditions = JSON.parse(savedConditions);
+        if (Array.isArray(conditions) && conditions.length > 0) {
+          // Ensure all conditions have the enabled property
+          this.conditions = conditions.map(condition => ({
+            ...condition,
+            enabled: condition.enabled !== undefined ? condition.enabled : true
+          }));
+          
+          // Update nextId to avoid conflicts
+          const maxId = Math.max(...this.conditions.map(c => c.id));
+          this.nextId = maxId + 1;
+          
+          this.generateQuery();
+        }
+      }
+      
+      if (savedQuery) {
+        this.naturalLanguageQuery = savedQuery;
+      }
+    } catch (error) {
+      console.warn('Failed to load conditions from localStorage:', error);
+    }
   }
 
   private buildFieldString(field: string, indicatorType?: string, indicatorName?: string, indicatorParams?: string[]): string {
@@ -339,7 +402,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   }
 
   buildQuery(): string {
-    return this.conditions.map((condition, index) => {
+    return this.conditions.filter(condition => condition.enabled).map((condition, index) => {
       let field: string;
       
       // Build left side based on expression type
@@ -386,7 +449,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       if (index === 0) {
         return conditionStr;
       }
-      return `${condition.logicalOperator} ${conditionStr}`;
+      return `and ${conditionStr}`;
     }).join(' ');
   }
 
@@ -870,7 +933,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
           field: 'volume',
           operator: '>',
           value: '',
-          logicalOperator: 'and',
+          enabled: true,
           leftExpressionType: 'simple',
           timePeriod: '1-day',
           valueType: 'field',
@@ -888,7 +951,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
           field: 'close',
           operator: '>',
           value: '',
-          logicalOperator: 'and',
+          enabled: true,
           leftExpressionType: 'simple',
           timePeriod: 'daily',
           valueType: 'field',
@@ -908,7 +971,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
           field: 'supertrend',
           operator: '>',
           value: '',
-          logicalOperator: 'and',
+          enabled: true,
           leftExpressionType: 'simple',
           timePeriod: '1-day',
           valueType: 'field',
@@ -925,6 +988,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     }
     
     this.generateQuery();
+    this.saveConditionsToStorage();
   }
   
   onFieldChange(condition: Condition) {
@@ -1089,13 +1153,15 @@ export class ScreenerComponent implements OnInit, OnDestroy {
         field: 'close',
         operator: '>',
         value: '',
-        logicalOperator: 'and',
+        enabled: true,
         leftExpressionType: 'simple',
         timePeriod: 'daily',
         valueType: 'number'
       }];
       this.clearResults();
       this.queryString = '';
+      this.generateQuery();
+      this.saveConditionsToStorage();
     }
   }
 
@@ -1266,6 +1332,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       
       // Generate the query string
       this.generateQuery();
+      this.saveConditionsToStorage();
       
       this.pasteQueryStatus = `Successfully parsed ${parsedConditions.length} condition(s)`;
       this.pasteQuerySuccess = true;
@@ -1300,9 +1367,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     // Process each condition part
     for (let i = 0; i < parts.length; i += 2) {
       const conditionText = parts[i].trim();
-      const logicalOperator = (i + 1 < parts.length) ? (parts[i + 1] as 'and' | 'or') : 'and';
-      
-      const condition = this.parseConditionText(conditionText, conditionId++, logicalOperator);
+      const condition = this.parseConditionText(conditionText, conditionId++);
       if (condition) {
         conditions.push(condition);
       }
@@ -1311,7 +1376,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     return conditions;
   }
 
-  private parseConditionText(conditionText: string, id: number, logicalOperator: 'and' | 'or'): Condition | null {
+  private parseConditionText(conditionText: string, id: number): Condition | null {
     // Parse operators in order of precedence
     const operators = ['crossed above', 'crossed below', '>=', '<=', '!=', '>', '<', '='];
     
@@ -1324,7 +1389,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
         const leftSide = match[1].trim();
         const rightSide = match[2].trim();
         
-        const parsedCondition = this.buildConditionFromParts(leftSide, operator, rightSide, id, logicalOperator);
+        const parsedCondition = this.buildConditionFromParts(leftSide, operator, rightSide, id);
         if (parsedCondition) {
           return parsedCondition;
         }
@@ -1334,7 +1399,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     return null;
   }
 
-  private buildConditionFromParts(leftSide: string, operator: string, rightSide: string, id: number, logicalOperator: 'and' | 'or'): Condition | null {
+  private buildConditionFromParts(leftSide: string, operator: string, rightSide: string, id: number): Condition | null {
     // Parse the left side to extract field information
     const leftFieldInfo = this.parseFieldExpression(leftSide);
     if (!leftFieldInfo) return null;
@@ -1345,7 +1410,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       field: leftFieldInfo.field,
       operator: operator,
       value: rightSide,
-      logicalOperator: logicalOperator,
+      enabled: true,
       leftExpressionType: 'simple',
       timePeriod: leftFieldInfo.timePeriod,
       valueType: 'number',
@@ -1537,9 +1602,6 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       case 'valueTimePeriod':
         condition.valueTimePeriod = value;
         break;
-      case 'logicalOperator':
-        condition.logicalOperator = value;
-        break;
       case 'indicatorComponent':
         condition.indicatorComponent = value;
         break;
@@ -1567,6 +1629,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     
     // Regenerate query after update
     this.generateQuery();
+    this.saveConditionsToStorage();
     this.closePopup();
   }
 
@@ -1584,8 +1647,6 @@ export class ScreenerComponent implements OnInit, OnDestroy {
         return operator ? operator.label : value;
       case 'valueType':
         return value === 'number' ? 'Number' : 'Field';
-      case 'logicalOperator':
-        return value === 'and' ? 'AND' : 'OR';
       case 'arithmeticOperator':
         return value || 'None';
       default:
@@ -1608,11 +1669,6 @@ export class ScreenerComponent implements OnInit, OnDestroy {
         return [
           { value: 'number', label: 'Number' },
           { value: 'field', label: 'Field' }
-        ];
-      case 'logicalOperator':
-        return [
-          { value: 'and', label: 'AND' },
-          { value: 'or', label: 'OR' }
         ];
       case 'arithmeticOperator':
         return [
