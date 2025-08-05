@@ -1155,6 +1155,22 @@ async def process_latest_query(request: QueryRequest):
         # Replace all_matches with deduplicated list
         all_matches = unique_matches
         
+        # CONSISTENCY FIX: Filter to only latest global date to match full backtest behavior
+        if all_matches:
+            # Find the latest global timestamp across all matches
+            timestamps = [match.get("date", match.get("timestamp", 0)) for match in all_matches]
+            latest_global_timestamp = max(timestamps) if timestamps else 0
+            
+            # Filter to only matches from the latest global date
+            before_filter_count = len(all_matches)
+            all_matches = [match for match in all_matches 
+                          if match.get("date", match.get("timestamp", 0)) == latest_global_timestamp]
+            after_filter_count = len(all_matches)
+            
+            if before_filter_count != after_filter_count:
+                print(f"[DEBUG] Latest scan: Filtered {before_filter_count - after_filter_count} matches from older dates")
+                print(f"[DEBUG] Latest scan: Kept {after_filter_count} matches from latest date ({latest_global_timestamp})")
+        
         # Sort matches by stock symbol for consistency  
         all_matches.sort(key=lambda x: x.get("stock", ""))
         

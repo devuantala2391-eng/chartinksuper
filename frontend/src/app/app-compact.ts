@@ -71,7 +71,7 @@ export class AppCompact implements OnInit {
   groupedResults = new Map<string, any[]>();
   
   private nextId = 1;
-  private apiUrl = 'http://localhost:8001';
+  private apiUrl = 'https://prompt-serval-repeatedly.ngrok-free.app';
   
   constructor(private http: HttpClient) {}
   

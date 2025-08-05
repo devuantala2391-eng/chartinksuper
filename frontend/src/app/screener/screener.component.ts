@@ -101,6 +101,19 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   title = 'Stock Screener';
   naturalLanguageQuery = '';
   
+  // Math reference for template
+  Math = Math;
+  
+  // Pagination and filter state for each table
+  tableStates: Map<string, {
+    currentPage: number;
+    pageSize: number;
+    filterText: string;
+    filteredData: any[];
+    paginatedData: any[];
+    totalPages: number;
+  }> = new Map();
+  
   // Available fields for conditions - organized by category
   fields = [
     // All available indicators
@@ -237,7 +250,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   uploadProgressText = '';
   private csvProgressEventSource: EventSource | null = null;
   
-  private apiUrl = 'http://localhost:8001';
+  private apiUrl = 'https://prompt-serval-repeatedly.ngrok-free.app';
   private nextId = 2;
 
   constructor(private http: HttpClient, private ngZone: NgZone) {}
@@ -588,7 +601,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       next: (response) => {
         this.loading = false;
         this.results = response;
-        this.groupByDate(response.matches);
+        this.groupByDate(response.matches, true); // Latest day only
         
         // Show completion in progress bar
         this.progressPhase = 'completed';
@@ -650,7 +663,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       next: (response) => {
         this.loading = false;
         this.results = response;
-        this.groupByDate(response.matches);
+        this.groupByDate(response.matches, false); // Full backtest - multiple dates
         
         // Show completion in progress bar
         this.progressPhase = 'completed';
@@ -710,7 +723,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       next: (response) => {
         this.loading = false;
         this.results = response;
-        this.groupByDate(response.matches);
+        this.groupByDate(response.matches, false); // Special query - full backtest, multiple dates
         
         // Show completion in progress bar
         this.progressPhase = 'completed';
@@ -851,39 +864,99 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     this.startProgressSSE();
   }
 
-  groupByDate(matches: any[]) {
+  groupByDate(matches: any[], isLatestDayOnly: boolean = false) {
     this.groupedResults.clear();
     this.expandedDates.clear();
+    this.tableStates.clear(); // Clear table states
     
     // Debug what we're actually receiving
-    console.log('DEBUG: groupByDate called with', matches.length, 'matches');
+    console.log('DEBUG: groupByDate called with', matches.length, 'matches', 'isLatestDayOnly:', isLatestDayOnly);
     
-    // Group matches by their actual dates
-    matches.forEach((match) => {
-      const timestamp = match.timestamp || match.date;
+    if (isLatestDayOnly) {
+      // For latest day endpoint: Force all matches under a single date
+      const uniqueTimestamps = new Set();
       
-      if (timestamp) {
+      matches.forEach((match, index) => {
+        const timestamp = match.timestamp || match.date;
+        uniqueTimestamps.add(timestamp);
+        
+        if (index < 3) {
+          console.log(`Match ${index}:`, {
+            stock: match.stock,
+            date: match.date,
+            timestamp: match.timestamp,
+            effectiveTimestamp: timestamp
+          });
+        }
+      });
+      
+      console.log('Unique timestamps found:', Array.from(uniqueTimestamps));
+      
+      // Force all matches to use the same date (latest date from any match)
+      const timestamps = Array.from(uniqueTimestamps).map(t => Number(t)).sort((a, b) => b - a);
+      const latestTimestamp = timestamps[0];
+      
+      console.log('Using latest timestamp for all matches:', latestTimestamp);
+      
+      if (latestTimestamp) {
         // Convert UTC timestamp to IST date
-        // The timestamps are stored at 18:30 UTC which represents 00:00 IST of the next day
-        // So we need to add 5.5 hours (19800000 ms) to get the correct IST date
-        const istDate = new Date(Number(timestamp) + 19800000); // Add 5.5 hours for IST
+        const istDate = new Date(latestTimestamp + 19800000); // Add 5.5 hours for IST
         const dateKey = istDate.getUTCFullYear() + '-' + 
                        String(istDate.getUTCMonth() + 1).padStart(2, '0') + '-' + 
                        String(istDate.getUTCDate()).padStart(2, '0');
         
-        // Get existing matches for this date or create new array
-        const existingMatches = this.groupedResults.get(dateKey) || [];
-        existingMatches.push(match);
-        this.groupedResults.set(dateKey, existingMatches);
+        console.log('Single date key (IST):', dateKey);
+        
+        // Group ALL matches under the same date
+        this.groupedResults.set(dateKey, matches);
+        
+        // Initialize table state for the single date group
+        this.initializeTableState(dateKey, matches);
+        
+        // Expand the date by default
+        this.expandedDates.add(dateKey);
       }
-    });
-    
-    console.log('Grouped results by date:', this.groupedResults.size, 'unique dates');
-    
-    // Expand the most recent date by default
-    const sortedDates = Array.from(this.groupedResults.keys()).sort((a, b) => b.localeCompare(a));
-    if (sortedDates.length > 0) {
-      this.expandedDates.add(sortedDates[0]);
+    } else {
+      // For full backtest: Group matches by their individual dates
+      console.log('Grouping by individual dates for full backtest');
+      
+      matches.forEach((match, index) => {
+        const timestamp = match.timestamp || match.date;
+        
+        if (index < 3) {
+          console.log(`Match ${index}:`, {
+            stock: match.stock,
+            date: match.date,
+            timestamp: match.timestamp,
+            effectiveTimestamp: timestamp
+          });
+        }
+        
+        if (timestamp) {
+          // Convert UTC timestamp to IST date
+          const istDate = new Date(Number(timestamp) + 19800000); // Add 5.5 hours for IST
+          const dateKey = istDate.getUTCFullYear() + '-' + 
+                         String(istDate.getUTCMonth() + 1).padStart(2, '0') + '-' + 
+                         String(istDate.getUTCDate()).padStart(2, '0');
+          
+          if (!this.groupedResults.has(dateKey)) {
+            this.groupedResults.set(dateKey, []);
+          }
+          this.groupedResults.get(dateKey)!.push(match);
+        }
+      });
+      
+      // Initialize table states for all date groups
+      for (const [dateKey, dateMatches] of this.groupedResults.entries()) {
+        this.initializeTableState(dateKey, dateMatches);
+      }
+      
+      // Expand all dates by default
+      this.groupedResults.forEach((_, date) => {
+        this.expandedDates.add(date);
+      });
+      
+      console.log('Grouped results by date:', this.groupedResults);
     }
   }
 
@@ -2349,6 +2422,135 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     }
     
     return String(value);
+  }
+
+  // Initialize table state for a date
+  initializeTableState(date: string, data: any[]) {
+    if (!this.tableStates.has(date)) {
+      this.tableStates.set(date, {
+        currentPage: 1,
+        pageSize: 10,
+        filterText: '',
+        filteredData: [...data],
+        paginatedData: [],
+        totalPages: Math.ceil(data.length / 10)
+      });
+      this.updatePaginatedData(date);
+    }
+  }
+
+  // Update filtered and paginated data for a table
+  updateTableData(date: string) {
+    const state = this.tableStates.get(date);
+    const originalData = this.groupedResults.get(date) || [];
+    
+    if (!state) return;
+    
+    // Apply filter
+    if (state.filterText) {
+      state.filteredData = originalData.filter(item => 
+        item.stock.toLowerCase().includes(state.filterText.toLowerCase())
+      );
+    } else {
+      state.filteredData = [...originalData];
+    }
+    
+    // Update pagination
+    state.totalPages = Math.ceil(state.filteredData.length / state.pageSize);
+    state.currentPage = Math.min(state.currentPage, state.totalPages || 1);
+    
+    this.updatePaginatedData(date);
+  }
+
+  // Update paginated data for current page
+  updatePaginatedData(date: string) {
+    const state = this.tableStates.get(date);
+    if (!state) return;
+    
+    const startIndex = (state.currentPage - 1) * state.pageSize;
+    const endIndex = startIndex + state.pageSize;
+    state.paginatedData = state.filteredData.slice(startIndex, endIndex);
+  }
+
+  // Handle filter change
+  onFilterChange(date: string, filterText: string) {
+    const state = this.tableStates.get(date);
+    if (!state) return;
+    
+    state.filterText = filterText;
+    state.currentPage = 1; // Reset to first page on filter change
+    this.updateTableData(date);
+  }
+
+  // Handle page change
+  onPageChange(date: string, page: number) {
+    const state = this.tableStates.get(date);
+    if (!state) return;
+    
+    state.currentPage = page;
+    this.updatePaginatedData(date);
+  }
+
+  // Get paginated data for a date
+  getPaginatedData(date: string): any[] {
+    const state = this.tableStates.get(date);
+    return state?.paginatedData || [];
+  }
+
+  // Get table state for a date
+  getTableState(date: string) {
+    return this.tableStates.get(date);
+  }
+
+  // Helper methods for template to avoid null checks
+  hasTableData(date: string): boolean {
+    const state = this.tableStates.get(date);
+    return !!(state && state.filteredData && state.filteredData.length > 0);
+  }
+
+  hasMultiplePages(date: string): boolean {
+    const state = this.tableStates.get(date);
+    return !!(state && state.totalPages > 1);
+  }
+
+  getEntriesStart(date: string): number {
+    const state = this.tableStates.get(date);
+    if (!state) return 0;
+    return (state.currentPage - 1) * state.pageSize + 1;
+  }
+
+  getEntriesEnd(date: string): number {
+    const state = this.tableStates.get(date);
+    if (!state) return 0;
+    return Math.min(state.currentPage * state.pageSize, state.filteredData.length);
+  }
+
+  getFilteredDataLength(date: string): number {
+    const state = this.tableStates.get(date);
+    return state?.filteredData?.length || 0;
+  }
+
+  // Generate page numbers for pagination
+  getPageNumbers(date: string): number[] {
+    const state = this.tableStates.get(date);
+    if (!state) return [];
+    
+    const pages: number[] = [];
+    const maxVisible = 5;
+    const halfVisible = Math.floor(maxVisible / 2);
+    
+    let startPage = Math.max(1, state.currentPage - halfVisible);
+    let endPage = Math.min(state.totalPages, startPage + maxVisible - 1);
+    
+    if (endPage - startPage + 1 < maxVisible) {
+      startPage = Math.max(1, endPage - maxVisible + 1);
+    }
+    
+    for (let i = startPage; i <= endPage; i++) {
+      pages.push(i);
+    }
+    
+    return pages;
   }
 
   ngOnDestroy() {

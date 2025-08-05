@@ -48,7 +48,7 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
   private progressInterval: any;
   private eventSource: EventSource | null = null;
 
-  private apiUrl = 'http://localhost:8001/api';
+  private apiUrl = 'https://prompt-serval-repeatedly.ngrok-free.app';
 
   availableIndicators = [
     { value: 'supertrend', label: 'SuperTrend' },
@@ -103,7 +103,11 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
     this.loading = true;
     this.error = null;
     
-    this.http.get<IndicatorResponse>(`${this.apiUrl}/get-precalculated-indicators`)
+    this.http.get<IndicatorResponse>(`${this.apiUrl}/api/get-precalculated-indicators`, {
+      headers: {
+        'ngrok-skip-browser-warning': '69420'
+      }
+    })
       .subscribe({
         next: (response) => {
           this.indicators = response.indicators || [];
@@ -230,7 +234,11 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
       indicators: this.indicators
     };
 
-    this.http.post<any>(`${this.apiUrl}/precalculate-indicators`, payload)
+    this.http.post<any>(`${this.apiUrl}/precalculate-indicators`, payload, {
+      headers: {
+        'ngrok-skip-browser-warning': '69420'
+      }
+    })
       .subscribe({
         next: (response) => {
           if (response.success) {
@@ -332,7 +340,11 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
     
     // Poll for status updates
     this.statusInterval = setInterval(() => {
-      this.http.get<IndicatorResponse>(`${this.apiUrl}/get-precalculated-indicators`)
+      this.http.get<IndicatorResponse>(`${this.apiUrl}/api/get-precalculated-indicators`, {
+        headers: {
+          'ngrok-skip-browser-warning': '69420'
+        }
+      })
         .subscribe({
           next: (response) => {
             this.status = response.status;
@@ -361,7 +373,11 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
     // Poll for progress updates
     this.progressInterval = setInterval(() => {
       if (this.status === 'processing') {
-        this.http.get<any>('http://localhost:8001/query/progress')
+        this.http.get<any>('https://prompt-serval-repeatedly.ngrok-free.app/query/progress', {
+          headers: {
+            'ngrok-skip-browser-warning': '69420'
+          }
+        })
           .subscribe({
             next: (progress) => {
               if (progress.isRunning && progress.phase === 'processing_indicators') {

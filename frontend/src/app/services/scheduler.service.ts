@@ -25,7 +25,7 @@ export interface SchedulerState {
   providedIn: 'root'
 })
 export class SchedulerService {
-  private apiUrl = 'http://127.0.0.1:8001';
+  private apiUrl = 'https://prompt-serval-repeatedly.ngrok-free.app';
   private destroy$ = new Subject<void>();
   private sseConnection?: EventSource;
   private timerSubscription?: Subscription;
