@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { HttpClient, HttpClientModule } from '@angular/common/http';
 import { ConditionCompactComponent } from './condition-compact.component';
 import { PopupService } from './popup.service';
+import { environment } from '../environments/environment';
 
 interface Condition {
   id: number;
@@ -71,7 +72,7 @@ export class AppCompact implements OnInit {
   groupedResults = new Map<string, any[]>();
   
   private nextId = 1;
-  private apiUrl = 'https://prompt-serval-repeatedly.ngrok-free.app';
+  private apiUrl = environment.apiUrl;
   
   constructor(private http: HttpClient) {}
   

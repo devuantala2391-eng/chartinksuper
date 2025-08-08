@@ -780,9 +780,9 @@ def extract_indicators_from_query(parsed_query: Dict[str, Any]) -> Dict[str, Any
                 field = left.get("field", "")
                 if "(" in field and ")" in field:
                     try:
-                        period_match = re.search(r'\((\d+)\)', field)
+                        period_match = re.search(r'\(([0-9.]+)\)', field)
                         if period_match:
-                            period = int(period_match.group(1))
+                            period = float(period_match.group(1))
                     except:
                         period = 14
                 
@@ -799,9 +799,9 @@ def extract_indicators_from_query(parsed_query: Dict[str, Any]) -> Dict[str, Any
                 field = right.get("field", "")
                 if "(" in field and ")" in field:
                     try:
-                        period_match = re.search(r'\((\d+)\)', field)
+                        period_match = re.search(r'\(([0-9.]+)\)', field)
                         if period_match:
-                            period = int(period_match.group(1))
+                            period = float(period_match.group(1))
                     except:
                         period = 14
                 

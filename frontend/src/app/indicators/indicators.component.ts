@@ -2,6 +2,7 @@ import { Component, OnInit, OnDestroy, ChangeDetectorRef, NgZone } from '@angula
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { HttpClient, HttpClientModule } from '@angular/common/http';
+import { environment } from '../../environments/environment';
 
 interface PrecalculatedIndicator {
   timeframe: string;
@@ -48,7 +49,7 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
   private progressInterval: any;
   private eventSource: EventSource | null = null;
 
-  private apiUrl = 'https://prompt-serval-repeatedly.ngrok-free.app';
+  private apiUrl = environment.apiUrl;
 
   availableIndicators = [
     { value: 'supertrend', label: 'SuperTrend' },
@@ -168,25 +169,25 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
 
     // Parameter validation for indicators that require a period
     if (!['volume', 'pctchg'].includes(indicator.name)) {
-      if (!indicator.params['period'] || indicator.params['period'] < 1) {
-        return 'Period must be a positive number.';
-      }
-      if (indicator.params['period'] > 200) {
-        return 'Period cannot exceed 200.';
+      const period = indicator.params['period'];
+      if (!period || isNaN(Number(period)) || Number(period) < 0.1) {
+        return 'Period must be a positive number (minimum 0.1).';
       }
     }
 
     // Bollinger Bands specific validation
     if (indicator.name === 'bb') {
-      if (!indicator.params['stdDev'] || indicator.params['stdDev'] < 0.1 || indicator.params['stdDev'] > 5) {
-        return 'Standard deviation must be between 0.1 and 5.';
+      const stdDev = indicator.params['stdDev'];
+      if (!stdDev || isNaN(Number(stdDev)) || Number(stdDev) < 0.1) {
+        return 'Standard deviation must be a positive number (minimum 0.1).';
       }
     }
 
     // SuperTrend specific validation
     if (indicator.name === 'supertrend') {
-      if (!indicator.params['multiplier'] || indicator.params['multiplier'] < 0.1 || indicator.params['multiplier'] > 10) {
-        return 'Multiplier must be between 0.1 and 10.';
+      const multiplier = indicator.params['multiplier'];
+      if (!multiplier || isNaN(Number(multiplier)) || Number(multiplier) < 0.1) {
+        return 'Multiplier must be a positive number (minimum 0.1).';
       }
     }
 
@@ -373,7 +374,7 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
     // Poll for progress updates
     this.progressInterval = setInterval(() => {
       if (this.status === 'processing') {
-        this.http.get<any>('https://prompt-serval-repeatedly.ngrok-free.app/query/progress', {
+        this.http.get<any>(`${this.apiUrl}/query/progress`, {
           headers: {
             'ngrok-skip-browser-warning': '69420'
           }

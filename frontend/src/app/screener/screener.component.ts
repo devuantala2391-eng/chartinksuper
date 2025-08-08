@@ -7,6 +7,7 @@ import { TooltipComponent, TooltipData } from '../components/tooltip.component';
 import { Observable, retry, timer, catchError, throwError } from 'rxjs';
 import { Router, ActivatedRoute } from '@angular/router';
 import Swal from 'sweetalert2';
+import { environment } from '../../environments/environment';
 
 interface Condition {
   id: number;
@@ -240,6 +241,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   
   // Tooltip state
   activeTooltip: { stock: string; date: string } | null = null;
+  parameterInputValue: string = '';
   
   // CSV Upload properties
   selectedFile: File | null = null;
@@ -251,7 +253,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   uploadProgressText = '';
   private csvProgressEventSource: EventSource | null = null;
   
-  private apiUrl = 'https://prompt-serval-repeatedly.ngrok-free.app';
+  private apiUrl = environment.apiUrl;
   private nextId = 2;
 
   constructor(private http: HttpClient, private ngZone: NgZone, private router: Router, private route: ActivatedRoute) {}
@@ -1798,17 +1800,23 @@ export class ScreenerComponent implements OnInit, OnDestroy {
         condition.arithmeticOperator = value;
         break;
       case 'indicatorParam':
-        // Handle parameter changes
+        // Handle parameter changes - allow decimal values
         if (this.activePopup.field && condition.indicatorParams) {
           const paramIndex = parseInt(this.activePopup.field);
-          condition.indicatorParams[paramIndex] = value.toString();
+          const numValue = parseFloat(value.toString());
+          if (!isNaN(numValue) && numValue > 0) {
+            condition.indicatorParams[paramIndex] = numValue.toString();
+          }
         }
         break;
       case 'valueIndicatorParam':
-        // Handle value parameter changes
+        // Handle value parameter changes - allow decimal values
         if (this.activePopup.field && condition.valueIndicatorParams) {
           const paramIndex = parseInt(this.activePopup.field);
-          condition.valueIndicatorParams[paramIndex] = value.toString();
+          const numValue = parseFloat(value.toString());
+          if (!isNaN(numValue) && numValue > 0) {
+            condition.valueIndicatorParams[paramIndex] = numValue.toString();
+          }
         }
         break;
     }
@@ -1886,6 +1894,18 @@ export class ScreenerComponent implements OnInit, OnDestroy {
 
   // Method to open parameter popup
   openParameterPopup(type: 'indicatorParam' | 'valueIndicatorParam', conditionId: number, paramIndex: number) {
+    const condition = this.conditions.find(c => c.id === conditionId);
+    if (condition) {
+      // Set current parameter value in the input field
+      if (type === 'indicatorParam' && condition.indicatorParams && condition.indicatorParams[paramIndex]) {
+        this.parameterInputValue = condition.indicatorParams[paramIndex];
+      } else if (type === 'valueIndicatorParam' && condition.valueIndicatorParams && condition.valueIndicatorParams[paramIndex]) {
+        this.parameterInputValue = condition.valueIndicatorParams[paramIndex];
+      } else {
+        this.parameterInputValue = '';
+      }
+    }
+    
     this.activePopup = { 
       type: type, 
       conditionId: conditionId, 

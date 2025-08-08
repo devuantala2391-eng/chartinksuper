@@ -2,6 +2,7 @@ import { Injectable, NgZone } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { BehaviorSubject, interval, Subject, Subscription } from 'rxjs';
 import { takeUntil } from 'rxjs/operators';
+import { environment } from '../../environments/environment';
 
 export interface SchedulerState {
   isRunning: boolean;
@@ -25,7 +26,7 @@ export interface SchedulerState {
   providedIn: 'root'
 })
 export class SchedulerService {
-  private apiUrl = 'https://prompt-serval-repeatedly.ngrok-free.app';
+  private apiUrl = environment.apiUrl;
   private destroy$ = new Subject<void>();
   private sseConnection?: EventSource;
   private timerSubscription?: Subscription;

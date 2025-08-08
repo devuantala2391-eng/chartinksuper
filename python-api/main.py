@@ -224,7 +224,7 @@ Path("uploads").mkdir(exist_ok=True)
 
 # Technical indicator calculation functions
 def calculate_atr(highs, lows, closes, period=14):
-    """Calculate Average True Range using Wilder's smoothing method"""
+    """Calculate Average True Range using Wilder's smoothing method - handles decimal periods"""
     true_ranges = []
     for i in range(len(closes)):
         if i == 0:
@@ -238,23 +238,25 @@ def calculate_atr(highs, lows, closes, period=14):
     # Calculate ATR using Wilder's smoothing method
     atr_values = []
     atr = None
+    period_int = int(round(period))  # Convert to integer for array operations
     
     for i in range(len(true_ranges)):
-        if i < period - 1:
+        if i < period_int - 1:
             atr_values.append(None)
-        elif i == period - 1:
+        elif i == period_int - 1:
             # Initial ATR = average of first 'period' true ranges
-            atr = sum(true_ranges[0:period]) / period
+            atr = sum(true_ranges[0:period_int]) / period_int
             atr_values.append(atr)
         else:
             # Wilder's smoothing: ATR = (Previous ATR * (period-1) + Current TR) / period
+            # Use original period for smoothing calculation to preserve decimal precision
             atr = (atr * (period - 1) + true_ranges[i]) / period
             atr_values.append(atr)
     
     return atr_values
 
 def calculate_atr_sma(highs, lows, closes, period=14):
-    """Calculate ATR using Simple Moving Average for weekly SuperTrend"""
+    """Calculate ATR using Simple Moving Average for weekly SuperTrend - handles decimal periods"""
     true_ranges = []
     for i in range(len(closes)):
         if i == 0:
@@ -267,18 +269,21 @@ def calculate_atr_sma(highs, lows, closes, period=14):
     
     # Calculate ATR using Simple Moving Average
     atr_values = []
+    period_int = int(round(period))  # Convert to integer for array operations
+    
     for i in range(len(true_ranges)):
-        if i < period - 1:
+        if i < period_int - 1:
             atr_values.append(None)
         else:
-            window = true_ranges[i-period+1:i+1]
+            window = true_ranges[i-period_int+1:i+1]
             atr_values.append(sum(window) / len(window))
     
     return atr_values
 
 def calculate_supertrend(highs, lows, closes, period=10, multiplier=2):
-    """Calculate SuperTrend indicator using the standard algorithm"""
+    """Calculate SuperTrend indicator using the standard algorithm - handles decimal periods"""
     atr_values = calculate_atr(highs, lows, closes, period)
+    period_int = int(round(period))  # Convert to integer for array index comparisons
     
     # Arrays to store intermediate calculations
     basic_upper_band = []
@@ -289,7 +294,7 @@ def calculate_supertrend(highs, lows, closes, period=10, multiplier=2):
     trend_direction = []
     
     for i in range(len(closes)):
-        if i < period - 1 or atr_values[i] is None:
+        if i < period_int - 1 or atr_values[i] is None:
             basic_upper_band.append(None)
             basic_lower_band.append(None)
             final_upper_band.append(None)
@@ -306,7 +311,7 @@ def calculate_supertrend(highs, lows, closes, period=10, multiplier=2):
             basic_lower_band.append(basic_lower)
             
             # Step 2: Calculate final upper and lower bands
-            if i == period - 1:  # First calculation
+            if i == period_int - 1:  # First calculation
                 final_upper = basic_upper
                 final_lower = basic_lower
             else:
@@ -328,7 +333,7 @@ def calculate_supertrend(highs, lows, closes, period=10, multiplier=2):
             final_lower_band.append(final_lower)
             
             # Step 3: Determine trend direction and SuperTrend value
-            if i == period - 1:  # First calculation
+            if i == period_int - 1:  # First calculation
                 # Initial SuperTrend calculation
                 if closes[i] <= final_lower:
                     trend = -1  # Bearish
@@ -366,18 +371,20 @@ def calculate_supertrend_weekly(highs, lows, closes, period=10, multiplier=2):
     return calculate_supertrend(highs, lows, closes, period, multiplier)
 
 def calculate_sma(values, period):
-    """Calculate Simple Moving Average"""
+    """Calculate Simple Moving Average - handles both integer and decimal periods"""
+    # Convert decimal period to integer for array slicing
+    period_int = int(round(period))
     result = []
     for i in range(len(values)):
-        if i < period - 1:
+        if i < period_int - 1:
             result.append(None)
         else:
-            window = values[i-period+1:i+1]
+            window = values[i-period_int+1:i+1]
             result.append(sum(window) / len(window))
     return result
 
 def calculate_ema(values, period):
-    """Calculate Exponential Moving Average"""
+    """Calculate Exponential Moving Average - handles both integer and decimal periods"""
     result = []
     multiplier = 2 / (period + 1)
     
@@ -393,7 +400,7 @@ def calculate_ema(values, period):
     return result
 
 def calculate_rsi(closes, period=14):
-    """Calculate Relative Strength Index"""
+    """Calculate Relative Strength Index - handles both integer and decimal periods"""
     gains = []
     losses = []
     
@@ -421,17 +428,20 @@ def calculate_rsi(closes, period=14):
     return rsi_values
 
 def calculate_bollinger_bands(closes, period=20, std_dev=2):
-    """Calculate Bollinger Bands"""
+    """Calculate Bollinger Bands - handles both integer and decimal parameters"""
     sma_values = calculate_sma(closes, period)
     upper_band = []
     lower_band = []
     
+    # Convert decimal period to integer for array slicing
+    period_int = int(round(period))
+    
     for i in range(len(closes)):
-        if i < period - 1 or sma_values[i] is None:
+        if i < period_int - 1 or sma_values[i] is None:
             upper_band.append(None)
             lower_band.append(None)
         else:
-            window = closes[i-period+1:i+1]
+            window = closes[i-period_int+1:i+1]
             mean = sma_values[i]
             variance = sum((x - mean) ** 2 for x in window) / len(window)
             std = variance ** 0.5
@@ -1907,14 +1917,14 @@ def process_stock_batch_cpu_intensive(stock_batch_data):
                 timeframe = indicator.get("timeframe", "daily")
                 name = indicator.get("name", "").lower()
                 params = indicator.get("params", {})
-                period = params.get("period", 14)
+                period = float(params.get("period", 14))
                 
                 # Generate appropriate indicator key based on indicator type
                 if name == "supertrend":
-                    multiplier = params.get("multiplier", 2)
+                    multiplier = float(params.get("multiplier", 2))
                     indicator_key = f"{timeframe}_{name}_{period}_{multiplier}"
                 elif name == "bb":
-                    std_dev = params.get("stdDev", 2)
+                    std_dev = float(params.get("stdDev", 2))
                     indicator_key = f"{timeframe}_{name}_{period}_{std_dev}"
                 else:
                     indicator_key = f"{timeframe}_{name}_{period}"
@@ -1924,8 +1934,8 @@ def process_stock_batch_cpu_intensive(stock_batch_data):
                     "key": indicator_key,
                     "timeframe": timeframe,
                     "period": period,
-                    "multiplier": params.get("multiplier", 2),
-                    "std_dev": params.get("stdDev", 2)
+                    "multiplier": float(params.get("multiplier", 2)),
+                    "std_dev": float(params.get("stdDev", 2))
                 })
             
             # Extract price data for calculations
@@ -2400,7 +2410,7 @@ async def process_stock_indicators(stock: str, stock_data: List[Dict], indicator
                 timeframe = indicator.get("timeframe", "daily")
                 name = indicator.get("name", "").lower()
                 params = indicator.get("params", {})
-                period = params.get("period", 14)
+                period = float(params.get("period", 14))
                 
                 # Create indicator key
                 indicator_key = f"{timeframe}_{name}_{period}"
