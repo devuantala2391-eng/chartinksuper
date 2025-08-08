@@ -5,6 +5,7 @@ import { HttpClient, HttpClientModule, HttpErrorResponse } from '@angular/common
 import { ProgressBarComponent } from '../progress-bar.component';
 import { TooltipComponent, TooltipData } from '../components/tooltip.component';
 import { Observable, retry, timer, catchError, throwError } from 'rxjs';
+import { Router, ActivatedRoute } from '@angular/router';
 import Swal from 'sweetalert2';
 
 interface Condition {
@@ -253,11 +254,11 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   private apiUrl = 'https://prompt-serval-repeatedly.ngrok-free.app';
   private nextId = 2;
 
-  constructor(private http: HttpClient, private ngZone: NgZone) {}
+  constructor(private http: HttpClient, private ngZone: NgZone, private router: Router, private route: ActivatedRoute) {}
 
   ngOnInit() {
-    // Load conditions from localStorage first
-    this.loadConditionsFromStorage();
+    // Load conditions from URL first, then fallback to localStorage
+    this.loadConditionsFromUrl();
     
     // If no conditions were loaded, initialize default conditions
     if (this.conditions.length === 0) {
@@ -340,13 +341,13 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     // Initialize the condition's field settings
     this.onFieldChange(newCondition);
     this.generateQuery();
-    this.saveConditionsToStorage();
+    this.saveConditionsToUrl();
   }
 
   removeCondition(id: number) {
     this.conditions = this.conditions.filter(c => c.id !== id);
     this.generateQuery();
-    this.saveConditionsToStorage();
+    this.saveConditionsToUrl();
   }
 
   onConditionToggle() {
@@ -390,6 +391,52 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       }
     } catch (error) {
       console.warn('Failed to load conditions from localStorage:', error);
+    }
+  }
+
+  loadConditionsFromUrl() {
+    try {
+      const queryParam = this.route.snapshot.queryParams['query'];
+      if (queryParam) {
+        const decodedQuery = decodeURIComponent(queryParam);
+        const parsedConditions = this.parseQueryText(decodedQuery);
+        
+        if (parsedConditions.length > 0) {
+          this.conditions = parsedConditions;
+          this.nextId = Math.max(...parsedConditions.map(c => c.id)) + 1;
+          this.naturalLanguageQuery = decodedQuery;
+          return;
+        }
+      }
+      
+      // Fallback to localStorage if no URL query
+      this.loadConditionsFromStorage();
+    } catch (error) {
+      console.warn('Failed to load conditions from URL:', error);
+      // Fallback to localStorage on error
+      this.loadConditionsFromStorage();
+    }
+  }
+
+  saveConditionsToUrl() {
+    try {
+      const query = this.buildQuery();
+      if (query) {
+        this.router.navigate([], {
+          relativeTo: this.route,
+          queryParams: { query: encodeURIComponent(query) },
+          queryParamsHandling: 'merge'
+        });
+      } else {
+        // Remove query param if no conditions
+        this.router.navigate([], {
+          relativeTo: this.route,
+          queryParams: { query: null },
+          queryParamsHandling: 'merge'
+        });
+      }
+    } catch (error) {
+      console.warn('Failed to save conditions to URL:', error);
     }
   }
 
@@ -1043,7 +1090,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     }
     
     this.generateQuery();
-    this.saveConditionsToStorage();
+    this.saveConditionsToUrl();
   }
   
   onFieldChange(condition: Condition) {
@@ -1228,7 +1275,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       this.clearResults();
       this.queryString = '';
       this.generateQuery();
-      this.saveConditionsToStorage();
+      this.saveConditionsToUrl();
     }
   }
 
@@ -1402,7 +1449,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       
       // Generate the query string
       this.generateQuery();
-      this.saveConditionsToStorage();
+      this.saveConditionsToUrl();
       
       this.pasteQueryStatus = `Successfully parsed ${parsedConditions.length} condition(s)`;
       this.pasteQuerySuccess = true;
@@ -1416,6 +1463,49 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     } catch (error) {
       //console.error('Error parsing query:', error);
       this.pasteQueryStatus = 'Failed to parse query. Please check the format.';
+      this.pasteQuerySuccess = false;
+      
+      setTimeout(() => {
+        this.pasteQueryStatus = '';
+      }, 5000);
+    }
+  }
+
+  loadTestQuery() {
+    const testQuery = "daily_volume > 50000 and daily_pctchg_1 < 9 and daily_pctchg_1 > 0 and daily_close > 30 and weekly_volume > 1 week ago weekly_volume and daily_high < 1 day ago daily_volume * 2 and weekly_close crossed above weekly_supertrend_10_2";
+    
+    this.pasteQueryText = testQuery;
+    this.pasteQueryStatus = 'Test query loaded';
+    this.pasteQuerySuccess = true;
+    
+    // Auto-parse the test query
+    try {
+      const parsedConditions = this.parseQueryText(testQuery);
+      
+      if (parsedConditions.length === 0) {
+        this.pasteQueryStatus = 'No valid conditions found in test query';
+        this.pasteQuerySuccess = false;
+        return;
+      }
+
+      // Replace current conditions with parsed ones
+      this.conditions = parsedConditions;
+      this.nextId = Math.max(...parsedConditions.map(c => c.id)) + 1;
+      
+      // Generate the query string
+      this.generateQuery();
+      this.saveConditionsToUrl();
+      
+      this.pasteQueryStatus = `Test query loaded and parsed: ${parsedConditions.length} condition(s)`;
+      this.pasteQuerySuccess = true;
+      
+      // Auto-clear status after 5 seconds
+      setTimeout(() => {
+        this.pasteQueryStatus = '';
+      }, 5000);
+      
+    } catch (error) {
+      this.pasteQueryStatus = 'Failed to parse test query';
       this.pasteQuerySuccess = false;
       
       setTimeout(() => {
@@ -1490,7 +1580,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       indicatorComponent: leftFieldInfo.indicatorComponent
     };
     
-    // Parse the right side to determine if it's a field or number
+    // Parse the right side to determine if it's a field, mathematical expression, or number
     const rightFieldInfo = this.parseFieldExpression(rightSide);
     if (rightFieldInfo) {
       // Right side is a field
@@ -1502,6 +1592,10 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       condition.valueIndicatorParams = rightFieldInfo.indicatorParams;
       condition.valueIndicatorComponent = rightFieldInfo.indicatorComponent;
       condition.value = ''; // Clear value since we're using a field
+    } else if (this.isMathExpression(rightSide)) {
+      // Right side is a mathematical expression
+      condition.valueType = 'expression';
+      condition.value = rightSide;
     } else {
       // Right side is a number
       condition.valueType = 'number';
@@ -1509,6 +1603,13 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     }
     
     return condition;
+  }
+
+  private isMathExpression(expression: string): boolean {
+    // Check if the expression contains mathematical operators and field references
+    const mathOperators = /[\+\-\*\/]/;
+    const hasFieldReference = /\b(daily|weekly|monthly)_[a-z_]+\b|\b(open|high|low|close|volume)\b/;
+    return mathOperators.test(expression) && hasFieldReference.test(expression);
   }
 
   private parseFieldExpression(expression: string): any {
@@ -1522,6 +1623,22 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       const timePhrase = timeMatch[1].trim();
       cleanExpression = expression.replace(timePattern, '').trim();
       timePeriod = this.parseTimePeriod(timePhrase);
+    }
+    
+    // Check for basic fields with timeframe prefix first: daily_close, weekly_volume, etc.
+    const basicFields = ['open', 'high', 'low', 'close', 'volume'];
+    const basicFieldWithTimePattern = /^(daily|weekly|monthly)_([a-z]+)$/;
+    const basicFieldMatch = cleanExpression.match(basicFieldWithTimePattern);
+    
+    if (basicFieldMatch) {
+      const [, timeframe, fieldName] = basicFieldMatch;
+      if (basicFields.includes(fieldName)) {
+        return {
+          field: fieldName,
+          timePeriod: timeframe,
+          indicatorType: 'simple'
+        };
+      }
     }
     
     // Parse component-based field format: timeframe_indicator_component_params
@@ -1542,7 +1659,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       };
     }
     
-    // Parse standard field format: timeframe_indicator_params
+    // Parse standard field format: timeframe_indicator_params (allow alphanumeric indicators)
     const standardPattern = /^(daily|weekly|monthly)_([a-z]+)_(.+)$/;
     const standardMatch = cleanExpression.match(standardPattern);
     
@@ -1559,8 +1676,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       };
     }
     
-    // Check for basic fields (open, high, low, close, volume)
-    const basicFields = ['open', 'high', 'low', 'close', 'volume'];
+    // Check for basic fields without timeframe prefix (open, high, low, close, volume)
     if (basicFields.includes(cleanExpression)) {
       return {
         field: cleanExpression,
@@ -1699,7 +1815,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     
     // Regenerate query after update
     this.generateQuery();
-    this.saveConditionsToStorage();
+    this.saveConditionsToUrl();
     this.closePopup();
   }
 

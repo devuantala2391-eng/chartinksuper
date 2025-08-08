@@ -46,7 +46,7 @@
               *ngIf="condition.timePeriod === 'n-days'"
               type="number" 
               [(ngModel)]="condition.customDaysAgo" 
-              (ngModelChange)="generateQuery()"
+              (ngModelChange)="generateQuery(); saveConditionsToUrl()"
               placeholder="days"
               class="custom-input"
               min="1"
@@ -55,7 +55,7 @@
               *ngIf="condition.timePeriod === 'n-weeks'"
               type="number" 
               [(ngModel)]="condition.customWeeksAgo" 
-              (ngModelChange)="generateQuery()"
+              (ngModelChange)="generateQuery(); saveConditionsToUrl()"
               placeholder="weeks"
               class="custom-input"
               min="1"
@@ -64,7 +64,7 @@
               *ngIf="condition.timePeriod === 'n-months'"
               type="number" 
               [(ngModel)]="condition.customMonthsAgo" 
-              (ngModelChange)="generateQuery()"
+              (ngModelChange)="generateQuery(); saveConditionsToUrl()"
               placeholder="months"
               class="custom-input"
               min="1"
@@ -121,7 +121,7 @@
               *ngIf="condition.valueType === 'number'"
               type="text" 
               [(ngModel)]="condition.value" 
-              (ngModelChange)="generateQuery()"
+              (ngModelChange)="generateQuery(); saveConditionsToUrl()"
               placeholder="Value"
               class="value-input-compact"
             />
@@ -141,7 +141,7 @@
                 *ngIf="condition.valueTimePeriod === 'n-days'"
                 type="number" 
                 [(ngModel)]="condition.valueCustomDaysAgo" 
-                (ngModelChange)="generateQuery()"
+                (ngModelChange)="generateQuery(); saveConditionsToUrl()"
                 placeholder="days"
                 class="custom-input"
                 min="1"
@@ -150,7 +150,7 @@
                 *ngIf="condition.valueTimePeriod === 'n-weeks'"
                 type="number" 
                 [(ngModel)]="condition.valueCustomWeeksAgo" 
-                (ngModelChange)="generateQuery()"
+                (ngModelChange)="generateQuery(); saveConditionsToUrl()"
                 placeholder="weeks"
                 class="custom-input"
                 min="1"
@@ -159,7 +159,7 @@
                 *ngIf="condition.valueTimePeriod === 'n-months'"
                 type="number" 
                 [(ngModel)]="condition.valueCustomMonthsAgo" 
-                (ngModelChange)="generateQuery()"
+                (ngModelChange)="generateQuery(); saveConditionsToUrl()"
                 placeholder="months"
                 class="custom-input"
                 min="1"
@@ -208,7 +208,7 @@
                   *ngIf="condition.arithmeticOperator"
                   type="text" 
                   [(ngModel)]="condition.arithmeticValue" 
-                  (ngModelChange)="generateQuery()"
+                  (ngModelChange)="generateQuery(); saveConditionsToUrl()"
                   placeholder="Value"
                   class="arithmetic-value-compact"
                 />
@@ -221,7 +221,7 @@
                 <input 
                   type="checkbox" 
                   [(ngModel)]="condition.enabled"
-                  (ngModelChange)="onConditionToggle(); generateQuery(); saveConditionsToStorage()"
+                  (ngModelChange)="onConditionToggle(); generateQuery(); saveConditionsToUrl()"
                   title="{{ condition.enabled ? 'Disable condition' : 'Enable condition' }}"
                 >
                 <span class="toggle-slider"></span>
@@ -267,6 +267,13 @@
             title="Paste from clipboard"
           >
             📋 Paste
+          </button>
+          <button 
+            class="btn-test-query-compact" 
+            (click)="loadTestQuery()"
+            title="Load test query for debugging"
+          >
+            🧪 Test Query
           </button>
         </div>
         <div class="paste-query-input-compact">

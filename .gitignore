@@ -70,3 +70,4 @@ dist/
 # Angular
 .angular/
 frontend/.angular/
+full_results.json
