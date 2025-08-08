@@ -113,7 +113,7 @@ export class SchedulerService {
   }
   
   private setupSSEConnection() {
-    this.sseConnection = new EventSource(`${this.apiUrl}/api/scheduler-updates-stream`);
+    this.sseConnection = new EventSource(`${this.apiUrl}/scheduler-updates-stream`);
     
     this.sseConnection.onmessage = (event) => {
       this.ngZone.run(() => {
@@ -149,7 +149,7 @@ export class SchedulerService {
   }
   
   checkStatus() {
-    this.http.get<any>(`${this.apiUrl}/api/periodic-updates-status`).subscribe(
+    this.http.get<any>(`${this.apiUrl}/periodic-updates-status`).subscribe(
       status => {
         const currentState = this.stateSubject.value;
         this.stateSubject.next({
@@ -166,7 +166,7 @@ export class SchedulerService {
   }
   
   startScheduler(interval: number = 2, forceRun: boolean = true): Promise<any> {
-    const url = `${this.apiUrl}/api/start-periodic-updates?interval_minutes=${interval}&force_run=${forceRun}`;
+    const url = `${this.apiUrl}/start-periodic-updates?interval_minutes=${interval}&force_run=${forceRun}`;
     
     return this.http.post<any>(url, {}).toPromise().then(response => {
       const currentState = this.stateSubject.value;
@@ -182,7 +182,7 @@ export class SchedulerService {
   }
   
   stopScheduler(): Promise<any> {
-    return this.http.post<any>(`${this.apiUrl}/api/stop-periodic-updates`, {}).toPromise().then(response => {
+    return this.http.post<any>(`${this.apiUrl}/stop-periodic-updates`, {}).toPromise().then(response => {
       const currentState = this.stateSubject.value;
       this.stateSubject.next({
         ...currentState,
@@ -201,7 +201,7 @@ export class SchedulerService {
       isUpdating: true
     });
     
-    return this.http.post<any>(`${this.apiUrl}/api/update-latest-candles`, {}).toPromise().then(response => {
+    return this.http.post<any>(`${this.apiUrl}/update-latest-candles`, {}).toPromise().then(response => {
       const currentState = this.stateSubject.value;
       this.stateSubject.next({
         ...currentState,

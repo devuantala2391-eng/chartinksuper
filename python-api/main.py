@@ -1922,12 +1922,19 @@ def process_stock_batch_cpu_intensive(stock_batch_data):
                 # Generate appropriate indicator key based on indicator type
                 if name == "supertrend":
                     multiplier = float(params.get("multiplier", 2))
-                    indicator_key = f"{timeframe}_{name}_{period}_{multiplier}"
+                    # Format period as integer if it's a whole number, multiplier as is
+                    period_str = str(int(period)) if period.is_integer() else str(period)
+                    multiplier_str = str(multiplier)
+                    indicator_key = f"{timeframe}_{name}_{period_str}_{multiplier_str}"
                 elif name == "bb":
                     std_dev = float(params.get("stdDev", 2))
-                    indicator_key = f"{timeframe}_{name}_{period}_{std_dev}"
+                    # Format period as integer if it's a whole number
+                    period_str = str(int(period)) if period.is_integer() else str(period)
+                    indicator_key = f"{timeframe}_{name}_{period_str}_{std_dev}"
                 else:
-                    indicator_key = f"{timeframe}_{name}_{period}"
+                    # Format period as integer if it's a whole number
+                    period_str = str(int(period)) if period.is_integer() else str(period)
+                    indicator_key = f"{timeframe}_{name}_{period_str}"
                 
                 indicator_configs.append({
                     "name": name,
@@ -2412,8 +2419,9 @@ async def process_stock_indicators(stock: str, stock_data: List[Dict], indicator
                 params = indicator.get("params", {})
                 period = float(params.get("period", 14))
                 
-                # Create indicator key
-                indicator_key = f"{timeframe}_{name}_{period}"
+                # Create indicator key with consistent period formatting
+                period_str = str(int(period)) if period.is_integer() else str(period)
+                indicator_key = f"{timeframe}_{name}_{period_str}"
                 
                 # Add placeholder value (in real implementation, calculate actual value)
                 if name == "rsi":

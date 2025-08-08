@@ -806,7 +806,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     //console.log('Starting SSE connection for query progress...');
     
     // Create new SSE connection
-    this.queryProgressEventSource = new EventSource(`${this.apiUrl}/api/progress-stream`);
+    this.queryProgressEventSource = new EventSource(`${this.apiUrl}/progress-stream`);
     
     this.queryProgressEventSource.onopen = () => {
       //console.log('Query progress SSE connection opened');

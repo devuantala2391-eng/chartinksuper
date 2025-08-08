@@ -104,7 +104,7 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
     this.loading = true;
     this.error = null;
     
-    this.http.get<IndicatorResponse>(`${this.apiUrl}/api/get-precalculated-indicators`, {
+    this.http.get<IndicatorResponse>(`${this.apiUrl}/get-precalculated-indicators`, {
       headers: {
         'ngrok-skip-browser-warning': '69420'
       }
@@ -124,6 +124,14 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
   }
 
   addIndicator() {
+    // Ensure numeric parameters are properly typed
+    if (this.newIndicator.name === 'supertrend') {
+      // Ensure multiplier is a number (not string) and preserve decimals
+      if (this.newIndicator.params['multiplier'] !== undefined) {
+        this.newIndicator.params['multiplier'] = Number(this.newIndicator.params['multiplier']);
+      }
+    }
+    
     // Validate the indicator before adding
     const validationError = this.validateIndicator(this.newIndicator);
     if (validationError) {
@@ -235,6 +243,7 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
       indicators: this.indicators
     };
 
+
     this.http.post<any>(`${this.apiUrl}/precalculate-indicators`, payload, {
       headers: {
         'ngrok-skip-browser-warning': '69420'
@@ -341,7 +350,7 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
     
     // Poll for status updates
     this.statusInterval = setInterval(() => {
-      this.http.get<IndicatorResponse>(`${this.apiUrl}/api/get-precalculated-indicators`, {
+      this.http.get<IndicatorResponse>(`${this.apiUrl}/get-precalculated-indicators`, {
         headers: {
           'ngrok-skip-browser-warning': '69420'
         }
@@ -374,7 +383,7 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
     // Poll for progress updates
     this.progressInterval = setInterval(() => {
       if (this.status === 'processing') {
-        this.http.get<any>(`${this.apiUrl}/query/progress`, {
+        this.http.get<any>(`${this.apiUrl}/progress-stream`, {
           headers: {
             'ngrok-skip-browser-warning': '69420'
           }

@@ -1,4 +1,5 @@
 export const environment = {
   production: false,
-  apiUrl: 'https://prompt-serval-repeatedly.ngrok-free.app'  // You can change this for local development
+  // apiUrl: 'https://prompt-serval-repeatedly.ngrok-free.app'
+  apiUrl: 'http://localhost:8001/api'
 };
