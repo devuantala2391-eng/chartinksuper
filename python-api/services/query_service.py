@@ -88,6 +88,36 @@ def get_day_of_week_name(timestamp_str: str) -> str:
 
 def resolve_field_name(field_name: str) -> str:
     """Resolve field name variations to actual field names in the data."""
+    import re
+    
+    # Handle dynamic decimal parameters for indicators
+    # Check for Bollinger Bands with decimal parameters (e.g., daily_bb_upper_10_1.22)
+    bb_match = re.match(r'^(daily|weekly|monthly)_bb_(upper|middle|lower)_(\d+(?:\.\d+)?)_(\d+(?:\.\d+)?)$', field_name)
+    if bb_match:
+        timeframe = bb_match.group(1)
+        band_type = bb_match.group(2)
+        period = bb_match.group(3)
+        std_dev = bb_match.group(4)
+        # Return in the format expected by the data: timeframe_bb_period_stddev_bandtype
+        return f"{timeframe}_bb_{period}_{std_dev}_{band_type}"
+    
+    # Check for SuperTrend with decimal parameters (e.g., daily_supertrend_10_2.44)
+    st_match = re.match(r'^(daily|weekly|monthly)_supertrend_(\d+(?:\.\d+)?)_(\d+(?:\.\d+)?)$', field_name)
+    if st_match:
+        timeframe = st_match.group(1)
+        period = st_match.group(2)
+        multiplier = st_match.group(3)
+        # Return in the format expected by the data
+        return f"{timeframe}_supertrend_{period}_{multiplier}"
+    
+    # Check for other indicators with decimal parameters
+    ind_match = re.match(r'^(daily|weekly|monthly)_(rsi|sma|ema|pctchg)_(\d+(?:\.\d+)?)$', field_name)
+    if ind_match:
+        timeframe = ind_match.group(1)
+        indicator = ind_match.group(2)
+        period = ind_match.group(3)
+        return f"{timeframe}_{indicator}_{period}"
+    
     # Field name mappings for common variations
     field_mappings = {
         # Daily price fields - map to actual field names in the data (without daily_ prefix)
@@ -226,6 +256,26 @@ def get_available_fields_from_precalculated_indicators() -> set:
                 period = params.get("period", 1)
                 period_str = str(int(period)) if isinstance(period, float) and period.is_integer() else str(period)
                 field_name = f"{timeframe}_{name}_{period_str}"
+                available_fields.add(field_name)
+            elif name == "bb":
+                period = params.get("period", 20)
+                std_dev = params.get("stdDev", 2)
+                period_str = str(int(period)) if isinstance(period, float) and period.is_integer() else str(period)
+                std_str = str(int(std_dev)) if isinstance(std_dev, float) and std_dev.is_integer() else str(std_dev)
+                # Bollinger bands have upper, middle, lower suffixes
+                # Format should match actual data: timeframe_bb_period_stddev_suffix
+                for suffix in ['upper', 'middle', 'lower']:
+                    field_name = f"{timeframe}_{name}_{period_str}_{std_str}_{suffix}"
+                    available_fields.add(field_name)
+            elif name in ["rsi", "sma", "ema", "adx", "atr", "cci", "macd", "stoch", "wma"]:
+                # Standard indicators with single period parameter
+                period = params.get("period", 14)
+                period_str = str(int(period)) if isinstance(period, float) and period.is_integer() else str(period)
+                field_name = f"{timeframe}_{name}_{period_str}"
+                available_fields.add(field_name)
+            elif name == "volume":
+                # Volume indicator doesn't have parameters
+                field_name = f"{timeframe}_{name}"
                 available_fields.add(field_name)
             # Add other indicator types as needed
             
@@ -515,14 +565,15 @@ def parse_query(query: str) -> Dict[str, Any]:
     # Enhanced regex patterns for conditions including crossed above/below
     # First try to match "crossed above" and "crossed below" patterns
     # Support both simple values and complex expressions like "1 day ago daily_close"
-    crossed_pattern = r'(\w+(?:\(\d+(?:,\d+)*\))?)\s+(crossed\s+(?:above|below))\s+(.+)'
+    # Updated to handle decimal numbers in field names (e.g., weekly_supertrend_30_1.56)
+    crossed_pattern = r'([\w\.]+(?:\(\d+(?:\.\d+)?(?:,\d+(?:\.\d+)?)*\))?)\s+(crossed\s+(?:above|below))\s+(.+)'
     
     # Pattern for time-offset queries on the left side like "1 day ago daily_supertrend_10_2 > 200"
-    # Updated to handle time offset expressions on both sides
-    time_offset_pattern = r'(\d+)\s+(day|week|month)s?\s+ago\s+(\w+(?:_\w+)*(?:\(\d+(?:,\d+)*\))?)\s*([><=!]+)\s*(.+)'
+    # Updated to handle time offset expressions on both sides and decimal numbers
+    time_offset_pattern = r'(\d+)\s+(day|week|month)s?\s+ago\s+([\w\.]+(?:_[\w\.]+)*(?:\(\d+(?:\.\d+)?(?:,\d+(?:\.\d+)?)*\))?)\s*([><=!]+)\s*(.+)'
     
-    # Basic comparison operators - updated to handle complex right side expressions
-    basic_pattern = r'(\w+(?:\(\d+(?:,\d+)*\))?)\s*([><=!]+)\s*(.+)'
+    # Basic comparison operators - updated to handle complex right side expressions and decimal numbers
+    basic_pattern = r'([\w\.]+(?:\(\d+(?:\.\d+)?(?:,\d+(?:\.\d+)?)*\))?)\s*([><=!]+)\s*(.+)'
     
     conditions = []
     logical_operators = []
@@ -951,10 +1002,50 @@ def get_query_examples() -> List[Dict[str, Any]]:
 
 def detect_missing_indicators_from_fields(missing_fields: List[str]) -> List[Dict[str, Any]]:
     """Convert missing field names to indicator configurations."""
+    import re
     indicators = []
     
     for field in missing_fields:
-        # Parse field names like "daily_supertrend_10_2.5", "weekly_rsi_14", etc.
+        # Use regex to properly parse decimal parameters
+        # Pattern for SuperTrend: timeframe_supertrend_period_multiplier
+        st_match = re.match(r'^(daily|weekly|monthly)_supertrend_(\d+(?:\.\d+)?)_(\d+(?:\.\d+)?)$', field)
+        if st_match:
+            indicators.append({
+                "timeframe": st_match.group(1),
+                "name": "supertrend",
+                "params": {
+                    "period": float(st_match.group(2)),
+                    "multiplier": float(st_match.group(3))
+                }
+            })
+            continue
+            
+        # Pattern for Bollinger Bands: timeframe_bb_bandtype_period_stddev
+        bb_match = re.match(r'^(daily|weekly|monthly)_bb_(upper|middle|lower)_(\d+(?:\.\d+)?)_(\d+(?:\.\d+)?)$', field)
+        if bb_match:
+            indicators.append({
+                "timeframe": bb_match.group(1),
+                "name": "bb",
+                "params": {
+                    "period": float(bb_match.group(3)),
+                    "stdDev": float(bb_match.group(4))
+                }
+            })
+            continue
+            
+        # Pattern for standard indicators: timeframe_indicator_period
+        ind_match = re.match(r'^(daily|weekly|monthly)_(rsi|sma|ema|pctchg|volume)_(\d+(?:\.\d+)?)$', field)
+        if ind_match:
+            indicators.append({
+                "timeframe": ind_match.group(1),
+                "name": ind_match.group(2),
+                "params": {
+                    "period": float(ind_match.group(3))
+                }
+            })
+            continue
+            
+        # Fallback to old parsing method for backwards compatibility
         parts = field.split('_')
         
         if len(parts) >= 3:

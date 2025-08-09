@@ -788,6 +788,14 @@ async def process_query(request: QueryRequest):
         
         logger.info(f"Processing query: {query}")
         
+        # Ensure precalculation exists first
+        if not await ensure_precalculation_exists():
+            update_progress({"isRunning": False, "phase": "error", "message": "Failed to initialize precalculated data"})
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to initialize precalculated data. Please try again."
+            )
+        
         # Parse the query
         try:
             parsed_query = parse_query(query)
@@ -1113,6 +1121,14 @@ async def process_latest_query(request: QueryRequest):
         }, clear_queue=True)
         
         logger.info(f"Processing LATEST DAY query: {query}")
+        
+        # Ensure precalculation exists first
+        if not await ensure_precalculation_exists():
+            update_progress({"isRunning": False, "phase": "error", "message": "Failed to initialize precalculated data"})
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to initialize precalculated data. Please try again."
+            )
         
         # Parse the query
         try:
@@ -2378,6 +2394,119 @@ def process_stock_batch_cpu_intensive(stock_batch_data):
     print(f"[DEBUG] Batch completed in {batch_end - batch_start:.2f}s with {len(results)} results")
     return results
 
+def check_if_indicators_already_calculated(indicators: List[Dict]) -> bool:
+    """Check if the given indicators are already calculated in existing data."""
+    try:
+        # Check if precalculated indicators file exists
+        precalc_file = Path("precalculatedIndicators.json")
+        if not precalc_file.exists():
+            return False
+            
+        with open(precalc_file, 'r') as f:
+            data = json.load(f)
+            
+        if data.get("status") != "completed":
+            return False
+            
+        existing_indicators = data.get("indicators", [])
+        
+        # Check if all requested indicators exist
+        for new_ind in indicators:
+            found = False
+            for existing_ind in existing_indicators:
+                if (existing_ind.get("timeframe") == new_ind.get("timeframe") and
+                    existing_ind.get("name") == new_ind.get("name") and
+                    existing_ind.get("params") == new_ind.get("params")):
+                    found = True
+                    break
+            if not found:
+                return False
+                
+        # Check if actual precalculated files exist
+        precalc_dir = Path("precalculatedStorage")
+        if not precalc_dir.exists():
+            return False
+            
+        files = list(precalc_dir.glob("*_piped.json"))
+        if len(files) < len(STOCK_SYMBOLS) * 0.9:  # At least 90% of stocks should be precalculated
+            return False
+            
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error checking if indicators are calculated: {e}")
+        return False
+
+async def ensure_precalculation_exists() -> bool:
+    """Check if precalculation exists, if not create it with default indicators."""
+    try:
+        # Check if precalculatedStorage directory exists and has data
+        precalc_dir = Path("precalculatedStorage")
+        precalc_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Check if precalculatedIndicators.json exists
+        precalc_config_file = Path("precalculatedIndicators.json")
+        
+        # Check if we have any precalculated files
+        existing_files = list(precalc_dir.glob("*_piped.json"))
+        
+        # If config file doesn't exist OR we don't have enough precalculated files
+        if not precalc_config_file.exists() or len(existing_files) < len(STOCK_SYMBOLS) * 0.9:
+            if not precalc_config_file.exists():
+                logger.info("precalculatedIndicators.json not found. Creating new configuration and starting fresh precalculation...")
+            else:
+                logger.info("Insufficient precalculated data. Starting automatic precalculation with default indicators...")
+            
+            # Default indicators that cover most common use cases
+            default_indicators = [
+                # Daily indicators
+                {"id": "1", "timeframe": "daily", "name": "rsi", "params": {"period": 14}, "description": "Daily RSI 14"},
+                {"id": "2", "timeframe": "daily", "name": "sma", "params": {"period": 20}, "description": "Daily SMA 20"},
+                {"id": "3", "timeframe": "daily", "name": "sma", "params": {"period": 50}, "description": "Daily SMA 50"},
+                {"id": "4", "timeframe": "daily", "name": "ema", "params": {"period": 20}, "description": "Daily EMA 20"},
+                {"id": "5", "timeframe": "daily", "name": "supertrend", "params": {"period": 10, "multiplier": 2}, "description": "Daily SuperTrend 10,2"},
+                {"id": "6", "timeframe": "daily", "name": "bb", "params": {"period": 20, "stdDev": 2}, "description": "Daily Bollinger Bands 20,2"},
+                {"id": "7", "timeframe": "daily", "name": "pctchg", "params": {"period": 1}, "description": "Daily % Change 1"},
+                
+                # Weekly indicators
+                {"id": "8", "timeframe": "weekly", "name": "rsi", "params": {"period": 14}, "description": "Weekly RSI 14"},
+                {"id": "9", "timeframe": "weekly", "name": "sma", "params": {"period": 20}, "description": "Weekly SMA 20"},
+                {"id": "10", "timeframe": "weekly", "name": "supertrend", "params": {"period": 10, "multiplier": 2}, "description": "Weekly SuperTrend 10,2"},
+                
+                # Monthly indicators
+                {"id": "11", "timeframe": "monthly", "name": "rsi", "params": {"period": 14}, "description": "Monthly RSI 14"},
+                {"id": "12", "timeframe": "monthly", "name": "sma", "params": {"period": 20}, "description": "Monthly SMA 20"}
+            ]
+            
+            # Save indicators configuration
+            precalc_data = {
+                "status": "processing",
+                "indicators": default_indicators,
+                "lastUpdated": datetime.utcnow().isoformat(),
+                "dayOfWeek": get_day_of_week_name(datetime.utcnow().timestamp() * 1000),
+                "autoGenerated": True
+            }
+            
+            with open("precalculatedIndicators.json", 'w') as f:
+                json.dump(precalc_data, f, indent=2)
+            
+            # Run precalculation
+            await process_indicators_background(default_indicators)
+            
+            # Update status to completed
+            precalc_data["status"] = "completed"
+            with open("precalculatedIndicators.json", 'w') as f:
+                json.dump(precalc_data, f, indent=2)
+                
+            logger.info("Automatic precalculation completed successfully")
+            return True
+            
+        return True  # Precalculation already exists
+        
+    except Exception as e:
+        logger.error(f"Error in ensure_precalculation_exists: {e}")
+        return False
+
 async def add_missing_indicators_and_calculate(missing_fields: List[str]) -> bool:
     """Add missing indicators to precalculated list and calculate them on-demand."""
     try:
@@ -2401,35 +2530,21 @@ async def add_missing_indicators_and_calculate(missing_fields: List[str]) -> boo
             with open(precalc_file, 'r') as f:
                 data = json.load(f)
                 current_indicators = data.get('indicators', [])
+        else:
+            # If file doesn't exist, create it with empty indicators list
+            logger.info("precalculatedIndicators.json not found, creating new file")
+            current_indicators = []
         
+        # Check if these indicators are already calculated (optimization)
+        if check_if_indicators_already_calculated(missing_indicators):
+            logger.info("All required indicators are already calculated. Skipping recalculation.")
+            return True
+            
         # Add missing indicators to the list (with unique IDs)
         import time
         added_indicators = []
         for indicator in missing_indicators:
-            # Generate unique ID with small delay to ensure uniqueness
-            time.sleep(0.001)
-            indicator['id'] = str(int(time.time() * 1000))
-            # Generate description
-            timeframe = indicator['timeframe'].capitalize()
-            name = indicator['name'].upper()
-            params = indicator['params']
-            
-            if indicator['name'] == 'supertrend':
-                period = params.get('period', 10)
-                multiplier = params.get('multiplier', 2)
-                indicator['description'] = f"{timeframe} {name} {period},{multiplier}"
-            elif indicator['name'] == 'bb':
-                period = params.get('period', 20)
-                std_dev = params.get('stdDev', 2)
-                indicator['description'] = f"{timeframe} Bollinger Bands {period},{std_dev}"
-            elif indicator['name'] == 'pctchg':
-                period = params.get('period', 1)
-                indicator['description'] = f"{timeframe} {name} {period}"
-            else:
-                period = params.get('period', 14)
-                indicator['description'] = f"{timeframe} {name} {period}"
-            
-            # Avoid duplicates
+            # Check if this specific indicator already exists (avoid duplicates)
             is_duplicate = any(
                 existing.get('timeframe') == indicator['timeframe'] and
                 existing.get('name') == indicator['name'] and
@@ -2438,6 +2553,29 @@ async def add_missing_indicators_and_calculate(missing_fields: List[str]) -> boo
             )
             
             if not is_duplicate:
+                # Generate unique ID with small delay to ensure uniqueness
+                time.sleep(0.001)
+                indicator['id'] = str(int(time.time() * 1000))
+                # Generate description
+                timeframe = indicator['timeframe'].capitalize()
+                name = indicator['name'].upper()
+                params = indicator['params']
+                
+                if indicator['name'] == 'supertrend':
+                    period = params.get('period', 10)
+                    multiplier = params.get('multiplier', 2)
+                    indicator['description'] = f"{timeframe} {name} {period},{multiplier}"
+                elif indicator['name'] == 'bb':
+                    period = params.get('period', 20)
+                    std_dev = params.get('stdDev', 2)
+                    indicator['description'] = f"{timeframe} Bollinger Bands {period},{std_dev}"
+                elif indicator['name'] == 'pctchg':
+                    period = params.get('period', 1)
+                    indicator['description'] = f"{timeframe} {name} {period}"
+                else:
+                    period = params.get('period', 14)
+                    indicator['description'] = f"{timeframe} {name} {period}"
+                
                 current_indicators.append(indicator)
                 added_indicators.append(indicator)
                 logger.info(f"Auto-added missing indicator: {indicator['description']}")
