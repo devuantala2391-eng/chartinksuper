@@ -22,8 +22,8 @@ class LatestDayPrecalculator:
     """Service to update precalculated storage for only the latest day using existing logic."""
     
     def __init__(self):
-        self.db_path = Path(__file__).parent.parent.parent / "db"
-        self.precalc_path = Path(__file__).parent.parent.parent / "precalculatedStorage"
+        self.db_path = Path(__file__).parent.parent / "db"
+        self.precalc_path = Path(__file__).parent.parent / "precalculatedStorage"
         self.indicators_config_path = Path(__file__).parent.parent / "precalculatedIndicators.json"
         
         # Ensure precalculatedStorage directory exists

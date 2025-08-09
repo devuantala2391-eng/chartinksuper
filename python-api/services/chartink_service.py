@@ -134,7 +134,7 @@ class ChartinkService:
         symbol_start = datetime.now()
         try:
             # Get file path (directory already created in process_payload)
-            json_dir = Path(__file__).parent.parent.parent / "db"
+            json_dir = Path(__file__).parent.parent / "db"
             file_path = json_dir / f"{symbol}.json"
             
             # Fetch data from Chartink API
@@ -177,7 +177,7 @@ class ChartinkService:
             return {}
         
         # Ensure the directory exists ONCE before processing
-        json_dir = Path(__file__).parent.parent.parent / "db"
+        json_dir = Path(__file__).parent.parent / "db"
         json_dir.mkdir(parents=True, exist_ok=True)
         
         # Initialize client pool BEFORE processing starts

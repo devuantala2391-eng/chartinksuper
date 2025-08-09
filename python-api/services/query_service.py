@@ -90,13 +90,20 @@ def resolve_field_name(field_name: str) -> str:
     """Resolve field name variations to actual field names in the data."""
     # Field name mappings for common variations
     field_mappings = {
-        # Daily price fields
+        # Daily price fields - map to actual field names in the data (without daily_ prefix)
         'daily_close': 'close',
         'daily_open': 'open', 
         'daily_high': 'high',
         'daily_low': 'low',
         'daily_volume': 'volume',
-        'daily_pctchg_1': 'daily_pctchg_1',  # Special case - computed on the fly
+        'daily_pctchg_1': 'daily_pctchg_1',  # Special case - precalculated indicator
+        
+        # Short versions already map correctly to base names
+        'close': 'close',
+        'open': 'open',
+        'high': 'high',  
+        'low': 'low',
+        'volume': 'volume',
         
         # Weekly price fields (these exist as-is)
         'weekly_close': 'weekly_close',
@@ -120,7 +127,11 @@ def resolve_field_name(field_name: str) -> str:
         # Add more BB variations if needed
         'bb_upper_20_2': 'daily_bb_20_2_upper',
         'bb_middle_20_2': 'daily_bb_20_2_middle',
-        'bb_lower_20_2': 'daily_bb_20_2_lower'
+        'bb_lower_20_2': 'daily_bb_20_2_lower',
+        
+        # Handle SuperTrend field variations with decimal points
+        'weekly_supertrend_10_2': 'weekly_supertrend_10_2.0',  # Map to actual field name in data
+        'weekly_supertrend_10_2.0': 'weekly_supertrend_10_2.0'
     }
     
     # Return mapped name if exists, otherwise return original
@@ -149,8 +160,180 @@ def get_field_value(candle: Dict[str, Any], field_name: str, candles: List[Dict[
         # Regular field lookup
         return candle.get(field_name)
 
+def get_available_fields_from_precalculated_indicators() -> set:
+    """Get available fields from precalculatedIndicators.json config AND verify data files exist."""
+    import json
+    from pathlib import Path
+    
+    # First check if precalculated storage exists and has data
+    precalc_dir = Path(__file__).parent.parent / "precalculatedStorage"
+    if not precalc_dir.exists():
+        logger.warning("Precalculated storage directory does not exist")
+        return set()
+    
+    # Check if any stock files exist
+    sample_files = list(precalc_dir.glob("*_piped.json"))
+    if not sample_files:
+        logger.warning("No precalculated data files found in storage")
+        return set()
+    
+    # Load precalculated indicators config
+    try:
+        indicators_file = Path(__file__).parent.parent / "precalculatedIndicators.json"
+        if not indicators_file.exists():
+            return set()
+        
+        with open(indicators_file, 'r') as f:
+            config = json.load(f)
+        
+        # Only return fields if status is "completed"
+        if config.get("status") != "completed":
+            logger.warning(f"Precalculation status is {config.get('status')}, not completed")
+            return set()
+        
+        available_fields = set()
+        
+        # Add basic price fields that are always available
+        # Daily fields are stored without the daily_ prefix in actual data
+        for field in ['open', 'high', 'low', 'close', 'volume']:
+            available_fields.add(field)  # Basic fields without prefix
+        
+        # Weekly and monthly fields have their prefixes
+        for timeframe in ['weekly', 'monthly']:
+            for field in ['open', 'high', 'low', 'close', 'volume']:
+                available_fields.add(f"{timeframe}_{field}")
+        
+        # Add indicator fields based on configuration
+        indicators = config.get("indicators", [])
+        for indicator in indicators:
+            timeframe = indicator.get("timeframe", "daily")
+            name = indicator.get("name", "")
+            params = indicator.get("params", {})
+            
+            if name == "supertrend":
+                period = params.get("period", 10)
+                multiplier = params.get("multiplier", 3)
+                # Generate the field name using same logic as backend
+                period_str = str(int(period)) if isinstance(period, float) and period.is_integer() else str(period)
+                multiplier_str = str(int(multiplier)) if isinstance(multiplier, float) and multiplier.is_integer() else str(multiplier)
+                field_name = f"{timeframe}_{name}_{period_str}_{multiplier_str}"
+                available_fields.add(field_name)
+                # Also add with .0 suffix for compatibility
+                if isinstance(multiplier, (int, float)) and float(multiplier).is_integer():
+                    field_name_with_decimal = f"{timeframe}_{name}_{period_str}_{int(multiplier)}.0"
+                    available_fields.add(field_name_with_decimal)
+            elif name == "pctchg":
+                period = params.get("period", 1)
+                period_str = str(int(period)) if isinstance(period, float) and period.is_integer() else str(period)
+                field_name = f"{timeframe}_{name}_{period_str}"
+                available_fields.add(field_name)
+            # Add other indicator types as needed
+            
+        return available_fields
+        
+    except Exception as e:
+        logger.warning(f"Failed to load precalculated indicators config: {e}")
+        return set()
+
 def validate_query_fields(parsed_query: Dict[str, Any], sample_stock_path: str = None) -> Dict[str, Any]:
     """Validate if all fields in the query exist in precalculated data."""
+    
+    try:
+        # Use efficient config-based field detection instead of loading large JSON files
+        available_fields = get_available_fields_from_precalculated_indicators()
+        
+        if not available_fields:
+            # Fallback to sample file approach if config method fails
+            return validate_query_fields_fallback(parsed_query, sample_stock_path)
+        
+        logger.info(f"Available fields from config: {sorted(available_fields)}")
+        
+        # Extract all field names from the parsed query
+        required_fields = set()
+        conditions = parsed_query.get("conditions", [])
+        
+        # Debug: Log parsing details  
+        logger.info(f"Query parsing debug:")
+        logger.info(f"  Total conditions parsed: {len(conditions)}")
+        for i, condition in enumerate(conditions):
+            logger.info(f"  Condition {i+1}: {condition}")
+        
+        
+        for condition in conditions:
+            left = condition.get("left", {})
+            right = condition.get("right", {})
+            
+            # Check left side field
+            if left.get("type") in ["field", "indicator"]:
+                field_name = left.get("field", "")
+                if field_name:
+                    # Resolve field name using existing mapping
+                    resolved_name = resolve_field_name(field_name)
+                    required_fields.add(resolved_name)
+                    logger.info(f"    Left field: {field_name} -> {resolved_name}")
+            
+            # Check right side field (for field references)
+            if right.get("type") == "field":
+                field_name = right.get("field", "")
+                if field_name:
+                    resolved_name = resolve_field_name(field_name)
+                    required_fields.add(resolved_name)
+                    logger.info(f"    Right field: {field_name} -> {resolved_name}")
+            
+            # Check time offset fields
+            if left.get("type") == "time_offset_field":
+                field_name = left.get("field", "")
+                if field_name:
+                    resolved_name = resolve_field_name(field_name)
+                    required_fields.add(resolved_name)
+                    logger.info(f"    Left time offset field: {field_name} -> {resolved_name}")
+            
+            if right.get("type") == "time_offset_field":
+                field_name = right.get("field", "")
+                if field_name:
+                    resolved_name = resolve_field_name(field_name)
+                    required_fields.add(resolved_name)
+                    logger.info(f"    Right time offset field: {field_name} -> {resolved_name}")
+        
+        # Check for missing fields, but allow computed fields
+        computed_fields = set()  # Empty set for computed fields
+        # Note: percentage change fields are now precalculated indicators rather than computed
+        # computed_fields.add('daily_pctchg_1')  # Moved to precalculated indicators
+        
+        # Handle format variations (e.g., weekly_supertrend_10_2 vs weekly_supertrend_10_2.0)
+        extended_available_fields = set(available_fields)
+        for available_field in list(available_fields):
+            # Remove .0 suffix for supertrend fields to create alternate mapping
+            if '_supertrend_' in available_field and available_field.endswith('.0'):
+                alt_field = available_field[:-2]  # Remove .0
+                extended_available_fields.add(alt_field)
+        
+        available_fields_plus_computed = extended_available_fields | computed_fields
+        missing_fields = required_fields - available_fields_plus_computed
+        
+        # Debug: Log field detection details
+        logger.info(f"Field detection debug:")
+        logger.info(f"  Required fields: {sorted(required_fields)}")
+        logger.info(f"  Available fields: {sorted(available_fields)}")
+        logger.info(f"  Extended available: {sorted(extended_available_fields)}")
+        logger.info(f"  Missing fields: {sorted(missing_fields)}")
+        
+        
+        if missing_fields:
+            return {
+                "valid": False,
+                "error": f"Missing fields in precalculated data: {', '.join(sorted(missing_fields))}",
+                "missing_fields": list(missing_fields),
+                "available_fields": sorted(list(available_fields_plus_computed))
+            }
+        
+        return {"valid": True, "required_fields": list(required_fields)}
+        
+    except Exception as e:
+        return {"valid": False, "error": f"Validation error: {str(e)}"}
+
+def validate_query_fields_fallback(parsed_query: Dict[str, Any], sample_stock_path: str = None) -> Dict[str, Any]:
+    """Fallback validation method using sample stock file (slower but more comprehensive)."""
     import json
     from pathlib import Path
     
@@ -170,11 +353,19 @@ def validate_query_fields(parsed_query: Dict[str, Any], sample_stock_path: str =
                 break
         
         if not precalc_dir:
-            return {"valid": False, "error": "Precalculated storage directory not found"}
+            # Create the directory if it doesn't exist
+            precalc_dir = Path(__file__).parent.parent / "precalculatedStorage"
+            precalc_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Created precalculatedStorage directory at: {precalc_dir}")
+            return {"valid": False, "error": "Precalculated storage directory was missing and has been created. Please precalculate indicators first."}
             
         sample_files = list(precalc_dir.glob("*_piped.json"))
         if not sample_files:
-            return {"valid": False, "error": "No precalculated data found"}
+            return {
+                "valid": False, 
+                "error": "No precalculated data found. Please run 'Precalculate Indicators' first to generate the required data.",
+                "hint": "Click the 'Precalculate Indicators' button in the frontend to generate data for all stocks."
+            }
         sample_stock_path = str(sample_files[0])
     
     try:
@@ -189,6 +380,7 @@ def validate_query_fields(parsed_query: Dict[str, Any], sample_stock_path: str =
         latest_candle = sample_data["data"][-1]
         available_fields = set(latest_candle.keys())
         
+        # Continue with validation logic WITHOUT recursion
         # Extract all field names from the parsed query
         required_fields = set()
         conditions = parsed_query.get("conditions", [])
@@ -201,7 +393,6 @@ def validate_query_fields(parsed_query: Dict[str, Any], sample_stock_path: str =
             if left.get("type") in ["field", "indicator"]:
                 field_name = left.get("field", "")
                 if field_name:
-                    # Resolve field name using existing mapping
                     resolved_name = resolve_field_name(field_name)
                     required_fields.add(resolved_name)
             
@@ -225,17 +416,15 @@ def validate_query_fields(parsed_query: Dict[str, Any], sample_stock_path: str =
                     resolved_name = resolve_field_name(field_name)
                     required_fields.add(resolved_name)
         
-        # Check for missing fields, but allow computed fields
-        computed_fields = {'daily_pctchg_1'}  # Fields that can be computed on the fly
-        available_fields_plus_computed = available_fields | computed_fields
-        missing_fields = required_fields - available_fields_plus_computed
+        # Check for missing fields
+        missing_fields = required_fields - available_fields
         
         if missing_fields:
             return {
                 "valid": False,
                 "error": f"Missing fields in precalculated data: {', '.join(sorted(missing_fields))}",
                 "missing_fields": list(missing_fields),
-                "available_fields": sorted(list(available_fields_plus_computed))
+                "available_fields": sorted(list(available_fields))
             }
         
         return {"valid": True, "required_fields": list(required_fields)}
@@ -759,6 +948,86 @@ def get_query_examples() -> List[Dict[str, Any]]:
             "description": "Find stocks with bullish technical setup"
         }
     ]
+
+def detect_missing_indicators_from_fields(missing_fields: List[str]) -> List[Dict[str, Any]]:
+    """Convert missing field names to indicator configurations."""
+    indicators = []
+    
+    for field in missing_fields:
+        # Parse field names like "daily_supertrend_10_2.5", "weekly_rsi_14", etc.
+        parts = field.split('_')
+        
+        if len(parts) >= 3:
+            timeframe = parts[0]  # daily, weekly, monthly
+            indicator_name = parts[1]  # rsi, sma, supertrend, etc.
+            
+            # Extract parameters based on indicator type
+            if indicator_name == "supertrend" and len(parts) >= 4:
+                try:
+                    period = float(parts[2])
+                    multiplier = float(parts[3])
+                    indicators.append({
+                        "timeframe": timeframe,
+                        "name": indicator_name,
+                        "params": {
+                            "period": period,
+                            "multiplier": multiplier
+                        }
+                    })
+                except (ValueError, IndexError):
+                    continue
+                    
+            elif indicator_name == "bb" and len(parts) >= 4:  # Bollinger Bands
+                try:
+                    period = float(parts[2])
+                    std_dev = float(parts[3])
+                    indicators.append({
+                        "timeframe": timeframe,
+                        "name": indicator_name,
+                        "params": {
+                            "period": period,
+                            "stdDev": std_dev
+                        }
+                    })
+                except (ValueError, IndexError):
+                    continue
+                    
+            elif indicator_name in ['pctchg', 'volume'] and len(parts) >= 3:
+                # Percentage change or volume (may have period or be standalone)
+                try:
+                    if len(parts) >= 3 and parts[2].replace('.', '').isdigit():
+                        period = float(parts[2])
+                        indicators.append({
+                            "timeframe": timeframe,
+                            "name": indicator_name,
+                            "params": {
+                                "period": period
+                            }
+                        })
+                    else:
+                        # Volume without period
+                        indicators.append({
+                            "timeframe": timeframe,
+                            "name": indicator_name,
+                            "params": {}
+                        })
+                except (ValueError, IndexError):
+                    continue
+            else:
+                # Standard indicators with just period (rsi, sma, ema, etc.)
+                try:
+                    period = float(parts[2])
+                    indicators.append({
+                        "timeframe": timeframe,
+                        "name": indicator_name,
+                        "params": {
+                            "period": period
+                        }
+                    })
+                except (ValueError, IndexError):
+                    continue
+    
+    return indicators
 
 def extract_indicators_from_query(parsed_query: Dict[str, Any]) -> Dict[str, Any]:
     """Extract required indicators and timeframes from parsed query."""

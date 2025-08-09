@@ -16,7 +16,7 @@ class LatestCandleUpdater:
     
     def __init__(self):
         self.chartink_service = ChartinkService()
-        self.db_path = Path(__file__).parent.parent.parent / "db"
+        self.db_path = Path(__file__).parent.parent / "db"
         self.is_running = False
         self.update_task = None
         self.lock = threading.Lock()

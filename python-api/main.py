@@ -59,7 +59,7 @@ import os
 from services.query_service import (
     parse_query, find_matching_candles, get_query_examples, 
     extract_indicators_from_query, process_stocks_with_indicators, is_historical_query,
-    validate_query_fields
+    validate_query_fields, detect_missing_indicators_from_fields
 )
 from services.indicator_cache import clear_cache
 from services.data_utils import get_next_day_timestamp, get_day_of_week_name
@@ -197,13 +197,20 @@ def sanitize_for_json(obj):
 # Custom JSON response that handles edge cases
 class SafeJSONResponse(JSONResponse):
     def render(self, content: Any) -> bytes:
-        return json.dumps(
-            sanitize_for_json(content),
-            ensure_ascii=False,
-            allow_nan=False,
-            indent=None,
-            separators=(",", ":")
-        ).encode("utf-8")
+        try:
+            return json.dumps(
+                sanitize_for_json(content),
+                ensure_ascii=False,
+                allow_nan=False,
+                indent=None,
+                separators=(",", ":")
+            ).encode("utf-8")
+        except Exception as e:
+            logger.error(f"JSON render error: {e}")
+            logger.error(f"Content type: {type(content)}")
+            # Return a safe error response
+            error_content = {"error": "JSON serialization failed", "details": str(e)}
+            return json.dumps(error_content).encode("utf-8")
 
 # HIGH PERFORMANCE CONFIGURATION - Maximum CPU with optimized I/O
 CPU_COUNT = multiprocessing.cpu_count()
@@ -595,7 +602,7 @@ async def root():
 async def health_check():
     return {"status": "healthy"}
 
-@app.post("/query/export-csv")
+@app.post("/api/query/export-csv")
 async def export_query_results_csv(request: QueryRequest):
     """Export query results as CSV for debugging."""
     import csv
@@ -618,7 +625,7 @@ async def export_query_results_csv(request: QueryRequest):
         # Quick scan to get stock symbols only
         for stock in stock_list:
             try:
-                precalculated_file = Path(f"../precalculatedStorage/{stock}_piped.json")
+                precalculated_file = Path(f"precalculatedStorage/{stock}_piped.json")
                 if precalculated_file.exists():
                     with open(precalculated_file, 'r') as f:
                         mapped_data = json.load(f)
@@ -717,7 +724,32 @@ async def chartink_api(request: ChartinkApiRequest):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(error)}")
 
 
-@app.post("/query")
+@app.post("/api/query/test")
+async def test_query_parsing(request: QueryRequest):
+    """Test query parsing and validation without heavy processing."""
+    try:
+        query = request.query
+        if not query:
+            raise HTTPException(status_code=400, detail="Query is required")
+        
+        # Parse the query
+        parsed_query = parse_query(query)
+        
+        # Validate query fields
+        validation_result = validate_query_fields(parsed_query)
+        
+        return {
+            "success": True,
+            "query": query,
+            "parsed_query": parsed_query,
+            "validation_result": validation_result,
+            "message": "Query parsing and validation completed successfully"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Query test failed: {str(e)}")
+
+@app.post("/api/query")
 async def process_query(request: QueryRequest):
     """Process stock screening query."""
     global current_query_id
@@ -773,17 +805,62 @@ async def process_query(request: QueryRequest):
         # Validate that all query fields exist in precalculated data
         validation_result = validate_query_fields(parsed_query)
         if not validation_result["valid"]:
-            update_progress({"isRunning": False, "phase": "error", "message": validation_result["error"]})
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "error": "Field validation failed",
-                    "details": validation_result["error"],
-                    "missing_fields": validation_result.get("missing_fields", []),
-                    "available_fields": validation_result.get("available_fields", []),
-                    "hint": "Make sure all fields in your query are available in the precalculated data"
-                }
-            )
+            # Instead of rejecting, try to auto-calculate missing indicators
+            missing_fields = validation_result.get("missing_fields", [])
+            
+            if missing_fields:
+                update_progress({
+                    "isRunning": True,
+                    "phase": "detecting_missing_indicators",
+                    "message": f"Found {len(missing_fields)} missing indicators. Auto-calculating them...",
+                    "processed": 0,
+                    "total": 100
+                })
+                
+                logger.info(f"Auto-calculating missing indicators: {missing_fields}")
+                
+                # Try to add and calculate missing indicators
+                success = await add_missing_indicators_and_calculate(missing_fields)
+                
+                if not success:
+                    update_progress({"isRunning": False, "phase": "error", "message": "Failed to calculate missing indicators"})
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "error": "Field validation failed",
+                            "details": validation_result["error"],
+                            "missing_fields": missing_fields,
+                            "available_fields": validation_result.get("available_fields", []),
+                            "hint": "Could not auto-calculate missing indicators. Make sure field formats are valid."
+                        }
+                    )
+                
+                # Re-validate after calculating missing indicators
+                validation_result = validate_query_fields(parsed_query)
+                if not validation_result["valid"]:
+                    update_progress({"isRunning": False, "phase": "error", "message": "Query validation still failed after calculating indicators"})
+                    raise HTTPException(
+                        status_code=500,
+                        detail={
+                            "error": "Query validation failed even after calculating missing indicators",
+                            "details": validation_result["error"],
+                            "missing_fields": validation_result.get("missing_fields", [])
+                        }
+                    )
+                
+                logger.info("Successfully calculated missing indicators, proceeding with query")
+            else:
+                # No missing fields detected, but validation still failed
+                update_progress({"isRunning": False, "phase": "error", "message": validation_result["error"]})
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "Field validation failed",
+                        "details": validation_result["error"],
+                        "available_fields": validation_result.get("available_fields", []),
+                        "hint": "Unknown validation error"
+                    }
+                )
         
         # Extract indicators and process query
         indicators_data = extract_indicators_from_query(parsed_query)
@@ -998,7 +1075,7 @@ async def process_query(request: QueryRequest):
         except:
             pass  # Lock may not be held in some error cases
 
-@app.post("/query/latest")
+@app.post("/api/query/latest")
 async def process_latest_query(request: QueryRequest):
     """Process query for latest day only - optimized for speed."""
     global current_query_id
@@ -1050,6 +1127,66 @@ async def process_latest_query(request: QueryRequest):
                     "hint": 'Example: "rsi(14) > 70 and sma(20) < close"'
                 }
             )
+        
+        # Validate that all query fields exist in precalculated data
+        validation_result = validate_query_fields(parsed_query)
+        if not validation_result["valid"]:
+            # Instead of rejecting, try to auto-calculate missing indicators
+            missing_fields = validation_result.get("missing_fields", [])
+            
+            if missing_fields:
+                update_progress({
+                    "isRunning": True,
+                    "phase": "detecting_missing_indicators",
+                    "message": f"Found {len(missing_fields)} missing indicators. Auto-calculating them...",
+                    "processed": 0,
+                    "total": 100
+                })
+                
+                logger.info(f"Auto-calculating missing indicators for latest query: {missing_fields}")
+                
+                # Try to add and calculate missing indicators
+                success = await add_missing_indicators_and_calculate(missing_fields)
+                
+                if not success:
+                    update_progress({"isRunning": False, "phase": "error", "message": "Failed to calculate missing indicators"})
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "error": "Field validation failed",
+                            "details": validation_result["error"],
+                            "missing_fields": missing_fields,
+                            "available_fields": validation_result.get("available_fields", []),
+                            "hint": "Could not auto-calculate missing indicators. Make sure field formats are valid."
+                        }
+                    )
+                
+                # Re-validate after calculating missing indicators
+                validation_result = validate_query_fields(parsed_query)
+                if not validation_result["valid"]:
+                    update_progress({"isRunning": False, "phase": "error", "message": "Query validation still failed after calculating indicators"})
+                    raise HTTPException(
+                        status_code=500,
+                        detail={
+                            "error": "Query validation failed even after calculating missing indicators",
+                            "details": validation_result["error"],
+                            "missing_fields": validation_result.get("missing_fields", [])
+                        }
+                    )
+                
+                logger.info("Successfully calculated missing indicators, proceeding with latest query")
+            else:
+                # No missing fields detected, but validation still failed
+                update_progress({"isRunning": False, "phase": "error", "message": validation_result["error"]})
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "Field validation failed",
+                        "details": validation_result["error"],
+                        "available_fields": validation_result.get("available_fields", []),
+                        "hint": "Unknown validation error"
+                    }
+                )
         
         # Extract indicators
         indicators_data = extract_indicators_from_query(parsed_query)
@@ -1243,7 +1380,7 @@ async def process_latest_query(request: QueryRequest):
         except:
             pass  # Lock may not be held in some error cases
 
-@app.get("/query/examples")
+@app.get("/api/query/examples")
 async def get_query_examples_endpoint():
     """Get example queries for the user."""
     try:
@@ -1329,7 +1466,7 @@ def process_single_stock_latest_safe(stock, parsed_query):
         from services.query_service import find_matching_candles
         
         # Check for precalculated data
-        precalculated_file = Path(f"../precalculatedStorage/{stock}_piped.json")
+        precalculated_file = Path(f"precalculatedStorage/{stock}_piped.json")
         if not precalculated_file.exists():
             return {"success": False, "error": "Precalculated data not found"}
         
@@ -1388,8 +1525,15 @@ def process_single_stock_latest_safe(stock, parsed_query):
                 matches = [match for match in matches 
                           if match.get("date") == latest_timestamp]
             else:
-                latest_candle = [candles[-1]]  # Last candle only
-                matches = find_matching_candles(latest_candle, parsed_query, stock)
+                # Pass last 2 candles to allow pctchg calculation if needed
+                # But still only match against the latest candle
+                candles_to_pass = candles[-2:] if len(candles) >= 2 else candles
+                matches = find_matching_candles(candles_to_pass, parsed_query, stock)
+                # Filter to only the latest candle
+                if len(candles_to_pass) > 1:
+                    latest_timestamp = candles[-1].get("timestamp")
+                    matches = [match for match in matches 
+                              if match.get("date") == latest_timestamp]
         
         return {"success": True, "matches": matches}
         
@@ -1399,7 +1543,7 @@ def process_single_stock_latest_safe(stock, parsed_query):
             import json
             from pathlib import Path
             
-            precalculated_file = Path(f"../precalculatedStorage/{stock}_piped.json")
+            precalculated_file = Path(f"precalculatedStorage/{stock}_piped.json")
             if not precalculated_file.exists():
                 return {"success": False, "error": "Precalculated data not found"}
             
@@ -1469,7 +1613,7 @@ def process_single_stock_safe(stock, parsed_query):
         from services.query_service import find_matching_candles
         
         # Check for precalculated data
-        precalculated_file = Path(f"../precalculatedStorage/{stock}_piped.json")
+        precalculated_file = Path(f"precalculatedStorage/{stock}_piped.json")
         if not precalculated_file.exists():
             return {"success": False, "error": "Precalculated data not found"}
         
@@ -1492,7 +1636,7 @@ def process_single_stock_safe(stock, parsed_query):
             import json
             from pathlib import Path
             
-            precalculated_file = Path(f"../precalculatedStorage/{stock}_piped.json")
+            precalculated_file = Path(f"precalculatedStorage/{stock}_piped.json")
             if not precalculated_file.exists():
                 return {"success": False, "error": "Precalculated data not found"}
             
@@ -1664,7 +1808,7 @@ def process_query_batch_parallel(stock_batch, parsed_query_dict, base_path=""):
         for stock in stock_batch:
             try:
                 # Check for precalculated data (full historical data for query)
-                precalculated_file = Path(f"../precalculatedStorage/{stock}_piped.json")
+                precalculated_file = Path(f"precalculatedStorage/{stock}_piped.json")
                 if precalculated_file.exists():
                     with open(precalculated_file, 'r') as f:
                         mapped_data = json.load(f)
@@ -1751,7 +1895,7 @@ def process_latest_scan_batch_parallel(stock_batch, parsed_query_dict, base_path
         for stock in stock_batch:
             try:
                 # Check for precalculated data
-                precalculated_file = Path(f"../precalculatedStorage/{stock}_piped.json")
+                precalculated_file = Path(f"precalculatedStorage/{stock}_piped.json")
                 if precalculated_file.exists():
                     with open(precalculated_file, 'r') as f:
                         mapped_data = json.load(f)
@@ -1871,6 +2015,23 @@ def write_stock_batch_parallel(stock_results_chunk, precalc_dir_str):
     import json
     import time
     from pathlib import Path
+    import sys
+    import math
+    
+    # Define sanitize function locally since we're in a subprocess
+    def sanitize_for_json(obj):
+        """Recursively sanitize data to ensure JSON compatibility."""
+        if isinstance(obj, dict):
+            return {k: sanitize_for_json(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [sanitize_for_json(item) for item in obj]
+        elif isinstance(obj, float):
+            if math.isnan(obj) or math.isinf(obj):
+                return None
+            return obj
+        elif hasattr(obj, '__dict__'):
+            return sanitize_for_json(obj.__dict__)
+        return obj
     
     batch_start = time.time()
     write_count = 0
@@ -1882,14 +2043,39 @@ def write_stock_batch_parallel(stock_results_chunk, precalc_dir_str):
         if success and processed_data:
             try:
                 output_file = precalc_dir / f"{stock}_piped.json"
-                with open(output_file, 'w') as f:
-                    json.dump(processed_data, f)
+                
+                # Sanitize the data before writing to handle NaN/Infinity issues
+                sanitized_data = sanitize_for_json(processed_data)
+                
+                # Try to write with explicit encoding
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    # Use separators to minimize file size
+                    json.dump(sanitized_data, f, ensure_ascii=False, allow_nan=False, separators=(',', ':'))
                 write_count += 1
+                
+            except OSError as e:
+                if e.errno == 22:  # Invalid argument error
+                    print(f"[ERROR] Invalid argument error for {stock}: {e}")
+                    print(f"[ERROR] File path: {output_file}")
+                    print(f"[ERROR] Stock symbol: {stock}")
+                    # Try to identify the issue
+                    if ':' in stock or '/' in stock or '\\' in stock:
+                        print(f"[ERROR] Stock symbol contains invalid characters")
+                else:
+                    print(f"[ERROR] OS error writing {stock}: {e}")
+            except ValueError as e:
+                print(f"[ERROR] JSON encoding error for {stock}: {e}")
+                # Try to find the problematic value
+                if "Out of range float values" in str(e):
+                    print(f"[ERROR] Data contains NaN or Infinity values")
             except Exception as e:
-                print(f"[DEBUG] Failed to write {stock}: {e}")
+                print(f"[ERROR] Unexpected error writing {stock}: {e}")
+                print(f"[ERROR] Error type: {type(e).__name__}")
+                import traceback
+                traceback.print_exc()
     
     batch_end = time.time()
-    print(f"[DEBUG] Parallel write batch completed in {batch_end - batch_start:.2f}s, wrote {write_count} files")
+    print(f"[DEBUG] Parallel write batch completed in {batch_end - batch_start:.2f}s, wrote {write_count}/{len(stock_results_chunk)} files")
     return write_count
 
 
@@ -2122,8 +2308,9 @@ def process_stock_batch_cpu_intensive(stock_batch_data):
                                 enhanced_candle[indicator_key] = 0
                         else:  # daily
                             # Daily percentage change: compare current close with previous close
-                            if idx >= period:
-                                old_price = closes[idx - period]
+                            period_int = int(period)  # Convert to int for array indexing
+                            if idx >= period_int:
+                                old_price = closes[idx - period_int]
                                 current_price = closes[idx]
                                 pct_change = ((current_price - old_price) / old_price) * 100 if old_price != 0 else 0
                                 enhanced_candle[indicator_key] = pct_change
@@ -2191,6 +2378,144 @@ def process_stock_batch_cpu_intensive(stock_batch_data):
     print(f"[DEBUG] Batch completed in {batch_end - batch_start:.2f}s with {len(results)} results")
     return results
 
+async def add_missing_indicators_and_calculate(missing_fields: List[str]) -> bool:
+    """Add missing indicators to precalculated list and calculate them on-demand."""
+    try:
+        # Convert missing fields to indicator configurations
+        missing_indicators = detect_missing_indicators_from_fields(missing_fields)
+        
+        if not missing_indicators:
+            # Check if the fields are basic price/volume fields that don't need indicators
+            basic_fields = {'close', 'open', 'high', 'low', 'volume', 
+                          'weekly_close', 'weekly_open', 'weekly_high', 'weekly_low', 'weekly_volume',
+                          'monthly_close', 'monthly_open', 'monthly_high', 'monthly_low', 'monthly_volume'}
+            if all(field in basic_fields for field in missing_fields):
+                return True  # Basic fields don't need calculation
+            return False
+            
+        # Load current indicators configuration
+        precalc_file = Path("precalculatedIndicators.json")
+        current_indicators = []
+        
+        if precalc_file.exists():
+            with open(precalc_file, 'r') as f:
+                data = json.load(f)
+                current_indicators = data.get('indicators', [])
+        
+        # Add missing indicators to the list (with unique IDs)
+        import time
+        added_indicators = []
+        for indicator in missing_indicators:
+            # Generate unique ID with small delay to ensure uniqueness
+            time.sleep(0.001)
+            indicator['id'] = str(int(time.time() * 1000))
+            # Generate description
+            timeframe = indicator['timeframe'].capitalize()
+            name = indicator['name'].upper()
+            params = indicator['params']
+            
+            if indicator['name'] == 'supertrend':
+                period = params.get('period', 10)
+                multiplier = params.get('multiplier', 2)
+                indicator['description'] = f"{timeframe} {name} {period},{multiplier}"
+            elif indicator['name'] == 'bb':
+                period = params.get('period', 20)
+                std_dev = params.get('stdDev', 2)
+                indicator['description'] = f"{timeframe} Bollinger Bands {period},{std_dev}"
+            elif indicator['name'] == 'pctchg':
+                period = params.get('period', 1)
+                indicator['description'] = f"{timeframe} {name} {period}"
+            else:
+                period = params.get('period', 14)
+                indicator['description'] = f"{timeframe} {name} {period}"
+            
+            # Avoid duplicates
+            is_duplicate = any(
+                existing.get('timeframe') == indicator['timeframe'] and
+                existing.get('name') == indicator['name'] and
+                existing.get('params') == indicator['params']
+                for existing in current_indicators
+            )
+            
+            if not is_duplicate:
+                current_indicators.append(indicator)
+                added_indicators.append(indicator)
+                logger.info(f"Auto-added missing indicator: {indicator['description']}")
+        
+        if not added_indicators:
+            return True  # No new indicators needed
+            
+        # Update the indicators file
+        updated_data = {
+            "status": "processing",
+            "indicators": current_indicators,
+            "lastUpdated": datetime.utcnow().isoformat(),
+            "dayOfWeek": get_day_of_week_name(datetime.utcnow().timestamp() * 1000)
+        }
+        
+        with open(precalc_file, 'w') as f:
+            json.dump(updated_data, f, indent=2)
+        
+        # Update progress to show we're calculating missing indicators
+        update_progress({
+            "isRunning": True,
+            "phase": "calculating_missing_indicators",
+            "message": f"Auto-calculating {len(added_indicators)} missing indicators (this will take a moment)...",
+            "processed": 0,
+            "total": len(STOCK_SYMBOLS)
+        })
+        
+        logger.info(f"Starting synchronous calculation for {len(added_indicators)} missing indicators")
+        
+        # IMPORTANT: Run the calculation SYNCHRONOUSLY and WAIT for completion
+        # This ensures indicators are actually calculated before the query continues
+        try:
+            # Run the calculation directly in the current event loop
+            await process_indicators_background(current_indicators)
+            
+            # Update the indicators file to mark as completed after calculation
+            final_data = {
+                "status": "completed",
+                "indicators": current_indicators,
+                "lastUpdated": datetime.utcnow().isoformat(),
+                "dayOfWeek": get_day_of_week_name(datetime.utcnow().timestamp() * 1000)
+            }
+            
+            with open(precalc_file, 'w') as f:
+                json.dump(final_data, f, indent=2)
+                
+            logger.info(f"Calculation completed successfully for {len(added_indicators)} missing indicators")
+            
+            # Update progress to show completion
+            update_progress({
+                "isRunning": True,
+                "phase": "indicators_calculated",
+                "message": f"Successfully calculated {len(added_indicators)} missing indicators",
+                "processed": len(STOCK_SYMBOLS),
+                "total": len(STOCK_SYMBOLS)
+            })
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Calculation failed: {e}")
+            # Mark as failed in the file
+            failed_data = {
+                "status": "failed", 
+                "indicators": current_indicators,
+                "lastUpdated": datetime.utcnow().isoformat(),
+                "dayOfWeek": get_day_of_week_name(datetime.utcnow().timestamp() * 1000),
+                "error": str(e)
+            }
+            with open(precalc_file, 'w') as f:
+                json.dump(failed_data, f, indent=2)
+            
+            return False
+        
+    except Exception as e:
+        logger.error(f"Error adding missing indicators: {e}")
+        return False
+
 async def process_indicators_background(indicators: List[Dict[str, Any]]):
     """MAXIMUM PERFORMANCE with optimized I/O to avoid startup/completion bottlenecks."""
     start_time = time.time()
@@ -2199,7 +2524,7 @@ async def process_indicators_background(indicators: List[Dict[str, Any]]):
     
     try:
         # Create precalculatedStorage directory
-        precalc_dir = Path("../precalculatedStorage")
+        precalc_dir = Path("precalculatedStorage")
         precalc_dir.mkdir(parents=True, exist_ok=True)
         
         # Extract timeframes from indicators
@@ -2242,12 +2567,17 @@ async def process_indicators_background(indicators: List[Dict[str, Any]]):
         
         def read_stock_file(stock):
             try:
-                stock_file = Path(__file__).parent.parent / "db" / f"{stock}.json"
+                # Fix path - use parent directory from python-api folder
+                stock_file = Path(__file__).parent / "db" / f"{stock}.json"
+                if not stock_file.exists():
+                    # Try alternate path
+                    stock_file = Path("db") / f"{stock}.json"
                 if stock_file.exists():
                     with open(stock_file, 'r') as f:
                         return stock, json.load(f), True
                 return stock, None, False
-            except Exception:
+            except Exception as e:
+                logger.error(f"Error reading {stock}: {e}")
                 return stock, None, False
         
         # Read files in batches instead of all at once
