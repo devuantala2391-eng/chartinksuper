@@ -18,6 +18,13 @@ def get_default_size() -> int:
     except (ValueError, TypeError):
         return 200  # Fallback to 200 if env var is invalid
 
+def get_default_candle_count() -> int:
+    """Get default candle count parameter from environment variables."""
+    try:
+        return int(os.getenv('DEFAULT_CANDLE_COUNT', '2000'))
+    except (ValueError, TypeError):
+        return 2000  # Fallback to 2000 if env var is invalid
+
 logger = logging.getLogger(__name__)
 
 class ChartinkService:
@@ -83,8 +90,10 @@ class ChartinkService:
             await client.aclose()
         self.client_pool = []
 
-    async def fetch_stock_data(self, symbol: str, size: int = 2000) -> Dict[str, Any]:
+    async def fetch_stock_data(self, symbol: str, size: int = None) -> Dict[str, Any]:
         """Fetch stock data from Chartink API using client pool."""
+        if size is None:
+            size = get_default_candle_count()
         query_string = "select high, low, open, close, volume"
         
         form_data = {
@@ -128,39 +137,70 @@ class ChartinkService:
                 if is_client_error:
                     raise
 
-    async def process_single_symbol(self, symbol: str, size: int = 2000, progress_callback=None) -> Dict[str, str]:
+    async def process_single_symbol(self, symbol: str, size: int = None, progress_callback=None) -> Dict[str, str]:
         """Process a single symbol and save stock data."""
+        if size is None:
+            size = get_default_candle_count()
         from datetime import datetime
         symbol_start = datetime.now()
-        try:
-            # Get file path (directory already created in process_payload)
-            json_dir = Path(__file__).parent.parent / "db"
-            file_path = json_dir / f"{symbol}.json"
-            
-            # Fetch data from Chartink API
-            response_data = await self.fetch_stock_data(symbol, size)
-            
-            # Process and map the data
-            mapped_data = self._map_response_data(response_data)
-            
-            # Save to JSON file
-            with open(file_path, 'w') as f:
-                json.dump(mapped_data, f)
-            
-            # Call progress callback if provided
-            if progress_callback:
-                await progress_callback(symbol, True)
-            
-            return {symbol: f"Success: {len(mapped_data)} records"}
-            
-        except Exception as error:
-            error_msg = f"Failed: {type(error).__name__}: {str(error)}"
-            
-            # Call progress callback with failure
-            if progress_callback:
-                await progress_callback(symbol, False)
-            
-            return {symbol: error_msg}
+        
+        # Define fallback sizes for when "Result too large" error occurs
+        fallback_sizes = [10000, 5000, 2000, 1000, 500]
+        current_size = size
+        
+        for attempt_size in [current_size] + fallback_sizes:
+            try:
+                # Get file path (directory already created in process_payload)
+                json_dir = Path(__file__).parent.parent / "db"
+                file_path = json_dir / f"{symbol}.json"
+                
+                # Fetch data from Chartink API
+                response_data = await self.fetch_stock_data(symbol, attempt_size)
+                
+                # Process and map the data
+                mapped_data = self._map_response_data(response_data)
+                
+                # Save to JSON file
+                with open(file_path, 'w') as f:
+                    json.dump(mapped_data, f)
+                
+                # Log if we had to use a smaller size
+                if attempt_size < size:
+                    print(f"[INFO] {symbol}: Fetched {len(mapped_data)} records with reduced size {attempt_size} (original: {size})")
+                
+                # Call progress callback if provided
+                if progress_callback:
+                    await progress_callback(symbol, True)
+                
+                return {symbol: f"Success: {len(mapped_data)} records (size: {attempt_size})"}
+                
+            except Exception as error:
+                # Check if it's a "Result too large" error (error code 34 from libcurl)
+                error_str = str(error)
+                if "(34," in error_str or "Result too large" in error_str.lower():
+                    # If we haven't tried all fallback sizes, continue to next smaller size
+                    if attempt_size != fallback_sizes[-1]:
+                        print(f"[WARN] {symbol}: Result too large with size {attempt_size}, retrying with smaller size...")
+                        continue
+                    else:
+                        # We've tried the smallest size and still failed
+                        error_msg = f"Failed: Data too large even with minimum size {attempt_size}"
+                        print(f"[ERROR] {symbol}: {error_msg}")
+                        
+                        # Call progress callback with failure
+                        if progress_callback:
+                            await progress_callback(symbol, False)
+                        
+                        return {symbol: error_msg}
+                else:
+                    # For other errors, don't retry with different sizes
+                    error_msg = f"Failed: {type(error).__name__}: {str(error)}"
+                    
+                    # Call progress callback with failure
+                    if progress_callback:
+                        await progress_callback(symbol, False)
+                    
+                    return {symbol: error_msg}
 
     async def process_payload(self, payload: List[List[str]], concurrent_limit: int = None, progress_callback=None, size: int = None) -> Dict[str, str]:
         """Process symbols with controlled concurrency using semaphore."""

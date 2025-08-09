@@ -224,6 +224,46 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
     return `${timeframe} ${indicatorName}${paramStr}`;
   }
 
+  hardRefresh() {
+    const confirmMessage = 'This will DELETE all data and refetch everything from scratch.\n\n' +
+      'This process will:\n' +
+      '• Delete all stock data\n' +
+      '• Delete all precalculated indicators\n' +
+      '• Refetch all data with the candle count specified in environment\n' +
+      '• Recalculate all indicators\n\n' +
+      'This may take several minutes. Continue?';
+    
+    if (!confirm(confirmMessage)) {
+      return;
+    }
+
+    this.loading = true;
+    this.error = null;
+    this.status = 'processing';
+    this.progressPercentage = 0;
+    this.progressMessage = 'Starting hard refresh...';
+    this.clearIntervals();
+
+    this.http.post<any>(`${this.apiUrl}/api/hard-refresh`, {}, {
+      headers: {
+        'ngrok-skip-browser-warning': '69420'
+      }
+    }).subscribe({
+      next: (response) => {
+        this.progressMessage = response.message || 'Hard refresh started...';
+        // Start polling for progress updates
+        this.pollStatus();
+      },
+      error: (error) => {
+        this.loading = false;
+        this.status = 'error';
+        this.error = 'Failed to start hard refresh: ' + error.message;
+        this.clearIntervals();
+        this.closeEventSource();
+      }
+    });
+  }
+
   recalculateIndicators() {
     if (this.indicators.length === 0) {
       this.error = 'No indicators to calculate. Please add at least one indicator.';

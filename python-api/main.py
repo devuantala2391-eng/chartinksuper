@@ -373,9 +373,128 @@ def calculate_supertrend(highs, lows, closes, period=10, multiplier=2):
     return supertrend_values
 
 def calculate_supertrend_weekly(highs, lows, closes, period=10, multiplier=2):
-    """Calculate SuperTrend for weekly timeframe using standard algorithm"""
-    # Use standard SuperTrend algorithm with Wilder's ATR for weekly calculations
-    return calculate_supertrend(highs, lows, closes, period, multiplier)
+    """Calculate SuperTrend for weekly timeframe using Wilder's ATR method"""
+    
+    # Convert period to integer for calculations
+    period_int = int(round(period))
+    
+    # Calculate ATR using Wilder's smoothing (matching trading platforms)
+    atr_values = []
+    for i in range(len(closes)):
+        if i == 0:
+            atr_values.append(None)
+        elif i < period_int:
+            # Initial ATR using SMA
+            tr_sum = 0
+            count = 0
+            for j in range(i + 1):
+                if j == 0:
+                    tr = highs[j] - lows[j]
+                else:
+                    tr = max(
+                        highs[j] - lows[j],
+                        abs(highs[j] - closes[j-1]),
+                        abs(lows[j] - closes[j-1])
+                    )
+                tr_sum += tr
+                count += 1
+            atr = tr_sum / count if count > 0 else None
+            atr_values.append(atr)
+        elif i == period_int:
+            # First full period ATR
+            tr_sum = 0
+            for j in range(period_int):
+                if j == 0:
+                    tr = highs[j] - lows[j]
+                else:
+                    tr = max(
+                        highs[j] - lows[j],
+                        abs(highs[j] - closes[j-1]),
+                        abs(lows[j] - closes[j-1])
+                    )
+                tr_sum += tr
+            atr = tr_sum / period_int
+            atr_values.append(atr)
+        else:
+            # Wilder's smoothing: ATR = ((period-1) * prev_ATR + TR) / period
+            tr = max(
+                highs[i] - lows[i],
+                abs(highs[i] - closes[i-1]),
+                abs(lows[i] - closes[i-1])
+            )
+            prev_atr = atr_values[i-1]
+            atr = ((period_int - 1) * prev_atr + tr) / period_int
+            atr_values.append(atr)
+    
+    # Calculate SuperTrend
+    supertrend_values = []
+    trend_direction = []
+    final_upper_band = []
+    final_lower_band = []
+    
+    for i in range(len(closes)):
+        if i < period_int or atr_values[i] is None:
+            supertrend_values.append(None)
+            trend_direction.append(None)
+            final_upper_band.append(None)
+            final_lower_band.append(None)
+        else:
+            # Calculate basic bands
+            hl2 = (highs[i] + lows[i]) / 2
+            basic_upper = hl2 + (multiplier * atr_values[i])
+            basic_lower = hl2 - (multiplier * atr_values[i])
+            
+            # Calculate final bands
+            if i == period_int:
+                final_upper = basic_upper
+                final_lower = basic_lower
+            else:
+                # Upper band logic
+                if basic_upper < final_upper_band[i-1] or closes[i-1] > final_upper_band[i-1]:
+                    final_upper = basic_upper
+                else:
+                    final_upper = final_upper_band[i-1]
+                
+                # Lower band logic
+                if basic_lower > final_lower_band[i-1] or closes[i-1] < final_lower_band[i-1]:
+                    final_lower = basic_lower
+                else:
+                    final_lower = final_lower_band[i-1]
+            
+            final_upper_band.append(final_upper)
+            final_lower_band.append(final_lower)
+            
+            # Step 3: Determine trend direction and SuperTrend value
+            if i == period_int:  # First calculation (corrected index)
+                if closes[i] <= final_lower:
+                    trend = -1  # Bearish
+                    supertrend = final_upper
+                else:
+                    trend = 1   # Bullish
+                    supertrend = final_lower
+            else:
+                prev_trend = trend_direction[i-1]
+                
+                # Classic SuperTrend trend continuation logic
+                if prev_trend == 1:  # Previous trend was bullish
+                    if closes[i] <= final_lower:
+                        trend = -1  # Switch to bearish
+                        supertrend = final_upper
+                    else:
+                        trend = 1   # Continue bullish
+                        supertrend = final_lower
+                else:  # Previous trend was bearish
+                    if closes[i] >= final_upper:
+                        trend = 1   # Switch to bullish
+                        supertrend = final_lower
+                    else:
+                        trend = -1  # Continue bearish
+                        supertrend = final_upper
+            
+            trend_direction.append(trend)
+            supertrend_values.append(round(supertrend, 2))  # Round final supertrend value
+    
+    return supertrend_values
 
 def calculate_sma(values, period):
     """Calculate Simple Moving Average - handles both integer and decimal periods"""
@@ -3651,6 +3770,175 @@ async def update_latest_candles(symbols: Optional[List[str]] = None):
     except Exception as error:
         logger.error(f"Latest candle update error: {error}")
         raise HTTPException(status_code=500, detail=f"Latest candle update failed: {str(error)}")
+
+@app.post("/api/hard-refresh")
+async def hard_refresh_database():
+    """
+    Hard refresh: Clean up all data and fetch fresh data with full candle count.
+    This will delete db/ and precalculatedStorage/ directories and refetch everything.
+    """
+    import shutil
+    from services.chartink_service import get_default_candle_count
+    
+    try:
+        logger.info("Starting HARD REFRESH - cleaning all data and refetching")
+        
+        # Clean up existing data directories
+        db_path = Path(__file__).parent / "db"
+        precalc_path = Path(__file__).parent / "precalculatedStorage"
+        
+        # Delete db directory if exists
+        if db_path.exists():
+            shutil.rmtree(db_path)
+            logger.info(f"Deleted db directory: {db_path}")
+        
+        # Delete precalculatedStorage directory if exists
+        if precalc_path.exists():
+            shutil.rmtree(precalc_path)
+            logger.info(f"Deleted precalculatedStorage directory: {precalc_path}")
+        
+        # Recreate directories
+        db_path.mkdir(parents=True, exist_ok=True)
+        precalc_path.mkdir(parents=True, exist_ok=True)
+        
+        # Get candle count from environment
+        candle_count = get_default_candle_count()
+        logger.info(f"Using candle count from env: {candle_count}")
+        
+        # Reset progress
+        update_progress({
+            "isRunning": True,
+            "phase": "initializing",
+            "message": f"Hard refresh started - fetching {candle_count} candles per stock",
+            "processed": 0,
+            "total": len(STOCK_SYMBOLS),
+            "status": "running"
+        }, clear_queue=True)
+        
+        # Create payload for all stocks
+        symbols = STOCK_SYMBOLS
+        total_symbols = len(symbols)
+        
+        # Start background processing with full candle count
+        async def hard_refresh_background():
+            try:
+                # Progress callback
+                processed = 0
+                successful = 0
+                failed = 0
+                
+                async def progress_callback(symbol: str, success: bool):
+                    nonlocal processed, successful, failed
+                    processed += 1
+                    if success:
+                        successful += 1
+                    else:
+                        failed += 1
+                    
+                    update_progress({
+                        "isRunning": True,
+                        "phase": "fetching",
+                        "message": f"Fetching {candle_count} candles per stock... ({processed}/{total_symbols})",
+                        "processed": processed,
+                        "total": total_symbols,
+                        "successful": successful,
+                        "failed": failed,
+                        "percentage": int((processed / total_symbols) * 100)
+                    })
+                
+                # Create payload
+                payload = [[str(datetime.now().timestamp()), symbol] for symbol in symbols]
+                
+                # Process with chartink service using full candle count
+                logger.info(f"Fetching data for {len(symbols)} symbols with {candle_count} candles each")
+                results = await chartink_service.process_payload(
+                    payload,
+                    concurrent_limit=None,
+                    progress_callback=progress_callback,
+                    size=candle_count  # Use full candle count from env
+                )
+                
+                # After data fetch, trigger precalculation
+                logger.info("Data fetch complete. Starting indicator precalculation...")
+                update_progress({
+                    "isRunning": True,
+                    "phase": "calculating",
+                    "message": "Calculating indicators for all stocks...",
+                    "processed": 0,
+                    "total": total_symbols,
+                    "status": "calculating"
+                })
+                
+                # Load current indicators from file to recalculate
+                precalc_file = Path("precalculatedIndicators.json")
+                indicators_to_calculate = []
+                
+                if precalc_file.exists():
+                    try:
+                        with open(precalc_file, 'r') as f:
+                            data = json.load(f)
+                            # Extract indicators array from the object
+                            if isinstance(data, dict) and 'indicators' in data:
+                                indicators_to_calculate = data['indicators']
+                            elif isinstance(data, list):
+                                indicators_to_calculate = data
+                            else:
+                                logger.warning("Unexpected format in precalculatedIndicators.json")
+                            logger.info(f"Loaded {len(indicators_to_calculate)} indicators to recalculate")
+                    except Exception as e:
+                        logger.warning(f"Could not load indicators config: {e}")
+                
+                # If we have indicators, recalculate them
+                if indicators_to_calculate:
+                    # Create a request object for precalculation
+                    precalc_request = PrecalculateRequest(indicators=indicators_to_calculate)
+                    await precalculate_indicators(precalc_request)
+                else:
+                    logger.info("No indicators configured, skipping indicator calculation")
+                
+                # Complete
+                update_progress({
+                    "isRunning": False,
+                    "phase": "completed",
+                    "message": f"Hard refresh completed! Fetched {candle_count} candles for {successful} stocks",
+                    "processed": total_symbols,
+                    "total": total_symbols,
+                    "successful": successful,
+                    "failed": failed,
+                    "status": "completed"
+                })
+                
+                logger.info(f"Hard refresh completed: {successful} successful, {failed} failed")
+                
+            except Exception as e:
+                logger.error(f"Hard refresh background error: {e}")
+                update_progress({
+                    "isRunning": False,
+                    "phase": "error",
+                    "message": f"Hard refresh failed: {str(e)}",
+                    "status": "error"
+                })
+        
+        # Start background task
+        asyncio.create_task(hard_refresh_background())
+        
+        return {
+            "success": True,
+            "message": f"Hard refresh started - cleaning all data and fetching {candle_count} candles per stock",
+            "candle_count": candle_count,
+            "total_stocks": total_symbols,
+            "progressUrl": "/api/progress-stream"
+        }
+        
+    except Exception as error:
+        logger.error(f"Hard refresh error: {error}")
+        update_progress({
+            "isRunning": False,
+            "phase": "error",
+            "message": f"Hard refresh failed: {str(error)}",
+            "status": "error"
+        })
+        raise HTTPException(status_code=500, detail=f"Hard refresh failed: {str(error)}")
 
 @app.post("/api/start-periodic-updates")
 async def start_periodic_updates(

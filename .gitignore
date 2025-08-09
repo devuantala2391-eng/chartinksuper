@@ -1,4 +1,5 @@
 frontend/angular
+frontend/public
 # Dependencies
 node_modules/
 *.lock

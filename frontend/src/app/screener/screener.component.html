@@ -311,6 +311,9 @@
           Special
         </button>
         <button class="btn btn-text-compact" (click)="clearAll()">Clear</button>
+        <button class="btn btn-danger-compact" (click)="hardRefresh()" [disabled]="loading" title="Delete all data and refetch everything from scratch">
+          ⚠️ Hard Refresh
+        </button>
       </div>
 
       <!-- CSV Upload Section -->

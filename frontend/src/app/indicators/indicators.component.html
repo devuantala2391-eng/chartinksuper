@@ -160,6 +160,15 @@
         <span>🔄</span>
         Refresh Status
       </button>
+      
+      <button 
+        class="btn btn-danger" 
+        (click)="hardRefresh()"
+        [disabled]="loading"
+        title="Delete all data and refetch everything from scratch">
+        <span>⚠️</span>
+        Hard Refresh (Clean All)
+      </button>
     </div>
   </div>
 

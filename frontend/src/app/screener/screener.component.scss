@@ -510,6 +510,7 @@
   .btn-secondary { background: #6c757d; color: white; &:hover:not(:disabled) { background: #545b62; } }
   .btn-special-compact { background: #17a2b8; color: white; &:hover:not(:disabled) { background: #138496; } }
   .btn-text-compact { background: transparent; color: #6c757d; border: 1px solid #dee2e6; &:hover { background: #f8f9fa; } }
+  .btn-danger-compact { background: #dc3545; color: white; &:hover:not(:disabled) { background: #c82333; } }
 }
 
 // Popup Selector

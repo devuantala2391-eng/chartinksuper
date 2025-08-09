@@ -1262,6 +1262,48 @@ export class ScreenerComponent implements OnInit, OnDestroy {
           '6. Click "Run Scan" for latest day or "Run Full Backtest" for historical data');
   }
 
+  hardRefresh() {
+    const confirmMessage = 'This will DELETE all data and refetch everything from scratch.\n\n' +
+      'This process will:\n' +
+      '• Delete all stock data\n' +
+      '• Delete all precalculated indicators\n' +
+      '• Refetch all data with the candle count specified in environment\n' +
+      '• Recalculate all indicators\n\n' +
+      'This may take several minutes. Continue?';
+    
+    if (!confirm(confirmMessage)) {
+      return;
+    }
+
+    this.loading = true;
+    this.error = null;
+    this.showProgress = true;
+    this.progressPhase = 'initializing';
+    this.progressMessage = 'Starting hard refresh...';
+    this.progressProcessed = 0;
+    this.progressTotal = 0;
+    this.progressMatches = 0;
+
+    // Start SSE connection for progress updates
+    this.startProgressSSE();
+
+    this.http.post<any>(`${this.apiUrl}/hard-refresh`, {}, {
+      headers: {
+        'ngrok-skip-browser-warning': '69420'
+      }
+    }).subscribe({
+      next: (response) => {
+        this.progressMessage = response.message || 'Hard refresh started...';
+        // Progress will be tracked through SSE
+      },
+      error: (error) => {
+        this.loading = false;
+        this.showProgress = false;
+        this.error = 'Failed to start hard refresh: ' + error.message;
+      }
+    });
+  }
+
   clearAll() {
     if (confirm('Are you sure you want to clear all conditions and results?')) {
       this.conditions = [{
