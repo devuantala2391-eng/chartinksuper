@@ -8,6 +8,7 @@ import concurrent.futures
 import multiprocessing
 import time
 from utils.constants import STOCK_SYMBOLS
+from services.optimized_processor import optimized_processor
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +149,8 @@ class LatestDayPrecalculator:
     
     async def update_all_latest_precalculated(self, 
                                             symbols: Optional[List[str]] = None,
-                                            updated_symbols: Optional[List[str]] = None) -> Dict[str, str]:
+                                            updated_symbols: Optional[List[str]] = None,
+                                            use_optimized: bool = True) -> Dict[str, str]:
         """Update latest day precalculated for multiple symbols using MAXIMUM PERFORMANCE."""
         # Use updated_symbols if provided, otherwise use all symbols
         if updated_symbols:
@@ -156,7 +158,8 @@ class LatestDayPrecalculator:
         elif symbols is None:
             symbols = STOCK_SYMBOLS
         
-        logger.info(f"📊 HIGH-PERFORMANCE Precalculation: {len(symbols)} symbols with {PERFORMANCE_CONFIG['max_cpu_workers']} CPU workers")
+        processing_mode = "OPTIMIZED" if use_optimized else "STANDARD"
+        logger.info(f"📊 {processing_mode} HIGH-PERFORMANCE Precalculation: {len(symbols)} symbols with {PERFORMANCE_CONFIG['max_cpu_workers']} CPU workers")
         start_time = time.time()
         
         try:
@@ -169,7 +172,11 @@ class LatestDayPrecalculator:
             # Import processing function
             import sys
             sys.path.append(str(Path(__file__).parent.parent))
-            from main import process_stock_batch_cpu_intensive
+            if use_optimized:
+                # Use optimized processor with caching
+                from services.optimized_processor import optimized_processor
+            else:
+                from main import process_stock_batch_cpu_intensive
             
             # Phase 1: Load all stock data in parallel
             logger.info(f"📂 Loading stock data for {len(symbols)} symbols...")
@@ -201,33 +208,60 @@ class LatestDayPrecalculator:
             if not valid_stocks:
                 return {symbol: "No valid data" for symbol in symbols}
             
-            # Phase 2: Process using ProcessPoolExecutor for MAXIMUM CPU usage
+            # Phase 2: Process using optimized or standard processor
             logger.info(f"🚀 Processing {len(valid_stocks)} stocks with {PERFORMANCE_CONFIG['max_cpu_workers']} CPU workers")
-            
-            # Split into optimal chunks
-            chunk_size = max(5, len(valid_stocks) // (PERFORMANCE_CONFIG['max_cpu_workers'] * 3))
-            chunks = [valid_stocks[i:i + chunk_size] for i in range(0, len(valid_stocks), chunk_size)]
             
             all_results = []
             processed_count = 0
             
-            # Process chunks in parallel using ProcessPoolExecutor
-            with concurrent.futures.ProcessPoolExecutor(max_workers=PERFORMANCE_CONFIG['max_cpu_workers']) as cpu_executor:
-                loop = asyncio.get_event_loop()
-                chunk_futures = []
+            if use_optimized:
+                # Use optimized processor with caching (single-threaded but cache-optimized)
+                logger.info("📊 Using OPTIMIZED processor with intelligent caching")
                 
-                for chunk in chunks:
-                    future = loop.run_in_executor(cpu_executor, process_stock_batch_cpu_intensive, chunk)
-                    chunk_futures.append(future)
-                
-                # Process results as they complete
-                for future in asyncio.as_completed(chunk_futures):
-                    chunk_results = await future
-                    all_results.extend(chunk_results)
+                # Process in batches using the optimized processor
+                batch_size = 100  # Process 100 stocks at a time
+                for i in range(0, len(valid_stocks), batch_size):
+                    batch = valid_stocks[i:i + batch_size]
+                    batch_results = optimized_processor.process_stock_batch_optimized(batch)
+                    all_results.extend(batch_results)
                     
-                    processed_count += len(chunk_results)
+                    processed_count += len(batch_results)
                     percentage = (processed_count / len(valid_stocks)) * 100
                     logger.info(f"📈 Processing progress: {processed_count}/{len(valid_stocks)} ({percentage:.1f}%)")
+                
+                # Log cache performance
+                perf_summary = optimized_processor.get_performance_summary()
+                logger.info(f"🎯 Cache Performance Summary:")
+                logger.info(f"   - Hit Rate: {perf_summary['cache_hit_rate']}")
+                logger.info(f"   - Time Saved: {perf_summary['total_time_saved']:.2f}s")
+                logger.info(f"   - Speed Improvement: {perf_summary['improvement_factor']}")
+                logger.info(f"   - Calculations Saved: {perf_summary['calculations_saved']}")
+            
+            else:
+                # Use standard multi-process approach
+                logger.info("📊 Using STANDARD multi-process processor")
+                
+                # Split into optimal chunks
+                chunk_size = max(5, len(valid_stocks) // (PERFORMANCE_CONFIG['max_cpu_workers'] * 3))
+                chunks = [valid_stocks[i:i + chunk_size] for i in range(0, len(valid_stocks), chunk_size)]
+                
+                # Process chunks in parallel using ProcessPoolExecutor
+                with concurrent.futures.ProcessPoolExecutor(max_workers=PERFORMANCE_CONFIG['max_cpu_workers']) as cpu_executor:
+                    loop = asyncio.get_event_loop()
+                    chunk_futures = []
+                    
+                    for chunk in chunks:
+                        future = loop.run_in_executor(cpu_executor, process_stock_batch_cpu_intensive, chunk)
+                        chunk_futures.append(future)
+                    
+                    # Process results as they complete
+                    for future in asyncio.as_completed(chunk_futures):
+                        chunk_results = await future
+                        all_results.extend(chunk_results)
+                        
+                        processed_count += len(chunk_results)
+                        percentage = (processed_count / len(valid_stocks)) * 100
+                        logger.info(f"📈 Processing progress: {processed_count}/{len(valid_stocks)} ({percentage:.1f}%)")
             
             # Phase 3: Update precalculated files in parallel
             logger.info(f"💾 Updating precalculated storage files...")

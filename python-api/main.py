@@ -61,7 +61,7 @@ from services.query_service import (
     extract_indicators_from_query, process_stocks_with_indicators, is_historical_query,
     validate_query_fields, detect_missing_indicators_from_fields
 )
-from services.indicator_cache import clear_cache
+from services.indicator_cache import indicator_cache
 from services.data_utils import get_next_day_timestamp, get_day_of_week_name
 from utils.constants import STOCK_SYMBOLS, TOTAL_SYMBOLS
 from services.chartink_service import ChartinkService
