@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Time Period Parsing</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .test { margin: 10px 0; padding: 10px; border: 1px solid #ddd; }
+        .success { background-color: #d4edda; }
+        .failure { background-color: #f8d7da; }
+        .input { font-weight: bold; }
+        .output { color: #666; }
+    </style>
+</head>
+<body>
+    <h1>Time Period Parsing Test</h1>
+    <div id="results"></div>
+
+    <script>
+        // Simulated parsing functions from the component
+        function parseTimePeriod(timePhrase) {
+            const match = timePhrase.match(/(\d+)\s+(day|week|month)s?\s+ago/);
+            if (match) {
+                const number = parseInt(match[1]);
+                const unit = match[2];
+                
+                if (unit === 'day') {
+                    if (number <= 5) {
+                        return { timePeriod: `${number}-day${number > 1 ? 's' : ''}` };
+                    } else {
+                        return { timePeriod: 'n-days', customDaysAgo: number };
+                    }
+                } else if (unit === 'week') {
+                    if (number <= 3) {
+                        return { timePeriod: `${number}-week${number > 1 ? 's' : ''}` };
+                    } else {
+                        return { timePeriod: 'n-weeks', customWeeksAgo: number };
+                    }
+                } else if (unit === 'month') {
+                    if (number <= 3) {
+                        return { timePeriod: `${number}-month${number > 1 ? 's' : ''}` };
+                    } else {
+                        return { timePeriod: 'n-months', customMonthsAgo: number };
+                    }
+                }
+            }
+            
+            return { timePeriod: 'daily' };
+        }
+
+        function getTimeOffset(timePeriod, customDays, customWeeks, customMonths) {
+            if (timePeriod === 'daily' || timePeriod === 'weekly' || timePeriod === 'monthly') {
+                return ''; // No offset for current period
+            }
+            
+            // Handle days
+            if (timePeriod.includes('day')) {
+                if (timePeriod === 'n-days' && customDays) {
+                    const plural = customDays === 1 ? 'day' : 'days';
+                    return `${customDays} ${plural} ago`;
+                }
+                const match = timePeriod.match(/(\d+)-day/);
+                if (match) {
+                    const days = parseInt(match[1]);
+                    const plural = days === 1 ? 'day' : 'days';
+                    return `${days} ${plural} ago`;
+                }
+            }
+            
+            // Handle weeks
+            if (timePeriod.includes('week')) {
+                if (timePeriod === 'n-weeks' && customWeeks) {
+                    const plural = customWeeks === 1 ? 'week' : 'weeks';
+                    return `${customWeeks} ${plural} ago`;
+                }
+                const match = timePeriod.match(/(\d+)-week/);
+                if (match) {
+                    const weeks = parseInt(match[1]);
+                    const plural = weeks === 1 ? 'week' : 'weeks';
+                    return `${weeks} ${plural} ago`;
+                }
+            }
+            
+            // Handle months
+            if (timePeriod.includes('month')) {
+                if (timePeriod === 'n-months' && customMonths) {
+                    const plural = customMonths === 1 ? 'month' : 'months';
+                    return `${customMonths} ${plural} ago`;
+                }
+                const match = timePeriod.match(/(\d+)-month/);
+                if (match) {
+                    const months = parseInt(match[1]);
+                    const plural = months === 1 ? 'month' : 'months';
+                    return `${months} ${plural} ago`;
+                }
+            }
+            
+            return '';
+        }
+
+        // Test cases
+        const testCases = [
+            { input: "1 day ago", expected: "1 day ago" },
+            { input: "2 days ago", expected: "2 days ago" },
+            { input: "5 days ago", expected: "5 days ago" },
+            { input: "10 days ago", expected: "10 days ago" },
+            { input: "1 week ago", expected: "1 week ago" },
+            { input: "2 weeks ago", expected: "2 weeks ago" },
+            { input: "3 weeks ago", expected: "3 weeks ago" },
+            { input: "5 weeks ago", expected: "5 weeks ago" },
+            { input: "1 month ago", expected: "1 month ago" },
+            { input: "2 months ago", expected: "2 months ago" },
+            { input: "6 months ago", expected: "6 months ago" }
+        ];
+
+        const resultsDiv = document.getElementById('results');
+        
+        testCases.forEach(testCase => {
+            // Parse the time phrase
+            const parsed = parseTimePeriod(testCase.input);
+            
+            // Reconstruct the time offset string
+            const reconstructed = getTimeOffset(
+                parsed.timePeriod,
+                parsed.customDaysAgo,
+                parsed.customWeeksAgo,
+                parsed.customMonthsAgo
+            );
+            
+            // Check if it matches the expected output
+            const success = reconstructed === testCase.expected;
+            
+            // Display the result
+            const testDiv = document.createElement('div');
+            testDiv.className = `test ${success ? 'success' : 'failure'}`;
+            testDiv.innerHTML = `
+                <div class="input">Input: "${testCase.input}"</div>
+                <div class="output">
+                    Parsed: timePeriod="${parsed.timePeriod}"
+                    ${parsed.customDaysAgo ? `, customDaysAgo=${parsed.customDaysAgo}` : ''}
+                    ${parsed.customWeeksAgo ? `, customWeeksAgo=${parsed.customWeeksAgo}` : ''}
+                    ${parsed.customMonthsAgo ? `, customMonthsAgo=${parsed.customMonthsAgo}` : ''}
+                </div>
+                <div class="output">Reconstructed: "${reconstructed}"</div>
+                <div class="output">Expected: "${testCase.expected}"</div>
+                <div class="output">Status: ${success ? '✅ PASS' : '❌ FAIL'}</div>
+            `;
+            resultsDiv.appendChild(testDiv);
+        });
+    </script>
+</body>
+</html>

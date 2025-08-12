@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Query Parsing Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .test { margin: 20px 0; padding: 15px; border: 1px solid #ddd; }
+        .success { background-color: #d4edda; }
+        .failure { background-color: #f8d7da; }
+        h3 { margin-top: 0; }
+        .code { font-family: monospace; background: #f4f4f4; padding: 2px 4px; }
+    </style>
+</head>
+<body>
+    <h1>Query Parsing Test - Weekly Volume with Time Offset</h1>
+    
+    <div id="test1" class="test">
+        <h3>Test Case: "weekly_volume > 1 week ago weekly_volume"</h3>
+        <div id="test1-result"></div>
+    </div>
+
+    <div id="test2" class="test">
+        <h3>Test Case: "daily_volume > 2 days ago daily_volume"</h3>
+        <div id="test2-result"></div>
+    </div>
+
+    <div id="test3" class="test">
+        <h3>Test Case: "monthly_close > 3 months ago monthly_close"</h3>
+        <div id="test3-result"></div>
+    </div>
+
+    <script>
+        // Updated parsing functions with the fix
+        function parseTimePeriod(timePhrase) {
+            const match = timePhrase.match(/(\d+)\s+(day|week|month)s?\s+ago/);
+            if (match) {
+                const number = parseInt(match[1]);
+                const unit = match[2];
+                
+                if (unit === 'day') {
+                    if (number <= 5) {
+                        return { timePeriod: `${number}-day${number > 1 ? 's' : ''}` };
+                    } else {
+                        return { timePeriod: 'n-days', customDaysAgo: number };
+                    }
+                } else if (unit === 'week') {
+                    if (number <= 3) {
+                        return { timePeriod: `${number}-week${number > 1 ? 's' : ''}` };
+                    } else {
+                        return { timePeriod: 'n-weeks', customWeeksAgo: number };
+                    }
+                } else if (unit === 'month') {
+                    if (number <= 3) {
+                        return { timePeriod: `${number}-month${number > 1 ? 's' : ''}` };
+                    } else {
+                        return { timePeriod: 'n-months', customMonthsAgo: number };
+                    }
+                }
+            }
+            
+            return { timePeriod: 'daily' };
+        }
+
+        function parseFieldExpression(expression) {
+            // Remove time prefixes like "1 day ago", "2 weeks ago", etc.
+            const timePattern = /^(\d+\s+(day|week|month)s?\s+ago\s+)/;
+            const timeMatch = expression.match(timePattern);
+            let timePeriod = 'daily';
+            let cleanExpression = expression;
+            let customDaysAgo;
+            let customWeeksAgo;
+            let customMonthsAgo;
+            
+            if (timeMatch) {
+                const timePhrase = timeMatch[1].trim();
+                cleanExpression = expression.replace(timePattern, '').trim();
+                const parsedTime = parseTimePeriod(timePhrase);
+                timePeriod = parsedTime.timePeriod;
+                customDaysAgo = parsedTime.customDaysAgo;
+                customWeeksAgo = parsedTime.customWeeksAgo;
+                customMonthsAgo = parsedTime.customMonthsAgo;
+            }
+            
+            // Check for basic fields with timeframe prefix first: daily_close, weekly_volume, etc.
+            const basicFields = ['open', 'high', 'low', 'close', 'volume'];
+            const basicFieldWithTimePattern = /^(daily|weekly|monthly)_([a-z]+)$/;
+            const basicFieldMatch = cleanExpression.match(basicFieldWithTimePattern);
+            
+            if (basicFieldMatch) {
+                const [, timeframe, fieldName] = basicFieldMatch;
+                if (basicFields.includes(fieldName)) {
+                    // If we had a time offset (like "1 week ago"), use that instead of the embedded timeframe
+                    const effectiveTimePeriod = timeMatch ? timePeriod : timeframe;
+                    const result = {
+                        field: fieldName,
+                        timePeriod: effectiveTimePeriod,
+                        indicatorType: 'simple',
+                        customDaysAgo,
+                        customWeeksAgo,
+                        customMonthsAgo
+                    };
+                    return result;
+                }
+            }
+            
+            return null;
+        }
+
+        function runTest(testId, expression, expectedTimePeriod, expectedField) {
+            const result = parseFieldExpression(expression);
+            const resultDiv = document.getElementById(testId + '-result');
+            
+            if (result) {
+                const success = result.timePeriod === expectedTimePeriod && result.field === expectedField;
+                const testDiv = document.getElementById(testId);
+                testDiv.className = `test ${success ? 'success' : 'failure'}`;
+                
+                resultDiv.innerHTML = `
+                    <p><strong>Input:</strong> <span class="code">${expression}</span></p>
+                    <p><strong>Parsed Result:</strong></p>
+                    <ul>
+                        <li>Field: <span class="code">${result.field}</span> ${result.field === expectedField ? '✅' : '❌ (expected: ' + expectedField + ')'}</li>
+                        <li>Time Period: <span class="code">${result.timePeriod}</span> ${result.timePeriod === expectedTimePeriod ? '✅' : '❌ (expected: ' + expectedTimePeriod + ')'}</li>
+                        ${result.customDaysAgo ? '<li>Custom Days Ago: ' + result.customDaysAgo + '</li>' : ''}
+                        ${result.customWeeksAgo ? '<li>Custom Weeks Ago: ' + result.customWeeksAgo + '</li>' : ''}
+                        ${result.customMonthsAgo ? '<li>Custom Months Ago: ' + result.customMonthsAgo + '</li>' : ''}
+                    </ul>
+                    <p><strong>Status:</strong> ${success ? '✅ PASS' : '❌ FAIL'}</p>
+                `;
+            } else {
+                testDiv.className = 'test failure';
+                resultDiv.innerHTML = '<p>❌ Failed to parse expression</p>';
+            }
+        }
+
+        // Run tests
+        runTest('test1', '1 week ago weekly_volume', '1-week', 'volume');
+        runTest('test2', '2 days ago daily_volume', '2-days', 'volume');
+        runTest('test3', '3 months ago monthly_close', '3-months', 'close');
+    </script>
+</body>
+</html>

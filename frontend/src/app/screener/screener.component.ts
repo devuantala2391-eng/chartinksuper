@@ -1624,6 +1624,17 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       indicatorComponent: leftFieldInfo.indicatorComponent
     };
     
+    // Set custom time values for left side if needed
+    if (leftFieldInfo.customDaysAgo !== undefined) {
+      condition.customDaysAgo = leftFieldInfo.customDaysAgo;
+    }
+    if (leftFieldInfo.customWeeksAgo !== undefined) {
+      condition.customWeeksAgo = leftFieldInfo.customWeeksAgo;
+    }
+    if (leftFieldInfo.customMonthsAgo !== undefined) {
+      condition.customMonthsAgo = leftFieldInfo.customMonthsAgo;
+    }
+    
     // Parse the right side to determine if it's a field, mathematical expression, or number
     const rightFieldInfo = this.parseFieldExpression(rightSide);
     if (rightFieldInfo) {
@@ -1635,6 +1646,18 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       condition.valueIndicatorName = rightFieldInfo.indicatorName;
       condition.valueIndicatorParams = rightFieldInfo.indicatorParams;
       condition.valueIndicatorComponent = rightFieldInfo.indicatorComponent;
+      
+      // Set custom time values for right side if needed
+      if (rightFieldInfo.customDaysAgo !== undefined) {
+        condition.valueCustomDaysAgo = rightFieldInfo.customDaysAgo;
+      }
+      if (rightFieldInfo.customWeeksAgo !== undefined) {
+        condition.valueCustomWeeksAgo = rightFieldInfo.customWeeksAgo;
+      }
+      if (rightFieldInfo.customMonthsAgo !== undefined) {
+        condition.valueCustomMonthsAgo = rightFieldInfo.customMonthsAgo;
+      }
+      
       condition.value = ''; // Clear value since we're using a field
     } else if (this.isMathExpression(rightSide)) {
       // Right side is a mathematical expression
@@ -1662,11 +1685,18 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     const timeMatch = expression.match(timePattern);
     let timePeriod = 'daily';
     let cleanExpression = expression;
+    let customDaysAgo: number | undefined;
+    let customWeeksAgo: number | undefined;
+    let customMonthsAgo: number | undefined;
     
     if (timeMatch) {
       const timePhrase = timeMatch[1].trim();
       cleanExpression = expression.replace(timePattern, '').trim();
-      timePeriod = this.parseTimePeriod(timePhrase);
+      const parsedTime = this.parseTimePeriod(timePhrase);
+      timePeriod = parsedTime.timePeriod;
+      customDaysAgo = parsedTime.customDaysAgo;
+      customWeeksAgo = parsedTime.customWeeksAgo;
+      customMonthsAgo = parsedTime.customMonthsAgo;
     }
     
     // Check for basic fields with timeframe prefix first: daily_close, weekly_volume, etc.
@@ -1677,11 +1707,17 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     if (basicFieldMatch) {
       const [, timeframe, fieldName] = basicFieldMatch;
       if (basicFields.includes(fieldName)) {
-        return {
+        // If we had a time offset (like "1 week ago"), use that instead of the embedded timeframe
+        const effectiveTimePeriod = timeMatch ? timePeriod : timeframe;
+        const result: any = {
           field: fieldName,
-          timePeriod: timeframe,
+          timePeriod: effectiveTimePeriod,
           indicatorType: 'simple'
         };
+        if (customDaysAgo !== undefined) result.customDaysAgo = customDaysAgo;
+        if (customWeeksAgo !== undefined) result.customWeeksAgo = customWeeksAgo;
+        if (customMonthsAgo !== undefined) result.customMonthsAgo = customMonthsAgo;
+        return result;
       }
     }
     
@@ -1693,14 +1729,20 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       const [, timeframe, indicator, component, paramsStr] = componentMatch;
       const params = paramsStr.split('_');
       
-      return {
+      // If we had a time offset (like "1 week ago"), use that instead of the embedded timeframe
+      const effectiveTimePeriod = timeMatch ? timePeriod : timeframe;
+      const result: any = {
         field: indicator,
-        timePeriod: timeframe,
+        timePeriod: effectiveTimePeriod,
         indicatorType: 'parameterized',
         indicatorName: indicator,
         indicatorParams: params,
         indicatorComponent: component
       };
+      if (customDaysAgo !== undefined) result.customDaysAgo = customDaysAgo;
+      if (customWeeksAgo !== undefined) result.customWeeksAgo = customWeeksAgo;
+      if (customMonthsAgo !== undefined) result.customMonthsAgo = customMonthsAgo;
+      return result;
     }
     
     // Parse standard field format: timeframe_indicator_params (allow alphanumeric indicators)
@@ -1711,39 +1753,53 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       const [, timeframe, indicator, paramsStr] = standardMatch;
       const params = paramsStr.split('_');
       
-      return {
+      // If we had a time offset (like "1 week ago"), use that instead of the embedded timeframe
+      const effectiveTimePeriod = timeMatch ? timePeriod : timeframe;
+      const result: any = {
         field: indicator,
-        timePeriod: timeframe,
+        timePeriod: effectiveTimePeriod,
         indicatorType: 'parameterized',
         indicatorName: indicator,
         indicatorParams: params
       };
+      if (customDaysAgo !== undefined) result.customDaysAgo = customDaysAgo;
+      if (customWeeksAgo !== undefined) result.customWeeksAgo = customWeeksAgo;
+      if (customMonthsAgo !== undefined) result.customMonthsAgo = customMonthsAgo;
+      return result;
     }
     
     // Check for basic fields without timeframe prefix (open, high, low, close, volume)
     if (basicFields.includes(cleanExpression)) {
-      return {
+      const result: any = {
         field: cleanExpression,
         timePeriod: timePeriod,
         indicatorType: 'simple'
       };
+      if (customDaysAgo !== undefined) result.customDaysAgo = customDaysAgo;
+      if (customWeeksAgo !== undefined) result.customWeeksAgo = customWeeksAgo;
+      if (customMonthsAgo !== undefined) result.customMonthsAgo = customMonthsAgo;
+      return result;
     }
     
     // Check for parameterized indicators without timeframe prefix
     if (this.parameterizedIndicators.includes(cleanExpression)) {
-      return {
+      const result: any = {
         field: cleanExpression,
         timePeriod: timePeriod,
         indicatorType: 'parameterized',
         indicatorName: cleanExpression,
         indicatorParams: this.indicatorDefaults[cleanExpression] || ['14']
       };
+      if (customDaysAgo !== undefined) result.customDaysAgo = customDaysAgo;
+      if (customWeeksAgo !== undefined) result.customWeeksAgo = customWeeksAgo;
+      if (customMonthsAgo !== undefined) result.customMonthsAgo = customMonthsAgo;
+      return result;
     }
     
     return null;
   }
 
-  private parseTimePeriod(timePhrase: string): string {
+  private parseTimePeriod(timePhrase: string): { timePeriod: string; customDaysAgo?: number; customWeeksAgo?: number; customMonthsAgo?: number } {
     const match = timePhrase.match(/(\d+)\s+(day|week|month)s?\s+ago/);
     if (match) {
       const number = parseInt(match[1]);
@@ -1751,26 +1807,26 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       
       if (unit === 'day') {
         if (number <= 5) {
-          return `${number}-day${number > 1 ? 's' : ''}`;
+          return { timePeriod: `${number}-day${number > 1 ? 's' : ''}` };
         } else {
-          return 'n-days';
+          return { timePeriod: 'n-days', customDaysAgo: number };
         }
       } else if (unit === 'week') {
         if (number <= 3) {
-          return `${number}-week${number > 1 ? 's' : ''}`;
+          return { timePeriod: `${number}-week${number > 1 ? 's' : ''}` };
         } else {
-          return 'n-weeks';
+          return { timePeriod: 'n-weeks', customWeeksAgo: number };
         }
       } else if (unit === 'month') {
         if (number <= 3) {
-          return `${number}-month${number > 1 ? 's' : ''}`;
+          return { timePeriod: `${number}-month${number > 1 ? 's' : ''}` };
         } else {
-          return 'n-months';
+          return { timePeriod: 'n-months', customMonthsAgo: number };
         }
       }
     }
     
-    return 'daily';
+    return { timePeriod: 'daily' };
   }
 
   // Validation method for conditions
