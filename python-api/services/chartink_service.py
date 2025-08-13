@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional
 import logging
 import threading
 from dotenv import load_dotenv
+from .database_service import db_service
 
 # Load environment variables
 load_dotenv()
@@ -150,19 +151,23 @@ class ChartinkService:
         
         for attempt_size in [current_size] + fallback_sizes:
             try:
-                # Get file path (directory already created in process_payload)
-                json_dir = Path(__file__).parent.parent / "db"
-                file_path = json_dir / f"{symbol}.json"
-                
                 # Fetch data from Chartink API
                 response_data = await self.fetch_stock_data(symbol, attempt_size)
                 
                 # Process and map the data
                 mapped_data = self._map_response_data(response_data)
                 
-                # Save to JSON file
-                with open(file_path, 'w') as f:
-                    json.dump(mapped_data, f)
+                # Save to database
+                success = await db_service.save_candles(symbol, mapped_data)
+                
+                if not success:
+                    # Fallback to JSON file if database save fails
+                    json_dir = Path(__file__).parent.parent / "db"
+                    json_dir.mkdir(parents=True, exist_ok=True)
+                    file_path = json_dir / f"{symbol}.json"
+                    with open(file_path, 'w') as f:
+                        json.dump(mapped_data, f)
+                    logger.warning(f"Saved {symbol} to file due to database error")
                 
                 # Log if we had to use a smaller size
                 if attempt_size < size:
@@ -215,10 +220,6 @@ class ChartinkService:
         
         if not symbols:
             return {}
-        
-        # Ensure the directory exists ONCE before processing
-        json_dir = Path(__file__).parent.parent / "db"
-        json_dir.mkdir(parents=True, exist_ok=True)
         
         # Initialize client pool BEFORE processing starts
         await self.initialize_client_pool()

@@ -66,6 +66,7 @@ from services.data_utils import get_next_day_timestamp, get_day_of_week_name
 from utils.constants import STOCK_SYMBOLS, TOTAL_SYMBOLS
 from services.chartink_service import ChartinkService
 from services.latest_candle_updater import latest_candle_updater
+from services.database_service import db_service
 
 # Simple logging setup
 logging.basicConfig(
@@ -142,11 +143,20 @@ app.add_middleware(
 async def startup_event():
     """Initialize app state on startup."""
     print("FastAPI server started")
+    # Initialize database connection
+    try:
+        await db_service.initialize()
+        logger.info("Database service initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
+        logger.warning("Falling back to file-based storage")
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Clean up on shutdown."""
     print("FastAPI server shutdown")
+    # Close database connections
+    await db_service.close()
 
 # Simple request logging middleware
 @app.middleware("http")
@@ -228,6 +238,66 @@ chartink_service = ChartinkService()
 # Ensure required directories exist
 Path("uploads").mkdir(exist_ok=True)
 (Path(__file__).parent / "db").mkdir(parents=True, exist_ok=True)
+
+# Database helper functions
+async def load_stock_data(symbol: str, use_fallback: bool = True) -> Optional[List[Dict]]:
+    """
+    Load stock data from database with file fallback.
+    
+    Args:
+        symbol: Stock symbol
+        use_fallback: Whether to fallback to JSON file if database fails
+        
+    Returns:
+        List of candle data or None
+    """
+    # Try database first
+    if db_service.initialized:
+        try:
+            candles = await db_service.load_candles(symbol)
+            if candles:
+                return candles
+        except Exception as e:
+            logger.debug(f"Database read failed for {symbol}: {e}")
+    
+    # Fallback to JSON file if enabled
+    if use_fallback:
+        try:
+            stock_file = Path(__file__).parent / "db" / f"{symbol}.json"
+            if not stock_file.exists():
+                stock_file = Path("db") / f"{symbol}.json"
+            if stock_file.exists():
+                with open(stock_file, 'r') as f:
+                    return json.load(f)
+        except Exception as e:
+            logger.debug(f"File read failed for {symbol}: {e}")
+    
+    return None
+
+def load_stock_data_sync(symbol: str, use_fallback: bool = True) -> Optional[List[Dict]]:
+    """
+    Synchronous version of load_stock_data for compatibility.
+    
+    Args:
+        symbol: Stock symbol
+        use_fallback: Whether to fallback to JSON file if database fails
+        
+    Returns:
+        List of candle data or None
+    """
+    # For sync contexts, just use file fallback
+    if use_fallback:
+        try:
+            stock_file = Path(__file__).parent / "db" / f"{symbol}.json"
+            if not stock_file.exists():
+                stock_file = Path("db") / f"{symbol}.json"
+            if stock_file.exists():
+                with open(stock_file, 'r') as f:
+                    return json.load(f)
+        except Exception as e:
+            logger.debug(f"File read failed for {symbol}: {e}")
+    
+    return None
 
 # Technical indicator calculation functions
 def calculate_atr(highs, lows, closes, period=14):
@@ -2824,14 +2894,10 @@ async def process_indicators_background(indicators: List[Dict[str, Any]]):
         
         def read_stock_file(stock):
             try:
-                # Fix path - use parent directory from python-api folder
-                stock_file = Path(__file__).parent / "db" / f"{stock}.json"
-                if not stock_file.exists():
-                    # Try alternate path
-                    stock_file = Path("db") / f"{stock}.json"
-                if stock_file.exists():
-                    with open(stock_file, 'r') as f:
-                        return stock, json.load(f), True
+                # Use the new helper function
+                data = load_stock_data_sync(stock)
+                if data:
+                    return stock, data, True
                 return stock, None, False
             except Exception as e:
                 logger.error(f"Error reading {stock}: {e}")

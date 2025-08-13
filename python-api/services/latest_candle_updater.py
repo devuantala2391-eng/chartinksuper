@@ -8,6 +8,7 @@ import threading
 from services.chartink_service import ChartinkService
 from utils.constants import STOCK_SYMBOLS
 from services.latest_day_precalculator import latest_day_precalculator
+from services.database_service import db_service
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +57,18 @@ class LatestCandleUpdater:
             logger.error(f"Failed to fetch latest candle for {symbol}: {e}")
             return None
     
-    def load_existing_data(self, symbol: str) -> List[Dict[str, Any]]:
-        """Load existing stock data from JSON file."""
+    async def load_existing_data(self, symbol: str) -> List[Dict[str, Any]]:
+        """Load existing stock data from database or JSON file."""
+        # Try database first
+        if db_service.initialized:
+            try:
+                candles = await db_service.load_candles(symbol)
+                if candles:
+                    return candles
+            except Exception as e:
+                logger.debug(f"Database read failed for {symbol}: {e}")
+        
+        # Fallback to JSON file
         file_path = self.db_path / f"{symbol}.json"
         
         if not file_path.exists():
@@ -70,8 +81,18 @@ class LatestCandleUpdater:
             logger.error(f"Failed to load existing data for {symbol}: {e}")
             return []
     
-    def save_updated_data(self, symbol: str, data: List[Dict[str, Any]]) -> bool:
-        """Save updated stock data to JSON file."""
+    async def save_updated_data(self, symbol: str, data: List[Dict[str, Any]]) -> bool:
+        """Save updated stock data to database and JSON file."""
+        # Try database first
+        if db_service.initialized:
+            try:
+                success = await db_service.update_candles(symbol, data)
+                if success:
+                    return True
+            except Exception as e:
+                logger.debug(f"Database save failed for {symbol}: {e}")
+        
+        # Fallback to JSON file
         file_path = self.db_path / f"{symbol}.json"
         
         try:
@@ -143,14 +164,14 @@ class LatestCandleUpdater:
                 return {symbol: "No latest candle data available"}
             
             # Load existing data
-            existing_data = self.load_existing_data(symbol)
+            existing_data = await self.load_existing_data(symbol)
             
             # Update with latest candle
             updated_data, was_changed = self.update_latest_candle_data(existing_data, latest_candle)
             
             if was_changed:
                 # Save updated data
-                if self.save_updated_data(symbol, updated_data):
+                if await self.save_updated_data(symbol, updated_data):
                     return {symbol: f"Updated successfully - {len(updated_data)} total candles"}
                 else:
                     return {symbol: "Failed to save updated data"}
