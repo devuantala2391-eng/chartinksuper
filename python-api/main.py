@@ -65,8 +65,9 @@ from services.indicator_cache import indicator_cache
 from services.data_utils import get_next_day_timestamp, get_day_of_week_name
 from utils.constants import STOCK_SYMBOLS, TOTAL_SYMBOLS
 from services.chartink_service import ChartinkService
+from postgres_hard_refresh import hard_refresh_database_postgres, load_stock_data_postgres, save_stock_data_postgres
 from services.latest_candle_updater import latest_candle_updater
-from services.database_service import db_service
+from services.db_wrapper import db_wrapper as db_service
 
 # Simple logging setup
 logging.basicConfig(
