@@ -1,14 +1,12 @@
 import asyncio
-import json
 import logging
 from datetime import datetime, time, timedelta
-from pathlib import Path
 from typing import Dict, List, Optional, Any
 import threading
 from services.chartink_service import ChartinkService
 from utils.constants import STOCK_SYMBOLS
 from services.latest_day_precalculator import latest_day_precalculator
-from services.database_service import db_service
+from services.db_wrapper import db_wrapper as db_service
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +15,6 @@ class LatestCandleUpdater:
     
     def __init__(self):
         self.chartink_service = ChartinkService()
-        self.db_path = Path(__file__).parent.parent / "db"
         self.is_running = False
         self.update_task = None
         self.lock = threading.Lock()
@@ -58,50 +55,26 @@ class LatestCandleUpdater:
             return None
     
     async def load_existing_data(self, symbol: str) -> List[Dict[str, Any]]:
-        """Load existing stock data from database or JSON file."""
-        # Try database first
-        if db_service.initialized:
-            try:
-                candles = await db_service.load_candles(symbol)
-                if candles:
-                    return candles
-            except Exception as e:
-                logger.debug(f"Database read failed for {symbol}: {e}")
-        
-        # Fallback to JSON file
-        file_path = self.db_path / f"{symbol}.json"
-        
-        if not file_path.exists():
+        """Load existing stock data from database only."""
+        if not db_service.initialized:
+            logger.error("Database service not initialized")
             return []
             
         try:
-            with open(file_path, 'r') as f:
-                return json.load(f)
+            candles = await db_service.load_candles(symbol)
+            return candles if candles else []
         except Exception as e:
-            logger.error(f"Failed to load existing data for {symbol}: {e}")
+            logger.error(f"Failed to load data for {symbol}: {e}")
             return []
     
     async def save_updated_data(self, symbol: str, data: List[Dict[str, Any]]) -> bool:
-        """Save updated stock data to database and JSON file."""
-        # Try database first
-        if db_service.initialized:
-            try:
-                success = await db_service.update_candles(symbol, data)
-                if success:
-                    return True
-            except Exception as e:
-                logger.debug(f"Database save failed for {symbol}: {e}")
-        
-        # Fallback to JSON file
-        file_path = self.db_path / f"{symbol}.json"
-        
-        try:
-            # Ensure directory exists
-            file_path.parent.mkdir(parents=True, exist_ok=True)
+        """Save updated stock data to database only."""
+        if not db_service.initialized:
+            logger.error("Database service not initialized")
+            return False
             
-            with open(file_path, 'w') as f:
-                json.dump(data, f)
-            return True
+        try:
+            return await db_service.update_candles(symbol, data)
         except Exception as e:
             logger.error(f"Failed to save data for {symbol}: {e}")
             return False
@@ -190,8 +163,7 @@ class LatestCandleUpdater:
         logger.info(f"🚀 Starting latest candle update for {len(symbols)} symbols")
         logger.info(f"📋 Processing symbols in batches with {50} concurrent connections...")
         
-        # Initialize client pool
-        await self.chartink_service.initialize_client_pool()
+        # Client will be initialized automatically when needed
         
         # Use semaphore to control concurrency
         semaphore = asyncio.Semaphore(50)  # Limit concurrent requests

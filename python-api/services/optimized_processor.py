@@ -84,7 +84,11 @@ class OptimizedProcessor:
         logger.info(f"   - Hit Rate: {cache_report['hit_rate']}")
         logger.info(f"   - Time Saved: {cache_report['time_saved_seconds']:.2f}s")
         logger.info(f"   - Calculations Saved: {cache_report['calculations_saved']}")
-        logger.info(f"   - Effective Speed: {len(stock_batch_data) / batch_time:.1f} stocks/sec")
+        # Avoid division by zero for very fast batches
+        if batch_time > 0:
+            logger.info(f"   - Effective Speed: {len(stock_batch_data) / batch_time:.1f} stocks/sec")
+        else:
+            logger.info(f"   - Effective Speed: {len(stock_batch_data)}/0s (instantaneous)")
         
         return results
     
@@ -168,11 +172,18 @@ class OptimizedProcessor:
                 
             elif name == "supertrend":
                 # For SuperTrend, we'll use optimized calculation with cached ATR
+                logger.info(f"Calculating SuperTrend for {stock}: period={config['period']}, multiplier={config['multiplier']}")
                 values = self._calculate_supertrend_optimized(
                     stock, calc_highs, calc_lows, calc_closes,
                     config["period"], config["multiplier"],
                     current_timestamp, timeframe
                 )
+                logger.info(f"SuperTrend calculation returned {len(values) if values else 0} values for {stock}")
+                if values:
+                    valid_values = [v for v in values if v is not None]
+                    logger.info(f"Valid SuperTrend values: {len(valid_values)}/{len(values)}")
+                    if valid_values:
+                        logger.info(f"Sample SuperTrend values: {valid_values[-3:]}")
                 calculated_indicators[indicator_key] = values
         
         # Map calculated values to candles
@@ -190,6 +201,9 @@ class OptimizedProcessor:
             for indicator_key, values in calculated_indicators.items():
                 if values and idx < len(values) and values[idx] is not None:
                     candle_result[indicator_key] = round(values[idx], 2)
+                    # Debug for SuperTrend
+                    if 'supertrend' in indicator_key.lower():
+                        logger.info(f"Adding {indicator_key} = {candle_result[indicator_key]} to candle {idx}")
             
             # Add percentage changes if needed
             self._add_percentage_changes(candle_result, stock_data, idx, indicator_configs)
@@ -208,11 +222,13 @@ class OptimizedProcessor:
             params = indicator.get("params", {})
             period = float(params.get("period", 14))
             
-            # Generate indicator key
+            # Generate indicator key with unambiguous decimal naming
             if name == "supertrend":
                 multiplier = float(params.get("multiplier", 2))
-                period_str = str(int(period)) if period.is_integer() else str(period)
-                indicator_key = f"{timeframe}_{name}_{period_str}_{multiplier}"
+                period_str = str(int(period)) if period.is_integer() else str(period).replace('.', 'dot')
+                multiplier_str = str(int(multiplier)) if multiplier.is_integer() else str(multiplier).replace('.', 'dot')
+                # Remove redundant timeframe prefix since table already indicates timeframe
+                indicator_key = f"{name}_{period_str}_{multiplier_str}"
                 
                 configs.append({
                     "name": name,
@@ -263,6 +279,11 @@ class OptimizedProcessor:
         import sys
         from pathlib import Path
         sys.path.append(str(Path(__file__).parent.parent))
+        
+        # Convert Decimal to float if needed
+        highs = [float(h) if h is not None else None for h in highs]
+        lows = [float(l) if l is not None else None for l in lows]
+        closes = [float(c) if c is not None else None for c in closes]
         
         # Get cached SuperTrend data
         cached = self.cache.get_supertrend_cache(stock, period, multiplier, timeframe)
@@ -352,6 +373,48 @@ class OptimizedProcessor:
             "avg_time_per_stock_uncached": f"{avg_uncached_time:.4f}s",
             "cache_details": cache_report
         }
+
+    def process_indicators(self, symbol: str, stock_data: List[Dict],
+                          indicators: List[Dict], timeframes: List[str]) -> Tuple[bool, Any, str]:
+        """
+        Process indicators for a single stock.
+        
+        Args:
+            symbol: Stock symbol
+            stock_data: List of candle data dictionaries
+            indicators: List of indicator definitions
+            timeframes: List of timeframes to process
+            
+        Returns:
+            Tuple of (success, result_data, error_message)
+        """
+        try:
+            # Convert Decimal to float in stock data
+            cleaned_data = []
+            for candle in stock_data:
+                cleaned_candle = candle.copy()
+                for field in ['open', 'high', 'low', 'close', 'volume']:
+                    if field in cleaned_candle and cleaned_candle[field] is not None:
+                        cleaned_candle[field] = float(cleaned_candle[field])
+                cleaned_data.append(cleaned_candle)
+            
+            # Use the existing single stock processing method
+            current_timestamp = cleaned_data[-1].get('timestamp', '') if cleaned_data else ''
+            result = self._process_single_stock_with_cache(
+                symbol, cleaned_data, indicators, timeframes, str(current_timestamp)
+            )
+            
+            # Return the data from the result
+            if result and 'data' in result:
+                return (True, result['data'], None)
+            else:
+                return (False, None, "No data processed")
+                
+        except Exception as e:
+            logger.error(f"Error processing indicators for {symbol}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return (False, None, str(e))
 
 # Global instance
 optimized_processor = OptimizedProcessor()

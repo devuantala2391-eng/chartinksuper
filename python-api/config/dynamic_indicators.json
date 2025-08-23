@@ -1,0 +1,64 @@
+{
+  "indicators": {
+    "SMA_25": {
+      "name": "SMA",
+      "params": {
+        "period": 25
+      },
+      "added_at": "2025-08-17T16:18:25.237640",
+      "timeframe": "daily",
+      "auto_added": true,
+      "description": "Auto-generated SMA indicator"
+    },
+    "RSI_14": {
+      "name": "RSI",
+      "params": {
+        "period": 14
+      },
+      "added_at": "2025-08-17T16:31:54.145392",
+      "timeframe": "daily",
+      "auto_added": true,
+      "description": "Auto-generated RSI indicator"
+    },
+    "SMA_20": {
+      "name": "SMA",
+      "params": {
+        "period": 20
+      },
+      "added_at": "2025-08-17T16:34:52.528062",
+      "timeframe": "daily",
+      "auto_added": true,
+      "description": "Auto-generated SMA indicator"
+    },
+    "SuperTrend_30_3": {
+      "name": "SuperTrend",
+      "params": {
+        "period": 30,
+        "multiplier": 3
+      },
+      "timeframe": "daily",
+      "description": "Auto-generated SuperTrend indicator",
+      "auto_added": true,
+      "added_at": "2025-08-17T16:45:29.579589"
+    },
+    "SuperTrend_30_1dot2": {
+      "name": "SuperTrend",
+      "params": {
+        "period": 30,
+        "multiplier": 1.2
+      },
+      "timeframe": "daily",
+      "description": "Auto-generated SuperTrend indicator",
+      "auto_added": true,
+      "added_at": "2025-08-17T23:57:45.002173"
+    }
+  },
+  "active_indicators": [
+    "RSI_14",
+    "SMA_20",
+    "SuperTrend_30_3",
+    "SuperTrend_30_1dot2",
+    "SMA_25"
+  ],
+  "last_updated": "2025-08-18T00:00:34.549887"
+}

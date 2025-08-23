@@ -1,34 +1,27 @@
 """
-Database wrapper that provides PostgreSQL access only (file storage disabled)
+Database wrapper that uses ultra-fast unified database (no NSE database)
 """
 
-import os
-import json
 import logging
-from pathlib import Path
 from typing import Dict, List, Any, Optional
-import asyncio
 
-from .nse_database_service import nse_db_service
+from .ultra_fast_database_service import ultra_fast_db
 
 logger = logging.getLogger(__name__)
 
 class DatabaseWrapper:
     """
-    Wrapper for database operations with PostgreSQL only.
-    File storage fallback is disabled - PostgreSQL is required.
+    Wrapper for database operations using ultra-fast unified database.
+    Eliminates NSE database completely - uses only nse_highspeed with composite keys.
     """
     
     def __init__(self):
-        self.db_service = nse_db_service
-        # File storage path commented out for future use
-        # self.db_path = Path(__file__).parent.parent / "db"
-        # self.db_path.mkdir(exist_ok=True)
-        self._use_postgres = True
+        self.db_service = ultra_fast_db
+        self._use_unified = True
         self._init_attempted = False
         
     async def initialize(self):
-        """Initialize database connection (PostgreSQL only)."""
+        """Initialize ultra-fast unified database connection."""
         if self._init_attempted:
             return self.db_service.initialized
             
@@ -37,21 +30,49 @@ class DatabaseWrapper:
         try:
             await self.db_service.initialize()
             if self.db_service.initialized:
-                logger.info("Using PostgreSQL database for storage")
-                self._use_postgres = True
+                logger.info("✅ Using ultra-fast unified database (nse_highspeed) with composite keys")
+                self._use_unified = True
                 return True
         except Exception as e:
-            logger.error(f"PostgreSQL initialization failed: {e}")
-            raise Exception(f"PostgreSQL is required but initialization failed: {e}")
+            logger.error(f"Ultra-fast database initialization failed: {e}")
+            raise Exception(f"Ultra-fast database is required but initialization failed: {e}")
         
-        # File storage fallback disabled
-        # logger.info("Using file-based storage (fallback mode)")
-        # self._use_postgres = False
         return False
     
-    async def save_candles(self, symbol: str, candles: List[Dict[str, Any]]) -> bool:
+    async def save_candles(self, symbol: str, candles: List[Dict[str, Any]], 
+                          timeframe: str = 'daily') -> bool:
         """
-        Save candles to PostgreSQL only (no file storage fallback).
+        Save candles to ultra-fast unified database with composite keys.
+        
+        Args:
+            symbol: Stock symbol
+            candles: List of candle data with indicators
+            timeframe: daily, weekly, or monthly
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not candles:
+            return True
+        
+        if self._use_unified and self.db_service.initialized:
+            try:
+                success = await self.db_service.store_chunk_with_indicators(symbol, candles, timeframe)
+                if success:
+                    logger.debug(f"✅ Saved {len(candles)} {timeframe} candles for {symbol} with composite keys")
+                    return True
+                logger.error(f"❌ Ultra-fast database save failed for {symbol}")
+                return False
+            except Exception as e:
+                logger.error(f"❌ Ultra-fast database save error for {symbol}: {e}")
+                return False
+        
+        logger.error(f"❌ Cannot save {symbol}: Ultra-fast database not initialized")
+        return False
+    
+    async def update_candles(self, symbol: str, candles: List[Dict[str, Any]]) -> bool:
+        """
+        Update candles (alias for save_candles for compatibility).
         
         Args:
             symbol: Stock symbol
@@ -60,38 +81,11 @@ class DatabaseWrapper:
         Returns:
             True if successful, False otherwise
         """
-        if not candles:
-            return True
-        
-        # PostgreSQL only - no fallback
-        if self._use_postgres and self.db_service.initialized:
-            try:
-                success = await self.db_service.save_candles(symbol, candles)
-                if success:
-                    return True
-                logger.error(f"PostgreSQL save failed for {symbol}")
-                return False
-            except Exception as e:
-                logger.error(f"PostgreSQL save error for {symbol}: {e}")
-                return False
-        
-        # File storage fallback disabled - kept for future use
-        # try:
-        #     file_path = self.db_path / f"{symbol}.json"
-        #     with open(file_path, 'w') as f:
-        #         json.dump(candles, f)
-        #     logger.debug(f"Saved {symbol} to file (fallback)")
-        #     return True
-        # except Exception as e:
-        #     logger.error(f"File save failed for {symbol}: {e}")
-        #     return False
-        
-        logger.error(f"Cannot save {symbol}: PostgreSQL not initialized")
-        return False
+        return await self.save_candles(symbol, candles)
     
     async def load_candles(self, symbol: str, limit: Optional[int] = None) -> Optional[List[Dict[str, Any]]]:
         """
-        Load candles from PostgreSQL only (no file storage fallback).
+        Load candles from PostgreSQL only.
         
         Args:
             symbol: Stock symbol
@@ -100,34 +94,21 @@ class DatabaseWrapper:
         Returns:
             List of candle data or None
         """
-        # PostgreSQL only - no fallback
-        if self._use_postgres and self.db_service.initialized:
+        if self._use_unified and self.db_service.initialized:
             try:
-                data = await self.db_service.load_candles(symbol, limit)
+                data = await self.db_service.get_last_n_candles(symbol, limit or 10000)
                 if data:
                     return data
             except Exception as e:
-                logger.error(f"PostgreSQL load error for {symbol}: {e}")
+                logger.error(f"Ultra-fast database load error for {symbol}: {e}")
                 return None
-        
-        # File storage fallback disabled - kept for future use
-        # try:
-        #     file_path = self.db_path / f"{symbol}.json"
-        #     if file_path.exists():
-        #         with open(file_path, 'r') as f:
-        #             data = json.load(f)
-        #             if limit:
-        #                 return data[-limit:]
-        #             return data
-        # except Exception as e:
-        #     logger.error(f"File load failed for {symbol}: {e}")
         
         logger.error(f"Cannot load {symbol}: PostgreSQL not initialized")
         return None
     
     async def get_latest_candle(self, symbol: str) -> Optional[Dict[str, Any]]:
         """
-        Get latest candle from PostgreSQL only (no file storage fallback).
+        Get latest candle from ultra-fast database.
         
         Args:
             symbol: Stock symbol
@@ -135,22 +116,16 @@ class DatabaseWrapper:
         Returns:
             Latest candle data or None
         """
-        # PostgreSQL only - no fallback
-        if self._use_postgres and self.db_service.initialized:
+        if self._use_unified and self.db_service.initialized:
             try:
-                candle = await self.db_service.get_latest_candle(symbol)
-                if candle:
-                    return candle
+                candles = await self.db_service.get_last_n_candles(symbol, 1)
+                if candles:
+                    return candles[0]
             except Exception as e:
-                logger.error(f"PostgreSQL get latest error for {symbol}: {e}")
+                logger.error(f"Ultra-fast database get latest error for {symbol}: {e}")
                 return None
         
-        # File storage fallback disabled
-        # data = await self.load_candles(symbol, limit=1)
-        # if data:
-        #     return data[-1]
-        
-        logger.error(f"Cannot get latest candle for {symbol}: PostgreSQL not initialized")
+        logger.error(f"Cannot get latest candle for {symbol}: Ultra-fast database not initialized")
         return None
     
     async def close(self):
@@ -164,12 +139,12 @@ class DatabaseWrapper:
     @property
     def initialized(self):
         """Check if PostgreSQL is initialized."""
-        return self._use_postgres and self.db_service.initialized
+        return self._use_unified and self.db_service.initialized
     
     @property
     def using_postgres(self):
         """Check if using PostgreSQL."""
-        return self._use_postgres and self.db_service.initialized
+        return self._use_unified and self.db_service.initialized
 
 # Global instance
 db_wrapper = DatabaseWrapper()

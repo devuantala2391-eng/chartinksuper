@@ -1,16 +1,19 @@
 import httpx
-import json
 import os
-from pathlib import Path
 import asyncio
 from typing import List, Dict, Any, Optional
 import logging
 import threading
 from dotenv import load_dotenv
-from .database_service import db_service
+from .db_wrapper import db_wrapper as db_service
+import ssl
 
 # Load environment variables
 load_dotenv()
+
+# Reduce HTTP client debug logging
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 def get_default_size() -> int:
     """Get default size parameter from environment variables."""
@@ -30,19 +33,24 @@ logger = logging.getLogger(__name__)
 
 class ChartinkService:
     def __init__(self):
-        self.timeout = 10.0  # Faster timeout for maximum speed
+        self.timeout = 5.0  # Reduced timeout for speed
         self.max_retries = 1  # Minimal retries for speed
-        # Create a shared client with optimized limits
+        
+        # Create a shared SSL context to avoid repeated SSL setup
+        self.ssl_context = ssl.create_default_context()
+        self.ssl_context.check_hostname = True
+        self.ssl_context.verify_mode = ssl.CERT_REQUIRED
+        
+        # Create optimized client limits
         self.client_limits = httpx.Limits(
-            max_keepalive_connections=10000,  # Even more connections!
-            max_connections=None,  # Unlimited connections
+            max_keepalive_connections=20,  # Sufficient for concurrent requests
+            max_connections=100,  # Higher limit for concurrent requests
             keepalive_expiry=300.0  # Longer keepalive
         )
-        # Create a pool of clients for better concurrency
-        self.client_pool = []
-        self.pool_size = 50  # 50 shared clients
-        self.pool_index = 0
-        self.pool_lock = threading.Lock()  # Thread-safe access
+        
+        # Use a single shared client instead of pool
+        self.shared_client = None
+        self.client_lock = asyncio.Lock()  # Async lock for client access
         self.base_headers = {
             'accept': 'application/json, text/plain, */*',
             'accept-language': 'en-GB,en-US;q=0.9,en;q=0.8,la;q=0.7',
@@ -62,39 +70,37 @@ class ChartinkService:
             'x-xsrf-token': 'eyJpdiI6IjVrL2dLek8rSVE4aGFTWWllazd6cHc9PSIsInZhbHVlIjoiQmVUcmlLb0Z2dk9uYVlPeUpJL3d1OTQ0MTdvcUpWZGt6V2tEaHpEeUJidGJVOENDeFpYbnJiaVgxV3NielhMbjBGUzlTVmNuektCaHhTb0V3MFVnS1VUbWZRVCtEYXFxYlhrYzZ4eWpnY2RuZjltSlJJd1NaUkE4dlFTbVA5aDkiLCJtYWMiOiJkYzM1YzY2YTIwOTM5NTQzODNjMzNkMDZiNWMwY2NkNzc5MDQ5OTFmOGJlMTgwMzJmYjM1NDdmNTFjNzAyOGY2IiwidGFnIjoiIn0=',
         }
     
-    async def initialize_client_pool(self):
-        """Initialize the client pool for maximum concurrency."""
-        if self.client_pool:  # Already initialized
-            return
-        
-        for i in range(self.pool_size):
-            client = httpx.AsyncClient(
-                timeout=self.timeout,
-                limits=self.client_limits,
-                headers=self.base_headers
-            )
-            self.client_pool.append(client)
-    
     async def get_client(self):
-        """Get a client from the pool using round-robin."""
-        if not self.client_pool:
-            await self.initialize_client_pool()
-        
-        with self.pool_lock:
-            client = self.client_pool[self.pool_index % self.pool_size]
-            self.pool_index += 1
-        return client
+        """Get the shared client, creating it if necessary."""
+        async with self.client_lock:
+            if self.shared_client is None:
+                self.shared_client = httpx.AsyncClient(
+                    timeout=self.timeout,
+                    limits=self.client_limits,
+                    headers=self.base_headers,
+                    verify=self.ssl_context  # Use shared SSL context
+                )
+            return self.shared_client
+    
+    async def close_client(self):
+        """Close the shared client."""
+        async with self.client_lock:
+            if self.shared_client:
+                await self.shared_client.aclose()
+                self.shared_client = None
     
     async def close_all_clients(self):
-        """Close all clients in the pool."""
-        for client in self.client_pool:
-            await client.aclose()
-        self.client_pool = []
+        """Close all clients (alias for close_client since we use a single shared client)."""
+        await self.close_client()
 
     async def fetch_stock_data(self, symbol: str, size: int = None) -> Dict[str, Any]:
-        """Fetch stock data from Chartink API using client pool."""
+        """Fetch stock data from Chartink API using shared client."""
         if size is None:
             size = get_default_candle_count()
+        
+        # Log the API request for debugging
+        print(f"[API REQUEST] Fetching {symbol} with size={size}")
+        
         query_string = "select high, low, open, close, volume"
         
         form_data = {
@@ -109,7 +115,7 @@ class ChartinkService:
             'scan_link': 'scanlink:b6b0c6620714e44ab63d271d0ddbd498'
         }
 
-        # Get client from pool instead of creating new one
+        # Get shared client
         client = await self.get_client()
         
         # Try once, if it fails, try again - but FAST!
@@ -157,17 +163,12 @@ class ChartinkService:
                 # Process and map the data
                 mapped_data = self._map_response_data(response_data)
                 
-                # Save to database
+                # Save to database only
                 success = await db_service.save_candles(symbol, mapped_data)
                 
                 if not success:
-                    # Fallback to JSON file if database save fails
-                    json_dir = Path(__file__).parent.parent / "db"
-                    json_dir.mkdir(parents=True, exist_ok=True)
-                    file_path = json_dir / f"{symbol}.json"
-                    with open(file_path, 'w') as f:
-                        json.dump(mapped_data, f)
-                    logger.warning(f"Saved {symbol} to file due to database error")
+                    logger.error(f"Failed to save {symbol} to database")
+                    return {symbol: f"Database save failed for {len(mapped_data)} records"}
                 
                 # Log if we had to use a smaller size
                 if attempt_size < size:
@@ -222,12 +223,11 @@ class ChartinkService:
             return {}
         
         # Initialize client pool BEFORE processing starts
-        await self.initialize_client_pool()
         
         print(f"\n[CHARTINK] Starting concurrent processing of {len(symbols)} symbols...")
         
-        # Use semaphore to limit concurrent requests to pool size
-        semaphore = asyncio.Semaphore(self.pool_size * 2)  # Allow 2x pool size for better throughput
+        # Use semaphore to limit concurrent requests
+        semaphore = asyncio.Semaphore(20)  # Reasonable concurrency limit
         results = {}
         
         processed_count = 0
@@ -263,7 +263,7 @@ class ChartinkService:
         print(f"\n[CHARTINK] Processed {len(symbols)} symbols in {elapsed:.2f} seconds ({rate:.1f} symbols/sec)")
         
         # Close all clients when done
-        await self.close_all_clients()
+        await self.close_client()
         
         return results
 

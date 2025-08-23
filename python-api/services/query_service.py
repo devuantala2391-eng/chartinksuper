@@ -90,6 +90,20 @@ def resolve_field_name(field_name: str) -> str:
     """Resolve field name variations to actual field names in the data."""
     import re
     
+    # Handle format with spaces: "daily supertrend (10,1.2)" -> "supertrend_10_1dot2"
+    # First normalize spaces to underscores
+    field_name = field_name.replace(' ', '_')
+    
+    # Handle parentheses format: daily_supertrend_(30,1.2) -> supertrend_30_1dot2
+    paren_match = re.match(r'^(daily|weekly|monthly)_supertrend_\((\d+),(\d+(?:\.\d+)?)\)$', field_name)
+    if paren_match:
+        timeframe = paren_match.group(1)
+        period = paren_match.group(2)
+        multiplier = paren_match.group(3)
+        # Convert to new naming convention: remove redundant timeframe, use "dot" for decimals
+        multiplier_clean = multiplier.replace('.', 'dot') if '.' in multiplier else multiplier
+        return f"supertrend_{period}_{multiplier_clean}"
+    
     # Handle dynamic decimal parameters for indicators
     # Check for Bollinger Bands with decimal parameters (e.g., daily_bb_upper_10_1.22)
     bb_match = re.match(r'^(daily|weekly|monthly)_bb_(upper|middle|lower)_(\d+(?:\.\d+)?)_(\d+(?:\.\d+)?)$', field_name)
@@ -101,14 +115,25 @@ def resolve_field_name(field_name: str) -> str:
         # Return in the format expected by the data: timeframe_bb_period_stddev_bandtype
         return f"{timeframe}_bb_{period}_{std_dev}_{band_type}"
     
-    # Check for SuperTrend with decimal parameters (e.g., daily_supertrend_10_2.44)
-    st_match = re.match(r'^(daily|weekly|monthly)_supertrend_(\d+(?:\.\d+)?)_(\d+(?:\.\d+)?)$', field_name)
+    # Check for SuperTrend with decimal parameters (e.g., daily_supertrend_10_2.44, daily_supertrend_30_1_2)
+    # Convert to new naming convention: supertrend_30_1dot2 (no redundant timeframe, use "dot" for decimals)
+    st_match = re.match(r'^(daily|weekly|monthly)_supertrend_(\d+)_(\d+(?:[_\.]\d+)?)$', field_name)
     if st_match:
         timeframe = st_match.group(1)
         period = st_match.group(2)
         multiplier = st_match.group(3)
-        # Return in the format expected by the data
-        return f"{timeframe}_supertrend_{period}_{multiplier}"
+        # Convert to new naming convention: remove redundant timeframe, use "dot" for decimals
+        # Handle both underscore and dot formats for the multiplier
+        if '_' in multiplier and '.' not in multiplier:
+            # Convert underscore format (1_2) to dot format (1dot2)
+            multiplier_clean = multiplier.replace('_', 'dot')
+        elif '.' in multiplier:
+            # Convert dot format (1.2) to dot format (1dot2)
+            multiplier_clean = multiplier.replace('.', 'dot')
+        else:
+            # Integer format (2)
+            multiplier_clean = multiplier
+        return f"supertrend_{period}_{multiplier_clean}"
     
     # Check for other indicators with decimal parameters
     ind_match = re.match(r'^(daily|weekly|monthly)_(rsi|sma|ema|pctchg)_(\d+(?:\.\d+)?)$', field_name)
@@ -190,41 +215,19 @@ def get_field_value(candle: Dict[str, Any], field_name: str, candles: List[Dict[
         # Regular field lookup
         return candle.get(field_name)
 
-def get_available_fields_from_precalculated_indicators() -> set:
-    """Get available fields from precalculatedIndicators.json config AND verify data files exist."""
-    import json
-    from pathlib import Path
+async def get_available_fields_from_dynamic_indicators() -> set:
+    """Get available fields from dynamic indicator manager (database-based)."""
     
-    # First check if precalculated storage exists and has data
-    precalc_dir = Path(__file__).parent.parent / "precalculatedStorage"
-    if not precalc_dir.exists():
-        logger.warning("Precalculated storage directory does not exist")
-        return set()
-    
-    # Check if any stock files exist
-    sample_files = list(precalc_dir.glob("*_piped.json"))
-    if not sample_files:
-        logger.warning("No precalculated data files found in storage")
-        return set()
-    
-    # Load precalculated indicators config
     try:
-        indicators_file = Path(__file__).parent.parent / "precalculatedIndicators.json"
-        if not indicators_file.exists():
-            return set()
+        # Import here to avoid circular imports
+        from services.dynamic_indicator_manager import dynamic_indicator_manager
         
-        with open(indicators_file, 'r') as f:
-            config = json.load(f)
-        
-        # Only return fields if status is "completed"
-        if config.get("status") != "completed":
-            logger.warning(f"Precalculation status is {config.get('status')}, not completed")
-            return set()
+        # Get active indicators from dynamic indicator manager
+        indicators = await dynamic_indicator_manager.get_active_indicators_list()
         
         available_fields = set()
         
         # Add basic price fields that are always available
-        # Daily fields are stored without the daily_ prefix in actual data
         for field in ['open', 'high', 'low', 'close', 'volume']:
             available_fields.add(field)  # Basic fields without prefix
         
@@ -233,39 +236,38 @@ def get_available_fields_from_precalculated_indicators() -> set:
             for field in ['open', 'high', 'low', 'close', 'volume']:
                 available_fields.add(f"{timeframe}_{field}")
         
-        # Add indicator fields based on configuration
-        indicators = config.get("indicators", [])
+        # Add indicator fields based on active indicators
         for indicator in indicators:
             timeframe = indicator.get("timeframe", "daily")
-            name = indicator.get("name", "")
+            name = indicator.get("name", "").lower()
             params = indicator.get("params", {})
             
             if name == "supertrend":
                 period = params.get("period", 10)
                 multiplier = params.get("multiplier", 3)
-                # Generate the field name using same logic as backend
-                period_str = str(int(period)) if isinstance(period, float) and period.is_integer() else str(period)
-                multiplier_str = str(int(multiplier)) if isinstance(multiplier, float) and multiplier.is_integer() else str(multiplier)
-                field_name = f"{timeframe}_{name}_{period_str}_{multiplier_str}"
+                # Generate the field name with unambiguous decimal naming, remove redundant timeframe
+                period_str = str(int(period)) if isinstance(period, float) and period.is_integer() else str(period).replace('.', 'dot')
+                multiplier_str = str(int(multiplier)) if isinstance(multiplier, float) and multiplier.is_integer() else str(multiplier).replace('.', 'dot')
+                field_name = f"{name}_{period_str}_{multiplier_str}"
                 available_fields.add(field_name)
-                # Also add with .0 suffix for compatibility
+                # Also add backward compatibility variants
                 if isinstance(multiplier, (int, float)) and float(multiplier).is_integer():
-                    field_name_with_decimal = f"{timeframe}_{name}_{period_str}_{int(multiplier)}.0"
-                    available_fields.add(field_name_with_decimal)
+                    # Old format compatibility
+                    field_name_old = f"daily_{name}_{period_str}_{int(multiplier)}"
+                    available_fields.add(field_name_old)
             elif name == "pctchg":
                 period = params.get("period", 1)
                 period_str = str(int(period)) if isinstance(period, float) and period.is_integer() else str(period)
                 field_name = f"{timeframe}_{name}_{period_str}"
                 available_fields.add(field_name)
-            elif name == "bb":
+            elif name == "bollingerbands" or name == "bb":
                 period = params.get("period", 20)
-                std_dev = params.get("stdDev", 2)
+                std_dev = params.get("std_dev", 2)
                 period_str = str(int(period)) if isinstance(period, float) and period.is_integer() else str(period)
                 std_str = str(int(std_dev)) if isinstance(std_dev, float) and std_dev.is_integer() else str(std_dev)
                 # Bollinger bands have upper, middle, lower suffixes
-                # Format should match actual data: timeframe_bb_period_stddev_suffix
                 for suffix in ['upper', 'middle', 'lower']:
-                    field_name = f"{timeframe}_{name}_{period_str}_{std_str}_{suffix}"
+                    field_name = f"{timeframe}_bb_{period_str}_{std_str}_{suffix}"
                     available_fields.add(field_name)
             elif name in ["rsi", "sma", "ema", "adx", "atr", "cci", "macd", "stoch", "wma"]:
                 # Standard indicators with single period parameter
@@ -279,24 +281,30 @@ def get_available_fields_from_precalculated_indicators() -> set:
                 available_fields.add(field_name)
             # Add other indicator types as needed
             
+        logger.info(f"Dynamic indicator manager provided {len(available_fields)} available fields")
         return available_fields
         
     except Exception as e:
-        logger.warning(f"Failed to load precalculated indicators config: {e}")
+        logger.warning(f"Failed to load from dynamic indicator manager: {e}")
         return set()
 
-def validate_query_fields(parsed_query: Dict[str, Any], sample_stock_path: str = None) -> Dict[str, Any]:
+def get_available_fields_from_precalculated_indicators() -> set:
+    """Legacy function - now returns empty set to force async validation."""
+    logger.warning("Using legacy validation method - should use async dynamic indicators")
+    return set()
+
+async def validate_query_fields(parsed_query: Dict[str, Any], sample_stock_path: str = None) -> Dict[str, Any]:
     """Validate if all fields in the query exist in precalculated data."""
     
     try:
-        # Use efficient config-based field detection instead of loading large JSON files
-        available_fields = get_available_fields_from_precalculated_indicators()
+        # Use dynamic indicator manager for field detection
+        available_fields = await get_available_fields_from_dynamic_indicators()
         
         if not available_fields:
-            # Fallback to sample file approach if config method fails
+            # Fallback to sample file approach if dynamic method fails
             return validate_query_fields_fallback(parsed_query, sample_stock_path)
         
-        logger.info(f"Available fields from config: {sorted(available_fields)}")
+        logger.info(f"Available fields from dynamic indicators: {sorted(available_fields)}")
         
         # Extract all field names from the parsed query
         required_fields = set()
@@ -572,8 +580,8 @@ def parse_query(query: str) -> Dict[str, Any]:
     # Updated to handle time offset expressions on both sides and decimal numbers
     time_offset_pattern = r'(\d+)\s+(day|week|month)s?\s+ago\s+([\w\.]+(?:_[\w\.]+)*(?:\(\d+(?:\.\d+)?(?:,\d+(?:\.\d+)?)*\))?)\s*([><=!]+)\s*(.+)'
     
-    # Basic comparison operators - updated to handle complex right side expressions and decimal numbers
-    basic_pattern = r'([\w\.]+(?:\(\d+(?:\.\d+)?(?:,\d+(?:\.\d+)?)*\))?)\s*([><=!]+)\s*(.+)'
+    # Basic comparison operators - updated to handle spaces and complex right side expressions and decimal numbers
+    basic_pattern = r'([\w\.\s]+(?:\(\d+(?:\.\d+)?(?:,\d+(?:\.\d+)?)*\))?)\s*([><=!]+)\s*(.+)'
     
     conditions = []
     logical_operators = []
@@ -640,15 +648,19 @@ def parse_query(query: str) -> Dict[str, Any]:
                     # Try basic pattern
                     basic_match = re.match(basic_pattern, part)
                     if basic_match:
-                        left_field = basic_match.group(1)
+                        left_field = basic_match.group(1).strip()
                         operator = basic_match.group(2)
                         right_field = basic_match.group(3)
                         
                         # Parse the right side expression (could be number, field, or time-offset)
                         right_parsed = parse_right_side_expression(right_field)
                         
+                        # Convert spaces to underscores for field name resolution
+                        # e.g., "daily supertrend (30,1.2)" -> "daily_supertrend_(30,1.2)"
+                        field_for_resolution = left_field.replace(' ', '_')
+                        
                         # Resolve field name for left side
-                        resolved_left_field = resolve_field_name(left_field)
+                        resolved_left_field = resolve_field_name(field_for_resolution)
                         
                         conditions.append({
                             "left": {
@@ -1007,15 +1019,18 @@ def detect_missing_indicators_from_fields(missing_fields: List[str]) -> List[Dic
     
     for field in missing_fields:
         # Use regex to properly parse decimal parameters
-        # Pattern for SuperTrend: timeframe_supertrend_period_multiplier
-        st_match = re.match(r'^(daily|weekly|monthly)_supertrend_(\d+(?:\.\d+)?)_(\d+(?:\.\d+)?)$', field)
+        # Pattern for SuperTrend: timeframe_supertrend_period_multiplier (accepts both dots and underscores)
+        st_match = re.match(r'^(daily|weekly|monthly)_supertrend_(\d+(?:[_\.]\d+)?)_(\d+(?:[_\.]\d+)?)$', field)
         if st_match:
+            # Convert underscores back to dots for numeric conversion
+            period_str = st_match.group(2).replace('_', '.')
+            multiplier_str = st_match.group(3).replace('_', '.')
             indicators.append({
                 "timeframe": st_match.group(1),
                 "name": "supertrend",
                 "params": {
-                    "period": float(st_match.group(2)),
-                    "multiplier": float(st_match.group(3))
+                    "period": float(period_str),
+                    "multiplier": float(multiplier_str)
                 }
             })
             continue
