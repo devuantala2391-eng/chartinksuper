@@ -340,7 +340,7 @@ class OptimizedProcessor:
                     lookback_idx = lookback  # Use direct lookback for daily
                 
                 # Calculate percentage change
-                field_name = f"{timeframe}_pctchg_{lookback}"
+                field_name = f"{timeframe}_pctchg"
                 
                 if idx >= lookback_idx:
                     old_close = stock_data[idx - lookback_idx]["close"]
@@ -353,9 +353,7 @@ class OptimizedProcessor:
                 else:
                     candle_result[field_name] = None  # null due to insufficient data (0th candle, etc.)
                     
-                # Backward compatibility: also add old format for daily_pctchg_1
-                if timeframe == "daily" and lookback == 1:
-                    candle_result["daily_percentage_change"] = candle_result.get(field_name, None)
+                # Note: Simplified format - no longer using lookback parameter in key name
     
     def get_performance_summary(self) -> Dict:
         """Get a summary of performance improvements."""

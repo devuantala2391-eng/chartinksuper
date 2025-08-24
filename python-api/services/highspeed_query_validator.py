@@ -197,18 +197,24 @@ class HighSpeedQueryValidator:
     
     def _parse_indicator_from_field(self, field_name: str) -> Optional[Dict]:
         """Parse indicator definition from field name"""
-        # Handle percentage change indicators: daily_pctchg_1, weekly_pctchg_1, etc.
+        # Handle percentage change indicators: daily_pctchg, weekly_pctchg, etc.
         if 'pctchg' in field_name:
             parts = field_name.split('_')
-            if len(parts) >= 3:  # e.g., daily_pctchg_1
+            if len(parts) == 2:  # e.g., daily_pctchg, weekly_pctchg
+                timeframe = parts[0]  # daily, weekly, monthly
+                return {
+                    "name": "PercentageChange",
+                    "timeframe": timeframe,
+                    "params": {}  # No parameters needed - always compare to 1 period ago
+                }
+            elif len(parts) >= 3:  # Legacy format: daily_pctchg_1 - convert to new format
                 try:
                     timeframe = parts[0]  # daily, weekly, monthly
-                    lookback = int(parts[2])  # 1, 5, etc.
-                    
+                    # Ignore the lookback parameter, always use 1
                     return {
-                        "name": "PercentageChange",
+                        "name": "PercentageChange", 
                         "timeframe": timeframe,
-                        "params": {"lookback": lookback}
+                        "params": {}  # No parameters needed
                     }
                 except (ValueError, IndexError):
                     logger.error(f"Invalid percentage change parameters in {field_name}")

@@ -953,19 +953,19 @@ class UltraFastDatabaseService:
             # Copy original candle data
             enhanced_candle = candle.copy()
             
-            # Calculate daily percentage change (daily_pctchg_1)
+            # Calculate daily percentage change (daily_pctchg)
             if i > 0:  # Need previous candle for comparison
                 current_close = float(candle.get('close', 0))
                 previous_close = float(valid_candles[i-1].get('close', 0))  # Use valid_candles list
                 
                 if previous_close > 0:
                     pct_change = ((current_close - previous_close) / previous_close) * 100
-                    enhanced_candle['daily_pctchg_1'] = round(pct_change, 4)
+                    enhanced_candle['daily_pctchg'] = round(pct_change, 4)
                 else:
-                    enhanced_candle['daily_pctchg_1'] = None
+                    enhanced_candle['daily_pctchg'] = None
             else:
                 # First candle (0th) - no previous candle for comparison
-                enhanced_candle['daily_pctchg_1'] = None
+                enhanced_candle['daily_pctchg'] = None
             
             # Add more basic indicators here as needed
             # enhanced_candle['daily_pctchg_5'] = self._calculate_pct_change(valid_candles, i, 5)

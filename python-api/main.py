@@ -1099,8 +1099,7 @@ async def process_query(request: QueryRequest):
                         bootstrap_fields.append(field_name)
                     elif indicator["name"] == "PercentageChange":
                         timeframe = indicator.get('timeframe', 'daily')
-                        lookback = indicator['params'].get('lookback', 1)
-                        field_name = f"{timeframe}_pctchg_{lookback}"
+                        field_name = f"{timeframe}_pctchg"  # Simplified format - no offset parameter
                         bootstrap_fields.append(field_name)
                 
                 if bootstrap_fields:
@@ -1520,8 +1519,7 @@ async def process_latest_query(request: QueryRequest):
                         bootstrap_fields.append(field_name)
                     elif indicator["name"] == "PercentageChange":
                         timeframe = indicator.get('timeframe', 'daily')
-                        lookback = indicator['params'].get('lookback', 1)
-                        field_name = f"{timeframe}_pctchg_{lookback}"
+                        field_name = f"{timeframe}_pctchg"  # Simplified format - no offset parameter
                         bootstrap_fields.append(field_name)
                 
                 if bootstrap_fields:

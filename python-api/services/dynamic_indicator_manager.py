@@ -9,6 +9,8 @@ from pathlib import Path
 from services.db_wrapper import db_wrapper as db_service
 from services.optimized_processor import optimized_processor
 from services.indicator_metadata_service import indicator_metadata_service
+from services.postgres_indicator_service import postgres_indicator_service
+from services.postgres_indicator_framework import postgres_indicator_framework
 from utils.constants import STOCK_SYMBOLS
 
 logger = logging.getLogger(__name__)
@@ -246,8 +248,8 @@ class DynamicIndicatorManager:
                 return f"{timeframe}_supertrend_{period_str}_{multiplier_str}"
             return f"supertrend_{period_str}_{multiplier_str}"
         elif name == "PercentageChange":
-            lookback = params.get('lookback', 1)
-            return f"{timeframe}_pctchg_{lookback}"
+            # Simplified format - no longer using lookback parameter
+            return f"{timeframe}_pctchg"
         elif name == "BollingerBands":
             return f"Bollinger_{params.get('period', 20)}_{params.get('std_dev', 2)}"
         else:
@@ -709,8 +711,23 @@ class DynamicIndicatorManager:
             else:
                 logger.info(f"Indicator {indicator_key} missing from some/all rows - will calculate for entire database")
             
-            # Calculate for all stocks
-            success = await self.calculate_indicator_for_all_stocks(indicator_key, indicator_def)
+            # Use PostgreSQL framework for high-performance calculation when available
+            async def python_fallback(ind_def):
+                return await self.calculate_indicator_for_all_stocks(indicator_key, ind_def)
+            
+            framework_result = await postgres_indicator_framework.calculate_indicator(
+                indicator_def, 
+                fallback_handler=python_fallback
+            )
+            
+            success = framework_result.get("success", False)
+            
+            if framework_result.get("calculation_method") == "PostgreSQL":
+                logger.info(f"✅ Used high-performance PostgreSQL calculation for {indicator_key}")
+            elif framework_result.get("calculation_method") == "Python_Fallback":
+                logger.info(f"📝 Used Python fallback calculation for {indicator_key}")
+            else:
+                logger.warning(f"⚠️ Calculation method unclear for {indicator_key}: {framework_result.get('calculation_method')}")
             
             if success:
                 # Add to active indicators
@@ -738,6 +755,53 @@ class DynamicIndicatorManager:
                 
         except Exception as e:
             logger.error(f"Error in calculate_and_store_indicator: {e}")
+            return False
+    
+    async def _calculate_percentage_change_postgres(self, indicator_def: Dict) -> bool:
+        """
+        Calculate percentage change using PostgreSQL stored procedure for high performance.
+        
+        Args:
+            indicator_def: Dictionary with name='PercentageChange', timeframe, params
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            timeframe = indicator_def.get('timeframe', 'daily')
+            
+            # Ensure PostgreSQL indicator service is initialized
+            await postgres_indicator_service.initialize()
+            
+            # Check if calculation is needed (skip if >95% coverage)
+            if not await postgres_indicator_service.is_calculation_needed(timeframe, threshold_percentage=95.0):
+                logger.info(f"✅ {timeframe.title()} percentage change already has sufficient coverage, skipping calculation")
+                return True
+            
+            # Execute PostgreSQL stored procedure calculation
+            logger.info(f"🚀 Starting high-performance {timeframe} percentage change calculation via PostgreSQL")
+            result = await postgres_indicator_service.calculate_percentage_change(timeframe)
+            
+            if result["success"]:
+                logger.info(f"✅ PostgreSQL {timeframe} percentage change calculation completed successfully:")
+                logger.info(f"   📊 Processed {result['processed_symbols']} symbols")
+                logger.info(f"   🔄 Updated {result['updated_rows']} rows") 
+                logger.info(f"   ⚡ Database execution: {result['db_execution_time_ms']}ms")
+                logger.info(f"   🎯 Total time: {result['total_time_seconds']:.2f}s")
+                
+                # Verify the calculation worked by checking coverage
+                coverage = await postgres_indicator_service.check_percentage_change_coverage(timeframe)
+                logger.info(f"   📈 Final coverage: {coverage['coverage_percentage']:.1f}% ({coverage['rows_with_indicator']}/{coverage['total_rows']} rows)")
+                
+                return True
+            else:
+                logger.error(f"❌ PostgreSQL {timeframe} percentage change calculation failed: {result['status']}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Error in PostgreSQL percentage change calculation: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     async def add_custom_indicator(self, name: str, params: Dict, timeframe: str = "daily") -> bool:

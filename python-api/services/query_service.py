@@ -151,7 +151,8 @@ def resolve_field_name(field_name: str) -> str:
         'daily_high': 'high',
         'daily_low': 'low',
         'daily_volume': 'volume',
-        'daily_pctchg_1': 'daily_pctchg_1',  # Special case - precalculated indicator
+        'daily_pctchg': 'daily_pctchg',  # Special case - precalculated indicator
+        'daily_pctchg_1': 'daily_pctchg',  # Legacy format - map to new format
         
         # Short versions already map correctly to base names
         'close': 'close',
@@ -194,9 +195,9 @@ def resolve_field_name(field_name: str) -> str:
 
 def get_field_value(candle: Dict[str, Any], field_name: str, candles: List[Dict[str, Any]] = None, candle_index: int = -1) -> Any:
     """Get field value from candle, computing special fields on the fly if needed."""
-    if field_name == 'daily_pctchg_1':
-        # First, try to get the precalculated value
-        precalculated_value = candle.get('daily_pctchg_1')
+    if field_name in ['daily_pctchg_1', 'daily_pctchg']:
+        # First, try to get the precalculated value (try new format first, then legacy)
+        precalculated_value = candle.get('daily_pctchg') or candle.get('daily_pctchg_1')
         if precalculated_value is not None:
             return precalculated_value
         
