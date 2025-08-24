@@ -239,6 +239,20 @@ class OptimizedProcessor:
                     "std_dev": None
                 })
                 
+            elif name == "percentagechange":
+                lookback = int(params.get("lookback", 1))
+                indicator_key = f"{timeframe}_pctchg_{lookback}"
+                
+                configs.append({
+                    "name": "PercentageChange",  # Use proper name for matching
+                    "key": indicator_key,
+                    "timeframe": timeframe,
+                    "params": {"lookback": lookback},
+                    "lookback": lookback,
+                    "multiplier": None,
+                    "std_dev": None
+                })
+                
             elif name == "bb":
                 std_dev = float(params.get("stdDev", 2))
                 period_str = str(int(period)) if period.is_integer() else str(period)
@@ -312,38 +326,36 @@ class OptimizedProcessor:
                                idx: int, indicator_configs: List[Dict]):
         """Add percentage change calculations to candle result."""
         for config in indicator_configs:
-            if config["name"] == "percentage_change":
-                timeframe = config["timeframe"]
+            if config["name"] in ["percentage_change", "PercentageChange"]:
+                timeframe = config.get("timeframe", "daily")
+                params = config.get("params", {})
+                lookback = params.get("lookback", 1)
                 
-                if timeframe == "weekly":
-                    # Weekly percentage change
-                    if idx >= 5:
-                        old_close = stock_data[idx - 5]["close"]
-                        current_close = stock_data[idx]["close"]
-                        change = ((current_close - old_close) / old_close) * 100
-                        candle_result[f"{timeframe}_percentage_change"] = round(change, 2)
-                    else:
-                        candle_result[f"{timeframe}_percentage_change"] = 0
-                        
-                elif timeframe == "monthly":
-                    # Monthly percentage change
-                    if idx >= 22:
-                        old_close = stock_data[idx - 22]["close"]
-                        current_close = stock_data[idx]["close"]
-                        change = ((current_close - old_close) / old_close) * 100
-                        candle_result[f"{timeframe}_percentage_change"] = round(change, 2)
-                    else:
-                        candle_result[f"{timeframe}_percentage_change"] = 0
-                        
+                # Calculate the appropriate lookback period
+                if timeframe == "weekly" and lookback == 1:
+                    lookback_idx = 5  # 5 trading days = 1 week
+                elif timeframe == "monthly" and lookback == 1:
+                    lookback_idx = 22  # ~22 trading days = 1 month
                 else:
-                    # Daily percentage change
-                    if idx > 0:
-                        old_close = stock_data[idx - 1]["close"]
-                        current_close = stock_data[idx]["close"]
+                    lookback_idx = lookback  # Use direct lookback for daily
+                
+                # Calculate percentage change
+                field_name = f"{timeframe}_pctchg_{lookback}"
+                
+                if idx >= lookback_idx:
+                    old_close = stock_data[idx - lookback_idx]["close"]
+                    current_close = stock_data[idx]["close"]
+                    if old_close > 0:
                         change = ((current_close - old_close) / old_close) * 100
-                        candle_result["daily_percentage_change"] = round(change, 2)
+                        candle_result[field_name] = round(change, 4)  # More precision
                     else:
-                        candle_result["daily_percentage_change"] = 0
+                        candle_result[field_name] = None  # null due to invalid old_close
+                else:
+                    candle_result[field_name] = None  # null due to insufficient data (0th candle, etc.)
+                    
+                # Backward compatibility: also add old format for daily_pctchg_1
+                if timeframe == "daily" and lookback == 1:
+                    candle_result["daily_percentage_change"] = candle_result.get(field_name, None)
     
     def get_performance_summary(self) -> Dict:
         """Get a summary of performance improvements."""

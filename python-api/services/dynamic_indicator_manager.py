@@ -8,6 +8,7 @@ from pathlib import Path
 
 from services.db_wrapper import db_wrapper as db_service
 from services.optimized_processor import optimized_processor
+from services.indicator_metadata_service import indicator_metadata_service
 from utils.constants import STOCK_SYMBOLS
 
 logger = logging.getLogger(__name__)
@@ -60,8 +61,8 @@ class DynamicIndicatorManager:
             
         except Exception as e:
             logger.error(f"Failed to load indicator config: {e}")
-            # Initialize with default indicators
-            await self.initialize_default_indicators()
+            # Skip default indicators - calculate on demand only
+            logger.info("🚀 Dynamic indicator manager initialized - calculate on demand mode")
             self._config_loaded = True
     
     async def save_indicator_config(self):
@@ -161,40 +162,7 @@ class DynamicIndicatorManager:
         
         return None
     
-    async def initialize_default_indicators(self):
-        """Initialize with default indicators."""
-        default_indicators = {
-            "RSI_14": {
-                "name": "RSI",
-                "params": {"period": 14},
-                "timeframe": "daily",
-                "description": "Relative Strength Index (14 period)"
-            },
-            "SMA_20": {
-                "name": "SMA", 
-                "params": {"period": 20},
-                "timeframe": "daily",
-                "description": "Simple Moving Average (20 period)"
-            },
-            "EMA_12": {
-                "name": "EMA",
-                "params": {"period": 12},
-                "timeframe": "daily", 
-                "description": "Exponential Moving Average (12 period)"
-            },
-            "SuperTrend_10_2": {
-                "name": "SuperTrend",
-                "params": {"period": 10, "multiplier": 2},
-                "timeframe": "daily",
-                "description": "SuperTrend (10 period, 2 multiplier)"
-            }
-        }
-        
-        self.indicator_definitions = default_indicators
-        self.active_indicators = set(default_indicators.keys())
-        
-        await self.save_indicator_config()
-        logger.info("🔧 Initialized default indicators")
+    # Removed initialize_default_indicators - now using on-demand calculation only
     
     def parse_missing_indicator_from_error(self, error_detail: str) -> Optional[Dict]:
         """
@@ -265,6 +233,7 @@ class DynamicIndicatorManager:
         """Generate unique key for indicator definition with unambiguous naming."""
         name = indicator_def['name']
         params = indicator_def.get('params', {})
+        timeframe = indicator_def.get('timeframe', 'daily')
         
         if name in ["RSI", "SMA", "EMA", "WMA"]:
             return f"{name}_{params.get('period', 14)}"
@@ -273,13 +242,90 @@ class DynamicIndicatorManager:
             multiplier = params.get('multiplier', 2)
             period_str = str(int(period)) if isinstance(period, float) and period.is_integer() else str(period).replace('.', 'dot')
             multiplier_str = str(int(multiplier)) if isinstance(multiplier, float) and multiplier.is_integer() else str(multiplier).replace('.', 'dot')
-            return f"SuperTrend_{period_str}_{multiplier_str}"
+            if timeframe != 'daily':
+                return f"{timeframe}_supertrend_{period_str}_{multiplier_str}"
+            return f"supertrend_{period_str}_{multiplier_str}"
+        elif name == "PercentageChange":
+            lookback = params.get('lookback', 1)
+            return f"{timeframe}_pctchg_{lookback}"
         elif name == "BollingerBands":
             return f"Bollinger_{params.get('period', 20)}_{params.get('std_dev', 2)}"
         else:
             # Generic key generation - use "dot" for decimal points to avoid ambiguity
             param_str = "_".join(str(v).replace('.', 'dot') for v in params.values())
             return f"{name}_{param_str}" if param_str else name
+    
+    async def _check_indicator_coverage(self, indicator_key: str, indicator_def: Dict) -> bool:
+        """
+        Check if the indicator exists in ALL rows of the database.
+        Returns True only if ALL rows have this indicator calculated.
+        """
+        try:
+            from services.ultra_fast_database_service import ultra_fast_db
+            
+            if not ultra_fast_db.initialized:
+                await ultra_fast_db.initialize()
+                
+            timeframe = indicator_def.get('timeframe', 'daily')
+            table_name = f"{timeframe}_candles"
+            
+            async with ultra_fast_db.pool.acquire() as conn:
+                # Get total number of rows in table
+                total_rows_result = await conn.fetchval(f"SELECT COUNT(*) FROM {table_name}")
+                total_rows = total_rows_result or 0
+                
+                if total_rows == 0:
+                    logger.warning(f"No data found in {table_name} table")
+                    return True  # If no data, consider it "covered"
+                
+                # Count rows where the indicator exists and is not null
+                indicator_rows_result = await conn.fetchval(f"""
+                    SELECT COUNT(*) FROM {table_name}
+                    WHERE indicators ? $1 
+                    AND (indicators->$1) IS NOT NULL
+                """, indicator_key)
+                indicator_rows = indicator_rows_result or 0
+                
+                coverage_percentage = (indicator_rows / total_rows) * 100
+                logger.info(f"Indicator {indicator_key} coverage: {indicator_rows}/{total_rows} rows ({coverage_percentage:.1f}%)")
+                
+                # Only consider fully calculated if ALL rows have it
+                is_fully_covered = indicator_rows == total_rows
+                
+                if not is_fully_covered:
+                    logger.info(f"Indicator {indicator_key} needs calculation: missing from {total_rows - indicator_rows} rows")
+                
+                return is_fully_covered
+                
+        except Exception as e:
+            logger.error(f"Error checking indicator coverage for {indicator_key}: {e}")
+            return False  # If error, assume not covered and force calculation
+    
+    async def _get_all_symbols_from_database(self, timeframe: str = 'daily') -> List[str]:
+        """
+        Get all unique symbols from the database for the specified timeframe.
+        This ensures we calculate indicators for ALL symbols, not just those in constants.
+        """
+        try:
+            from services.ultra_fast_database_service import ultra_fast_db
+            
+            if not ultra_fast_db.initialized:
+                await ultra_fast_db.initialize()
+                
+            table_name = f"{timeframe}_candles"
+            
+            async with ultra_fast_db.pool.acquire() as conn:
+                result = await conn.fetch(f"SELECT DISTINCT symbol FROM {table_name}")
+                symbols = [row['symbol'] for row in result]
+                
+                logger.info(f"Found {len(symbols)} unique symbols in {table_name} table")
+                return symbols
+                
+        except Exception as e:
+            logger.error(f"Error getting symbols from database: {e}")
+            # Fallback to constants if database query fails
+            logger.warning("Falling back to constants.py symbols")
+            return [s for s in STOCK_SYMBOLS if s]  # Filter out empty strings
     
     async def auto_calculate_missing_indicator(self, error_detail: str) -> bool:
         """
@@ -353,7 +399,10 @@ class DynamicIndicatorManager:
             cpu_count = multiprocessing.cpu_count()
             max_workers = min(cpu_count * 2, 32)  # Use 2x CPU cores, capped at 32
             
-            logger.info(f"🚀 HIGH-PERFORMANCE Calculating {indicator_key} for {len(STOCK_SYMBOLS)} stocks...")
+            # Get all symbols from database instead of using limited STOCK_SYMBOLS
+            all_symbols = await self._get_all_symbols_from_database(indicator_def.get('timeframe', 'daily'))
+            
+            logger.info(f"🚀 HIGH-PERFORMANCE Calculating {indicator_key} for {len(all_symbols)} stocks in database...")
             logger.info(f"💪 Using {max_workers} parallel workers on {cpu_count} CPU cores")
             
             # Prepare indicator list for optimized processor
@@ -366,14 +415,16 @@ class DynamicIndicatorManager:
             async def load_stock_data(symbol):
                 """Load data for a single stock from high-speed database."""
                 try:
-                    # Load from high-speed database instead of file-based storage
-                    from services.high_speed_database_service import high_speed_db
+                    # Load from ultra-fast database instead of file-based storage
+                    from services.ultra_fast_database_service import ultra_fast_db
                     
-                    if not high_speed_db.initialized:
-                        await high_speed_db.initialize()
+                    if not ultra_fast_db.initialized:
+                        await ultra_fast_db.initialize()
                     
-                    # Get candles from high-speed database
-                    candles = await high_speed_db.get_daily_candles_with_indicators(symbol, limit=500)
+                    # Get available candles from ultra-fast database (work with what we have)
+                    # Start with reasonable amount, but system will work with whatever is available
+                    max_requested = 200  # Reduced from 500 to be more reasonable
+                    candles = await ultra_fast_db.get_last_n_candles(symbol, max_requested, timeframe='daily')
                     
                     if candles:
                         # Convert to format expected by indicator processor
@@ -401,14 +452,14 @@ class DynamicIndicatorManager:
                     return await load_stock_data(symbol)
             
             # Create tasks for parallel loading
-            load_tasks = [load_with_semaphore(symbol) for symbol in STOCK_SYMBOLS]
+            load_tasks = [load_with_semaphore(symbol) for symbol in all_symbols]
             loaded_data = await asyncio.gather(*load_tasks, return_exceptions=True)
             
             # Filter successful loads
             batch_data = [data for data in loaded_data if data is not None and not isinstance(data, Exception)]
             
             load_time = time.time() - load_start
-            logger.info(f"✅ Data loading completed in {load_time:.2f}s - {len(batch_data)}/{len(STOCK_SYMBOLS)} stocks loaded")
+            logger.info(f"✅ Data loading completed in {load_time:.2f}s - {len(batch_data)}/{len(all_symbols)} stocks loaded")
             
             if not batch_data:
                 logger.error("No stock data loaded successfully")
@@ -465,8 +516,8 @@ class DynamicIndicatorManager:
                         else:
                             candles_data = result_data
                         
-                        # Update indicator in high-speed database JSONB
-                        from services.high_speed_database_service import high_speed_db
+                        # Update indicator in ultra-fast database JSONB
+                        from services.ultra_fast_database_service import ultra_fast_db
                         
                         # Extract indicator values from candles_data
                         indicator_values = []
@@ -474,12 +525,21 @@ class DynamicIndicatorManager:
                             # Find the indicator value in the candle
                             indicator_value = None
                             
-                            # Check various possible field names
+                            # Check various possible field names based on indicator type
                             possible_names = [
+                                indicator_key,  # Exact match first
                                 indicator_key.lower(),
                                 f"daily_{indicator_key.lower()}",
-                                indicator_key
+                                f"daily_{indicator_key}",
+                                indicator_key.replace('_', '')  # Without underscores
                             ]
+                            
+                            # Special handling for weekly/monthly indicators
+                            if indicator_key.startswith(('weekly_', 'monthly_')):
+                                possible_names.extend([
+                                    indicator_key,  # Keep full name
+                                    indicator_key.split('_', 1)[1]  # Remove timeframe prefix
+                                ])
                             
                             for name in possible_names:
                                 if name in candle:
@@ -493,9 +553,9 @@ class DynamicIndicatorManager:
                                 })
                         
                         if indicator_values:
-                            # Convert indicator key to proper format for storage
-                            storage_key = indicator_key.lower().replace('supertrend_', 'supertrend_')
-                            await high_speed_db.update_indicator_in_jsonb(symbol, storage_key, indicator_values)
+                            # Use indicator key as-is for storage (it's already properly formatted)
+                            await ultra_fast_db.update_indicator_in_jsonb(symbol, indicator_key, indicator_values)
+                            logger.info(f"Stored {len(indicator_values)} values for {indicator_key} in {symbol}")
                         
                         return (symbol, True, None)
                     except Exception as e:
@@ -536,11 +596,11 @@ class DynamicIndicatorManager:
             
             logger.info(f"✅ Database saving completed in {save_time:.2f}s")
             logger.info(f"🎯 TOTAL HIGH-PERFORMANCE PROCESSING TIME: {total_time:.2f}s")
-            logger.info(f"⚡ Processing speed: {len(STOCK_SYMBOLS) / total_time:.1f} stocks/second")
+            logger.info(f"⚡ Processing speed: {len(all_symbols) / total_time:.1f} stocks/second")
             logger.info(f"📊 Phase breakdown: Load={load_time:.1f}s, Calc={calc_time:.1f}s, Save={save_time:.1f}s")
             
-            success_rate = (total_processed / len(STOCK_SYMBOLS)) * 100
-            logger.info(f"✅ HIGH-PERFORMANCE calculation completed: {total_processed}/{len(STOCK_SYMBOLS)} ({success_rate:.1f}%) successful")
+            success_rate = (total_processed / len(all_symbols)) * 100
+            logger.info(f"✅ HIGH-PERFORMANCE calculation completed: {total_processed}/{len(all_symbols)} ({success_rate:.1f}%) successful")
             
             # Consider successful if we processed at least some stocks with data
             # Or if we have a reasonable success rate among stocks that have data
@@ -639,10 +699,15 @@ class DynamicIndicatorManager:
             indicator_key = self.generate_indicator_key(indicator_def)
             logger.info(f"Calculating indicator: {indicator_key}")
             
-            # Check if already calculated
-            if indicator_key in self.active_indicators:
-                logger.info(f"Indicator {indicator_key} already active")
+            # Check if already calculated for ALL rows in database
+            is_fully_calculated = await self._check_indicator_coverage(indicator_key, indicator_def)
+            if is_fully_calculated:
+                logger.info(f"Indicator {indicator_key} already calculated for all rows")
+                # Add to active indicators if not already there
+                self.active_indicators.add(indicator_key)
                 return True
+            else:
+                logger.info(f"Indicator {indicator_key} missing from some/all rows - will calculate for entire database")
             
             # Calculate for all stocks
             success = await self.calculate_indicator_for_all_stocks(indicator_key, indicator_def)
@@ -651,6 +716,16 @@ class DynamicIndicatorManager:
                 # Add to active indicators
                 self.active_indicators.add(indicator_key)
                 self.indicator_definitions[indicator_key] = indicator_def
+                
+                # Register in metadata service - get symbol count from database
+                all_symbols_for_metadata = await self._get_all_symbols_from_database(indicator_def.get('timeframe', 'daily'))
+                stocks_count = len(all_symbols_for_metadata)  # Count of all symbols in database
+                await indicator_metadata_service.register_indicator(
+                    indicator_key, 
+                    indicator_def, 
+                    stocks_calculated=stocks_count,
+                    candles_calculated=stocks_count * 500  # Estimate: ~500 candles per stock
+                )
                 
                 # Save configuration
                 await self.save_indicator_config()

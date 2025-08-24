@@ -1,0 +1,15 @@
+{
+  "indicators": {
+    "daily_pctchg_1": {
+      "name": "PercentageChange",
+      "timeframe": "daily",
+      "params": {
+        "lookback": 1
+      }
+    }
+  },
+  "active_indicators": [
+    "daily_pctchg_1"
+  ],
+  "last_updated": "2025-08-24T10:57:50.767949"
+}

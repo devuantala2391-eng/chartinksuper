@@ -69,6 +69,7 @@ from services.chartink_service import ChartinkService
 from services.latest_candle_updater import latest_candle_updater
 from services.parallel_pipeline_updater import parallel_pipeline_updater
 from services.db_wrapper import db_wrapper as db_service
+from services.indicator_metadata_service import indicator_metadata_service
 from services.dynamic_indicator_manager import dynamic_indicator_manager
 from services.database_health_manager import database_health_manager
 from middleware.api_health_middleware import ensure_query_ready, ensure_latest_ready, ensure_basic_ready
@@ -1096,6 +1097,11 @@ async def process_query(request: QueryRequest):
                         multiplier = indicator['params'].get('multiplier', 2)
                         field_name = f"SuperTrend_{period}_{multiplier}"
                         bootstrap_fields.append(field_name)
+                    elif indicator["name"] == "PercentageChange":
+                        timeframe = indicator.get('timeframe', 'daily')
+                        lookback = indicator['params'].get('lookback', 1)
+                        field_name = f"{timeframe}_pctchg_{lookback}"
+                        bootstrap_fields.append(field_name)
                 
                 if bootstrap_fields:
                     logger.info(f"Bootstrapping system with indicators: {bootstrap_fields}")
@@ -1511,6 +1517,11 @@ async def process_latest_query(request: QueryRequest):
                         period = indicator['params'].get('period', 10)
                         multiplier = indicator['params'].get('multiplier', 2)
                         field_name = f"SuperTrend_{period}_{multiplier}"
+                        bootstrap_fields.append(field_name)
+                    elif indicator["name"] == "PercentageChange":
+                        timeframe = indicator.get('timeframe', 'daily')
+                        lookback = indicator['params'].get('lookback', 1)
+                        field_name = f"{timeframe}_pctchg_{lookback}"
                         bootstrap_fields.append(field_name)
                 
                 if bootstrap_fields:
@@ -2358,7 +2369,59 @@ def process_query_batch_parallel(stock_batch, parsed_query_dict, base_path=""):
                     else:
                         errors.append({"stock": stock, "error": "No candle data available"})
                 else:
-                    errors.append({"stock": stock, "error": "Precalculated data not found"})
+                    # Try to get data from database with indicators if precalculated file not found
+                    try:
+                        import asyncio
+                        from services.ultra_fast_database_service import ultra_fast_db
+                        
+                        # Get candles with indicators from database (run async call synchronously)
+                        async def get_db_candles():
+                            # Initialize database connection in this process pool worker
+                            await ultra_fast_db.initialize()
+                            return await ultra_fast_db.get_candles_with_indicators(stock, limit=None)
+                        
+                        # Run the async function in a sync context
+                        try:
+                            loop = asyncio.get_event_loop()
+                        except RuntimeError:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                        
+                        candles_from_db = loop.run_until_complete(get_db_candles())
+                        
+                        if candles_from_db:
+                            # Convert database format to query service format
+                            candles = []
+                            for candle in candles_from_db:
+                                # Parse indicators from JSONB
+                                indicators = candle.get('indicators', {})
+                                if isinstance(indicators, str):
+                                    import json
+                                    try:
+                                        indicators = json.loads(indicators)
+                                    except:
+                                        indicators = {}
+                                
+                                # Create candle record with indicators merged
+                                candle_record = {
+                                    'open': float(candle.get('open', 0)),
+                                    'high': float(candle.get('high', 0)),
+                                    'low': float(candle.get('low', 0)),
+                                    'close': float(candle.get('close', 0)),
+                                    'volume': float(candle.get('volume', 0)),
+                                    'timestamp': candle.get('timestamp', 0)
+                                }
+                                # Add indicators to the candle record
+                                candle_record.update(indicators)
+                                candles.append(candle_record)
+                            
+                            # Process candles with database indicators
+                            stock_matches = find_matching_candles(candles, parsed_query_dict, stock)
+                            matches.extend(stock_matches)
+                        else:
+                            errors.append({"stock": stock, "error": "No data available in database"})
+                    except Exception as db_error:
+                        errors.append({"stock": stock, "error": f"Database query failed: {str(db_error)}"})
                 
                 processed += 1
                 
@@ -4792,6 +4855,81 @@ async def smart_query_with_auto_calculation(request: QueryRequest):
     except Exception as e:
         logger.error(f"Smart query processing failed: {e}")
         raise HTTPException(status_code=500, detail=f"Smart query processing failed: {str(e)}")
+
+@app.get("/api/indicators/calculated")
+async def get_calculated_indicators():
+    """Get all calculated indicators with their metadata"""
+    try:
+        indicators = await indicator_metadata_service.get_all_calculated_indicators()
+        stats = await indicator_metadata_service.get_indicator_stats()
+        
+        return {
+            "success": True,
+            "indicators": indicators,
+            "stats": stats,
+            "message": f"Found {len(indicators)} calculated indicators"
+        }
+    except Exception as e:
+        logger.error(f"Error getting calculated indicators: {e}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving indicators: {str(e)}")
+
+@app.get("/api/indicators/stats")
+async def get_indicator_statistics():
+    """Get statistics about calculated indicators"""
+    try:
+        stats = await indicator_metadata_service.get_indicator_stats()
+        return {
+            "success": True,
+            "stats": stats,
+            "message": "Indicator statistics retrieved successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error getting indicator statistics: {e}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving statistics: {str(e)}")
+
+@app.post("/api/indicators/check-query")
+async def check_query_indicators(request: QueryRequest):
+    """Analyze a query to identify required indicators without executing it"""
+    try:
+        from services.query_service import parse_query
+        from services.highspeed_query_validator import highspeed_query_validator
+        
+        query = request.query
+        if not query:
+            raise HTTPException(status_code=400, detail="Query is required")
+        
+        # Parse the query
+        parsed_query = parse_query(query)
+        
+        # Use the validator to identify required fields and missing indicators
+        validation_result = await highspeed_query_validator.validate_and_prepare_indicators(parsed_query)
+        
+        # Check which indicators exist in metadata
+        required_fields = validation_result.get("required_fields", [])
+        existing_indicators = []
+        missing_indicators = []
+        
+        for field in required_fields:
+            exists = await indicator_metadata_service.check_indicator_exists(field)
+            if exists:
+                existing_indicators.append(field)
+            else:
+                missing_indicators.append(field)
+        
+        return {
+            "success": True,
+            "query": query,
+            "parsed_query": parsed_query,
+            "required_fields": required_fields,
+            "existing_indicators": existing_indicators,
+            "missing_indicators": missing_indicators,
+            "validation_result": validation_result,
+            "message": f"Query analysis complete: {len(existing_indicators)} existing, {len(missing_indicators)} missing"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error analyzing query: {e}")
+        raise HTTPException(status_code=500, detail=f"Error analyzing query: {str(e)}")
 
 # Background timer that logs to console periodically
 import threading

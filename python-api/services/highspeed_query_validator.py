@@ -19,10 +19,8 @@ class HighSpeedQueryValidator:
     def __init__(self):
         self.static_fields = {
             'open', 'high', 'low', 'close', 'volume', 
-            'timestamp', 'datetime', 'symbol',
-            'rsi_14', 'sma_20', 'sma_50', 'ema_12', 'ema_26',
-            'supertrend_10_2', 'supertrend_10_3',
-            'supertrend_signal_10_2', 'supertrend_signal_10_3'
+            'timestamp', 'datetime', 'symbol'
+            # Physical indicator columns removed - all indicators now in JSONB
         }
     
     async def validate_and_prepare_indicators(self, parsed_query: Dict[str, Any]) -> Dict[str, Any]:
@@ -101,8 +99,23 @@ class HighSpeedQueryValidator:
         """Normalize field name to match database storage format"""
         # Handle SuperTrend with decimal parameters
         # e.g., "daily supertrend (10,1.2)" -> "supertrend_10_1dot2"
+        # e.g., "weekly_supertrend_10_2" -> "weekly_supertrend_10_2"
         
-        # Remove "daily_" prefix if present
+        # Handle percentage change indicators: daily_pctchg_1, weekly_pctchg_1, etc.
+        if 'pctchg' in field_name:
+            return field_name  # Keep as is, these are stored as calculated fields
+        
+        # Handle weekly/monthly SuperTrend - keep timeframe prefix
+        if field_name.startswith(('weekly_', 'monthly_')):
+            if 'supertrend_' in field_name:
+                parts = field_name.split('_')
+                if len(parts) >= 4:  # weekly_supertrend_10_2
+                    # Replace dots with 'dot' in the multiplier if present
+                    parts[-1] = parts[-1].replace('.', 'dot')
+                    return '_'.join(parts)
+            return field_name
+        
+        # Remove "daily_" prefix for daily indicators
         field_name = re.sub(r'^daily_', '', field_name)
         
         # Handle parentheses format: supertrend_(10,1.2) -> supertrend_10_1dot2
@@ -184,8 +197,45 @@ class HighSpeedQueryValidator:
     
     def _parse_indicator_from_field(self, field_name: str) -> Optional[Dict]:
         """Parse indicator definition from field name"""
-        # Handle SuperTrend: supertrend_10_1dot2
-        if field_name.startswith('supertrend_'):
+        # Handle percentage change indicators: daily_pctchg_1, weekly_pctchg_1, etc.
+        if 'pctchg' in field_name:
+            parts = field_name.split('_')
+            if len(parts) >= 3:  # e.g., daily_pctchg_1
+                try:
+                    timeframe = parts[0]  # daily, weekly, monthly
+                    lookback = int(parts[2])  # 1, 5, etc.
+                    
+                    return {
+                        "name": "PercentageChange",
+                        "timeframe": timeframe,
+                        "params": {"lookback": lookback}
+                    }
+                except (ValueError, IndexError):
+                    logger.error(f"Invalid percentage change parameters in {field_name}")
+        
+        # Handle weekly/monthly SuperTrend: weekly_supertrend_10_2
+        elif field_name.startswith(('weekly_supertrend_', 'monthly_supertrend_')):
+            parts = field_name.split('_')
+            if len(parts) >= 4:  # weekly_supertrend_10_2
+                try:
+                    timeframe = parts[0]  # weekly or monthly
+                    period = float(parts[2])
+                    multiplier_str = parts[3].replace('dot', '.')
+                    multiplier = float(multiplier_str)
+                    
+                    return {
+                        "name": "SuperTrend",
+                        "timeframe": timeframe,
+                        "params": {
+                            "period": period,
+                            "multiplier": multiplier
+                        }
+                    }
+                except ValueError:
+                    logger.error(f"Invalid weekly/monthly SuperTrend parameters in {field_name}")
+        
+        # Handle daily SuperTrend: supertrend_10_1dot2
+        elif field_name.startswith('supertrend_'):
             parts = field_name.split('_')
             if len(parts) >= 3:
                 try:

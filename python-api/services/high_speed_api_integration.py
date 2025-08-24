@@ -14,7 +14,7 @@ import time
 
 from .high_speed_database_service import high_speed_db
 from .high_speed_calculation_engine import high_speed_calculator
-from .indicator_column_manager import IndicatorColumnManager, IndicatorType, TimeFrame
+# from .indicator_column_manager import IndicatorColumnManager, IndicatorType, TimeFrame  # DISABLED - using JSONB only
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ class HighSpeedAPIService:
     async def initialize(self):
         """Initialize the high-speed API service"""
         await self.db.initialize()
-        self.indicator_manager = IndicatorColumnManager(self.db)
+        # self.indicator_manager = IndicatorColumnManager(self.db)  # DISABLED - using JSONB only
         logger.info("High-speed API service initialized")
 
     def _track_performance(self, response_time: float, endpoint_name: str = "", request_details: str = ""):
@@ -342,41 +342,22 @@ class HighSpeedAPIService:
         start_time = time.time()
         
         try:
-            # Validate inputs
-            tf = TimeFrame(timeframe.lower())
-            it = IndicatorType(indicator_type.lower())
+            # DISABLED: Physical columns no longer used - using JSONB only
+            # tf = TimeFrame(timeframe.lower())
+            # it = IndicatorType(indicator_type.lower())
+            # columns = await self.indicator_manager.add_indicator_column(tf, it, params)
             
-            # Add indicator columns
-            columns = await self.indicator_manager.add_indicator_column(tf, it, params)
-            
-            if columns:
-                # Start background backfill
-                background_tasks.add_task(
-                    self.indicator_manager.backfill_indicator_data, tf, it, params
-                )
-                
-                # Clear relevant caches
-                self._clear_cache_pattern(f"*{timeframe}*")
-                
-                response = {
-                    'status': 'success',
-                    'message': f'Indicator {indicator_type} added successfully',
-                    'timeframe': timeframe,
-                    'indicator_type': indicator_type,
-                    'params': params,
-                    'columns_created': columns,
-                    'backfill_status': 'started_in_background',
-                    'timestamp': int(time.time() * 1000)
-                }
-            else:
-                response = {
-                    'status': 'info',
-                    'message': f'Indicator {indicator_type} already exists',
-                    'timeframe': timeframe,
-                    'indicator_type': indicator_type,
-                    'params': params,
-                    'timestamp': int(time.time() * 1000)
-                }
+            # Return success for compatibility but no actual column creation
+            response = {
+                'status': 'success',
+                'message': f'Indicator system uses JSONB storage - no physical columns needed',
+                'timeframe': timeframe,
+                'indicator_type': indicator_type,
+                'params': params,
+                'columns_created': [],  # No physical columns created
+                'storage_method': 'jsonb_dynamic',
+                'timestamp': int(time.time() * 1000)
+            }
             
             response_time = (time.time() - start_time) * 1000
             self._track_performance(response_time, "ADD_INDICATOR", f"{indicator_type} for {timeframe}")

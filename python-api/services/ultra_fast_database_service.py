@@ -44,6 +44,9 @@ class UltraFastDatabaseService:
         self.max_connections = min(psutil.cpu_count() * 4, 100)
         self.chunk_size = 500  # Process in chunks for memory efficiency
         
+        # For compatibility with query system - ultra-fast uses pure JSONB (no static indicators)
+        self.static_indicators = set()  # Empty set - all indicators are in JSONB
+        
         # Connection pool for high-concurrency operations
         self.pool_config = {
             'min_size': 10,
@@ -390,44 +393,81 @@ class UltraFastDatabaseService:
 
     async def _create_performance_indexes(self, conn):
         """Create indexes for maximum query performance"""
+        logger.info("Creating performance indexes...")
         
-        # Indexes for daily_candles
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_daily_symbol_key 
-            ON daily_candles(symbol, candle_sequence_number DESC)
-        """)
+        # Create indexes for each table individually
+        tables = [
+            ('daily', 'daily_candles'),
+            ('weekly', 'weekly_candles'), 
+            ('monthly', 'monthly_candles')
+        ]
         
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_daily_timestamp 
-            ON daily_candles(timestamp DESC)
-        """)
+        for timeframe, table_name in tables:
+            try:
+                # Check if this specific table exists
+                table_exists = await conn.fetchval(f"""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.tables 
+                        WHERE table_name = '{table_name}'
+                    )
+                """)
+                
+                if not table_exists:
+                    logger.info(f"Table {table_name} doesn't exist, skipping indexes")
+                    continue
+                
+                # Check if candle_sequence_number column exists for this table
+                has_sequence_column = await conn.fetchval(f"""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = '{table_name}' AND column_name = 'candle_sequence_number'
+                    )
+                """)
+                
+                # Create indexes based on available columns
+                if has_sequence_column:
+                    await conn.execute(f"""
+                        CREATE INDEX IF NOT EXISTS idx_{timeframe}_symbol_key 
+                        ON {table_name}(symbol, candle_sequence_number DESC)
+                    """)
+                    logger.info(f"Created symbol+sequence index for {table_name}")
+                else:
+                    logger.warning(f"Skipping candle_sequence_number index for {table_name} - column doesn't exist")
+                
+                # Always create timestamp index (this column should always exist)
+                await conn.execute(f"""
+                    CREATE INDEX IF NOT EXISTS idx_{timeframe}_timestamp 
+                    ON {table_name}(timestamp DESC)
+                """)
+                logger.info(f"Created timestamp index for {table_name}")
+                
+                # Create symbol+timestamp index (alternative to sequence index)
+                await conn.execute(f"""
+                    CREATE INDEX IF NOT EXISTS idx_{timeframe}_symbol_timestamp 
+                    ON {table_name}(symbol, timestamp DESC)
+                """)
+                logger.info(f"Created symbol+timestamp index for {table_name}")
+                
+                # Create indicators GIN index if column exists
+                has_indicators = await conn.fetchval(f"""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = '{table_name}' AND column_name = 'indicators'
+                    )
+                """)
+                
+                if has_indicators:
+                    await conn.execute(f"""
+                        CREATE INDEX IF NOT EXISTS idx_{timeframe}_indicators 
+                        ON {table_name} USING GIN (indicators)
+                    """)
+                    logger.info(f"Created indicators GIN index for {table_name}")
+                
+            except Exception as e:
+                logger.error(f"Failed to create indexes for {table_name}: {e}")
+                # Continue with other tables instead of failing completely
         
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_daily_indicators 
-            ON daily_candles USING GIN (indicators)
-        """)
-        
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_daily_symbol_timestamp 
-            ON daily_candles(symbol, timestamp DESC)
-        """)
-        
-        # Same indexes for weekly and monthly
-        for timeframe in ['weekly', 'monthly']:
-            await conn.execute(f"""
-                CREATE INDEX IF NOT EXISTS idx_{timeframe}_symbol_key 
-                ON {timeframe}_candles(symbol, candle_sequence_number DESC)
-            """)
-            
-            await conn.execute(f"""
-                CREATE INDEX IF NOT EXISTS idx_{timeframe}_timestamp 
-                ON {timeframe}_candles(timestamp DESC)
-            """)
-            
-            await conn.execute(f"""
-                CREATE INDEX IF NOT EXISTS idx_{timeframe}_indicators 
-                ON {timeframe}_candles USING GIN (indicators)
-            """)
+        logger.info("Performance indexes creation completed")
 
     async def get_next_key_batch(self, symbol: str, batch_size: int, timeframe: str = 'daily') -> int:
         """Get the next batch of keys for a symbol (thread-safe)"""
@@ -460,12 +500,15 @@ class UltraFastDatabaseService:
             return True
         
         try:
+            # Calculate basic indicators for chunk_data BEFORE storing (one-go approach)
+            enhanced_chunk_data = self._calculate_basic_indicators(chunk_data, symbol)
+            
             # Get next key batch for this chunk
-            start_key = await self.get_next_key_batch(symbol, len(chunk_data), timeframe)
+            start_key = await self.get_next_key_batch(symbol, len(enhanced_chunk_data), timeframe)
             
             # Prepare data with composite keys using new structure
             values = []
-            for i, candle in enumerate(chunk_data):
+            for i, candle in enumerate(enhanced_chunk_data):
                 sequence_number = start_key + i
                 candle_key_id = f"{symbol}_{sequence_number}"  # New composite primary key
                 
@@ -557,30 +600,39 @@ class UltraFastDatabaseService:
 
     async def get_last_n_candles(self, symbol: str, n: int, 
                                 timeframe: str = 'daily') -> List[Dict]:
-        """Get last N candles for a symbol (optimized with composite keys)"""
+        """Get last N candles for a symbol (works with available data only)"""
         try:
+            table_name = f"{timeframe}_candles"
+            
             async with self.pool.acquire() as conn:
-                # Get current latest key for symbol
-                latest_key = await conn.fetchval("""
-                    SELECT latest_key FROM symbol_metadata WHERE symbol = $1
-                """, symbol)
+                # Get available candles for this symbol, ordered by timestamp/sequence
+                # Use whichever ordering column is available
+                has_sequence_column = await conn.fetchval(f"""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = '{table_name}' AND column_name = 'candle_sequence_number'
+                    )
+                """)
                 
-                if latest_key is None:
-                    return []
+                if has_sequence_column:
+                    order_by = "candle_sequence_number DESC"
+                else:
+                    order_by = "timestamp DESC"
                 
-                # Generate composite keys for last N candles
-                start_key = max(0, latest_key - n)
-                composite_keys = [f"{symbol}_{i}" for i in range(start_key, latest_key)]
-                
-                if not composite_keys:
-                    return []
-                
-                table_name = f"{timeframe}_candles"
+                # Get last N available candles (or all if less than N)
                 rows = await conn.fetch(f"""
                     SELECT * FROM {table_name} 
-                    WHERE composite_key = ANY($1)
-                    ORDER BY key_number ASC
-                """, composite_keys)
+                    WHERE symbol = $1 
+                    ORDER BY {order_by}
+                    LIMIT $2
+                """, symbol, n)
+                
+                if not rows:
+                    logger.info(f"No candles found for symbol {symbol} in {table_name}")
+                    return []
+                
+                # Reverse to get chronological order (oldest first)
+                rows = list(reversed(rows))
                 
                 results = []
                 for row in rows:
@@ -591,10 +643,65 @@ class UltraFastDatabaseService:
                         result.update(indicators)
                     results.append(result)
                 
+                logger.info(f"Retrieved {len(results)} candles for {symbol} (requested {n})")
                 return results
                 
         except Exception as e:
             logger.error(f"Failed to get last {n} candles for {symbol}: {e}")
+            return []
+
+    async def get_candles_with_indicators(self, symbol: str, limit: Optional[int] = None,
+                                         timeframe: str = 'daily') -> List[Dict]:
+        """Get candles with indicators for query processing (all candles if limit is None)"""
+        try:
+            table_name = f"{timeframe}_candles"
+            
+            async with self.pool.acquire() as conn:
+                # Check which ordering column is available
+                has_sequence_column = await conn.fetchval(f"""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = '{table_name}' AND column_name = 'candle_sequence_number'
+                    )
+                """)
+                
+                if has_sequence_column:
+                    order_by = "candle_sequence_number DESC"
+                else:
+                    order_by = "timestamp DESC"
+                
+                # Build query with optional limit
+                if limit:
+                    query = f"""
+                        SELECT * FROM {table_name} 
+                        WHERE symbol = $1 
+                        ORDER BY {order_by}
+                        LIMIT $2
+                    """
+                    rows = await conn.fetch(query, symbol, limit)
+                else:
+                    query = f"""
+                        SELECT * FROM {table_name} 
+                        WHERE symbol = $1 
+                        ORDER BY {order_by}
+                    """
+                    rows = await conn.fetch(query, symbol)
+                
+                if not rows:
+                    return []
+                
+                # Reverse to get chronological order (oldest first) for query processing
+                rows = list(reversed(rows))
+                
+                results = []
+                for row in rows:
+                    result = dict(row)
+                    results.append(result)
+                
+                return results
+                
+        except Exception as e:
+            logger.error(f"Failed to get candles with indicators for {symbol}: {e}")
             return []
 
     async def get_candle_n_days_ago(self, symbol: str, days_ago: int, 
@@ -747,6 +854,127 @@ class UltraFastDatabaseService:
                 'failed': 0,
                 'total_stocks': 0
             }
+
+    async def update_indicator_in_jsonb(self, symbol: str, indicator_key: str, indicator_values: List[Dict]) -> bool:
+        """
+        Update a specific indicator in the JSONB column for a symbol.
+        
+        Args:
+            symbol: Stock symbol
+            indicator_key: Key for the indicator (e.g., 'supertrend_10_1dot2', 'daily_pctchg_1')
+            indicator_values: List of dicts with timestamp and indicator value
+            
+        Returns:
+            True if successful
+        """
+        try:
+            if not self.pool:
+                await self.initialize()
+            
+            async with self.pool.acquire() as conn:
+                # Update indicators in JSONB for each candle (including null values)
+                updated_count = 0
+                for value_dict in indicator_values:
+                    timestamp = value_dict.get('timestamp')
+                    value = value_dict.get('value')
+                    
+                    # Process all values including null (timestamp must exist though)
+                    if timestamp is not None:
+                        if value is not None:
+                            # Convert value to float if it's a Decimal or other numeric type
+                            if hasattr(value, '__float__'):
+                                value = float(value)
+                            
+                            # Update JSONB with numeric value
+                            result = await conn.execute("""
+                                UPDATE daily_candles
+                                SET indicators = jsonb_set(
+                                    COALESCE(indicators, '{}'),
+                                    $1::text[],
+                                    to_jsonb($2::numeric)
+                                )
+                                WHERE symbol = $3 AND timestamp = $4
+                            """, [indicator_key], value, symbol, timestamp)
+                        else:
+                            # Store null value in JSONB for insufficient data cases
+                            result = await conn.execute("""
+                                UPDATE daily_candles
+                                SET indicators = jsonb_set(
+                                    COALESCE(indicators, '{}'),
+                                    $1::text[],
+                                    'null'::jsonb
+                                )
+                                WHERE symbol = $2 AND timestamp = $3
+                            """, [indicator_key], symbol, timestamp)
+                        
+                        # Check if any rows were updated
+                        if result.split()[-1] != '0':  # Result format: "UPDATE n"
+                            updated_count += 1
+                
+                logger.info(f"Updated {indicator_key} for {symbol} - {updated_count}/{len(indicator_values)} values updated")
+                return updated_count > 0
+                
+        except Exception as e:
+            logger.error(f"Error updating indicator {indicator_key} for {symbol}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def _calculate_basic_indicators(self, chunk_data: List[Dict], symbol: str) -> List[Dict]:
+        """
+        Calculate basic indicators for chunk data before storing (one-go approach).
+        This implements the user's requirement to calculate indicators during insertion, not as separate step.
+        """
+        if not chunk_data or len(chunk_data) == 0:
+            return chunk_data
+            
+        logger.debug(f"Calculating basic indicators for {len(chunk_data)} candles of {symbol}")
+        
+        # First pass: Filter out invalid data to get clean candle list
+        valid_candles = []
+        for candle in chunk_data:
+            if isinstance(candle, str):
+                logger.warning(f"Skipping string data in indicator calculation for {symbol}: {candle}")
+                continue
+            elif not isinstance(candle, dict):
+                logger.warning(f"Skipping invalid data type in indicator calculation for {symbol}: {type(candle)}")
+                continue
+            valid_candles.append(candle)
+        
+        if not valid_candles:
+            logger.warning(f"No valid candle data found for {symbol}")
+            return chunk_data
+            
+        logger.debug(f"Processing {len(valid_candles)} valid candles for {symbol}")
+        
+        # Second pass: Calculate indicators on valid candles
+        enhanced_data = []
+        for i, candle in enumerate(valid_candles):
+            # Copy original candle data
+            enhanced_candle = candle.copy()
+            
+            # Calculate daily percentage change (daily_pctchg_1)
+            if i > 0:  # Need previous candle for comparison
+                current_close = float(candle.get('close', 0))
+                previous_close = float(valid_candles[i-1].get('close', 0))  # Use valid_candles list
+                
+                if previous_close > 0:
+                    pct_change = ((current_close - previous_close) / previous_close) * 100
+                    enhanced_candle['daily_pctchg_1'] = round(pct_change, 4)
+                else:
+                    enhanced_candle['daily_pctchg_1'] = None
+            else:
+                # First candle (0th) - no previous candle for comparison
+                enhanced_candle['daily_pctchg_1'] = None
+            
+            # Add more basic indicators here as needed
+            # enhanced_candle['daily_pctchg_5'] = self._calculate_pct_change(valid_candles, i, 5)
+            # enhanced_candle['volume_sma_10'] = self._calculate_volume_sma(valid_candles, i, 10)
+            
+            enhanced_data.append(enhanced_candle)
+        
+        logger.debug(f"Enhanced {len(enhanced_data)} candles with basic indicators for {symbol}")
+        return enhanced_data
 
     @asynccontextmanager
     async def get_connection(self):
