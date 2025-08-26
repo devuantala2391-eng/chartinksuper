@@ -2,14 +2,35 @@
   "indicators": {
     "daily_pctchg_1": {
       "name": "PercentageChange",
-      "timeframe": "daily",
       "params": {
         "lookback": 1
+      },
+      "timeframe": "daily"
+    },
+    "daily_pctchg": {
+      "name": "PercentageChange",
+      "params": {},
+      "timeframe": "daily"
+    },
+    "weekly_pctchg": {
+      "name": "PercentageChange",
+      "params": {},
+      "timeframe": "weekly"
+    },
+    "supertrend_10_3": {
+      "name": "SuperTrend",
+      "timeframe": "daily",
+      "params": {
+        "period": 10.0,
+        "multiplier": 3.0
       }
     }
   },
   "active_indicators": [
+    "supertrend_10_3",
+    "weekly_pctchg",
+    "daily_pctchg",
     "daily_pctchg_1"
   ],
-  "last_updated": "2025-08-24T10:57:50.767949"
+  "last_updated": "2025-08-27T00:05:50.540109"
 }

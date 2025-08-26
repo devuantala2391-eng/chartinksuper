@@ -35,23 +35,34 @@ class PostgresIndicatorService:
             return False
     
     async def _install_percentage_change_procedures(self):
-        """Install percentage change calculation stored procedures"""
+        """Install percentage change calculation stored procedures (daily and weekly)"""
         try:
-            sql_file_path = Path(__file__).parent.parent / "sql" / "stored_procedures" / "calculate_percentage_change.sql"
+            # Install daily percentage change procedures
+            daily_sql_path = Path(__file__).parent.parent / "sql" / "stored_procedures" / "calculate_percentage_change.sql"
             
-            if not sql_file_path.exists():
-                raise FileNotFoundError(f"Stored procedure file not found: {sql_file_path}")
+            if not daily_sql_path.exists():
+                raise FileNotFoundError(f"Daily procedure file not found: {daily_sql_path}")
             
-            # Read the SQL file
-            with open(sql_file_path, 'r', encoding='utf-8') as f:
-                sql_content = f.read()
+            # Install weekly percentage change procedures
+            weekly_sql_path = Path(__file__).parent.parent / "sql" / "stored_procedures" / "calculate_weekly_percentage_change.sql"
             
-            # Execute the stored procedure creation
+            if not weekly_sql_path.exists():
+                raise FileNotFoundError(f"Weekly procedure file not found: {weekly_sql_path}")
+            
             async with ultra_fast_db.pool.acquire() as conn:
-                await conn.execute(sql_content)
+                # Install daily procedures
+                with open(daily_sql_path, 'r', encoding='utf-8') as f:
+                    daily_sql_content = f.read()
+                await conn.execute(daily_sql_content)
+                
+                # Install weekly procedures
+                with open(weekly_sql_path, 'r', encoding='utf-8') as f:
+                    weekly_sql_content = f.read()
+                await conn.execute(weekly_sql_content)
             
             self.procedures_installed.add('calculate_percentage_change')
-            logger.info("✅ Installed percentage change stored procedures")
+            self.procedures_installed.add('calculate_weekly_percentage_change')
+            logger.info("✅ Installed daily and weekly percentage change stored procedures")
             
         except Exception as e:
             logger.error(f"Failed to install percentage change procedures: {e}")
@@ -83,11 +94,19 @@ class PostgresIndicatorService:
             logger.info(f"🚀 Starting {timeframe} percentage change calculation via PostgreSQL")
             
             async with ultra_fast_db.pool.acquire() as conn:
-                # Call the stored procedure
-                result = await conn.fetchrow(
-                    "SELECT * FROM calculate_percentage_change($1, $2, $3)",
-                    timeframe, symbol, batch_size
-                )
+                # Route to appropriate stored procedure based on timeframe
+                if timeframe == 'weekly':
+                    # Use weekly percentage change stored procedure
+                    result = await conn.fetchrow(
+                        "SELECT * FROM calculate_weekly_percentage_change($1, $2)",
+                        symbol, batch_size
+                    )
+                else:
+                    # Use daily percentage change stored procedure for daily/monthly
+                    result = await conn.fetchrow(
+                        "SELECT * FROM calculate_percentage_change($1, $2, $3)",
+                        timeframe, symbol, batch_size
+                    )
                 
                 processing_time = time.time() - start_time
                 
@@ -147,10 +166,19 @@ class PostgresIndicatorService:
             logger.info(f"🎯 Calculating {timeframe} percentage change for {symbol}")
             
             async with ultra_fast_db.pool.acquire() as conn:
-                result = await conn.fetchrow(
-                    "SELECT * FROM calculate_percentage_change_for_symbol($1, $2)",
-                    symbol, timeframe
-                )
+                # Route to appropriate stored procedure based on timeframe
+                if timeframe == 'weekly':
+                    # Use weekly percentage change stored procedure
+                    result = await conn.fetchrow(
+                        "SELECT * FROM calculate_weekly_percentage_change_for_symbol($1)",
+                        symbol
+                    )
+                else:
+                    # Use daily percentage change stored procedure for daily/monthly
+                    result = await conn.fetchrow(
+                        "SELECT * FROM calculate_percentage_change_for_symbol($1, $2)",
+                        symbol, timeframe
+                    )
                 
                 processing_time = time.time() - start_time
                 success = result['status'] == 'SUCCESS'

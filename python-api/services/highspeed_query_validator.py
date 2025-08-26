@@ -49,24 +49,31 @@ class HighSpeedQueryValidator:
             
             logger.info(f"Missing fields: {missing_fields}")
             
-            # Try to calculate missing indicators dynamically
+            # Try to calculate missing indicators automatically
+            logger.info(f"Attempting to auto-calculate missing indicators: {missing_fields}")
             calculated = await self._calculate_missing_indicators(missing_fields)
             
-            if calculated:
-                logger.info(f"Successfully calculated {len(calculated)} indicators")
+            if calculated and len(calculated) > 0:
+                logger.info(f"Successfully auto-calculated {len(calculated)} indicators: {[c.get('name', 'Unknown') for c in calculated]}")
                 return {
                     "valid": True,
                     "required_fields": list(required_fields),
-                    "calculated_indicators": calculated,
-                    "message": f"Calculated {len(calculated)} missing indicators"
+                    "message": f"Auto-calculated {len(calculated)} missing indicators",
+                    "calculated_indicators": calculated
                 }
-            else:
-                return {
-                    "valid": False,
-                    "error": f"Cannot calculate indicators: {', '.join(missing_fields)}",
-                    "missing_fields": list(missing_fields),
-                    "available_fields": list(existing_fields)
-                }
+            
+            # If auto-calculation failed, provide clear error message
+            # Format field names for display (replace underscores with spaces)
+            indicator_names = [f.replace('_', ' ') for f in missing_fields]
+            return {
+                "valid": False,
+                "error": f"Required indicators not found: {', '.join(indicator_names)}",
+                "details": "Could not auto-calculate missing indicators. Please check the indicator definitions.",
+                "missing_fields": list(missing_fields),
+                "available_fields": list(existing_fields),
+                "suggestion": "Verify indicator names and try again",
+                "calculated_attempt": len(calculated) if calculated else 0
+            }
                 
         except Exception as e:
             logger.error(f"Validation error: {e}")
@@ -101,9 +108,13 @@ class HighSpeedQueryValidator:
         # e.g., "daily supertrend (10,1.2)" -> "supertrend_10_1dot2"
         # e.g., "weekly_supertrend_10_2" -> "weekly_supertrend_10_2"
         
-        # Handle percentage change indicators: daily_pctchg_1, weekly_pctchg_1, etc.
+        # Handle percentage change indicators - NEW FORMAT: daily_pctchg, weekly_pctchg, monthly_pctchg
+        # Convert legacy format daily_pctchg_1 -> daily_pctchg (remove the _1 parameter)
         if 'pctchg' in field_name:
-            return field_name  # Keep as is, these are stored as calculated fields
+            # Remove legacy _1 parameter suffix if present
+            if field_name.endswith('_1'):
+                field_name = field_name[:-2]  # Remove the '_1' suffix
+            return field_name
         
         # Handle weekly/monthly SuperTrend - keep timeframe prefix
         if field_name.startswith(('weekly_', 'monthly_')):

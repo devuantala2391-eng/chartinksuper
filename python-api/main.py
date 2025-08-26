@@ -1462,15 +1462,12 @@ async def process_latest_query(request: QueryRequest):
         validation_result = await highspeed_query_validator.validate_and_prepare_indicators(parsed_query)
         
         if not validation_result.get("valid"):
-            update_progress({"isRunning": False, "phase": "error", "message": "Query validation failed"})
+            # Return validator's helpful error message directly (no auto-calculation)
+            logger.info(f"Query validation failed: {validation_result.get('error')}")
+            update_progress({"isRunning": False, "phase": "error", "message": validation_result.get("error", "Query validation failed")})
             raise HTTPException(
                 status_code=400,
-                detail={
-                    "error": "Field validation failed", 
-                    "details": validation_result.get("error", "Unknown error"),
-                    "missing_fields": validation_result.get("missing_fields", []),
-                    "available_fields": validation_result.get("available_fields", [])
-                }
+                detail=validation_result  # Return the complete validator response
             )
         
         # Log if any indicators were calculated dynamically
@@ -4296,7 +4293,6 @@ async def _clean_high_speed_database():
         raise
 
 @app.post("/api/hard-refresh")
-@ensure_basic_ready
 async def hard_refresh_database():
     """
     Hard refresh: Clean PostgreSQL database and fetch fresh data.
@@ -4425,62 +4421,47 @@ async def hard_refresh_database():
                     except Exception as e:
                         logger.warning(f"Could not load indicators config: {e}")
                 
-                # If we have indicators, recalculate them; otherwise use default indicators
-                if indicators_to_calculate:
-                    logger.info(f"Recalculating {len(indicators_to_calculate)} configured indicators")
-                    # Create a request object for precalculation
-                    precalc_request = PrecalculateRequest(indicators=indicators_to_calculate)
-                    await precalculate_indicators(precalc_request)
-                else:
-                    logger.info("No indicators configured, calculating default indicators for high-speed database")
-                    # Calculate default indicators to populate the high-speed database
-                    default_indicators = [
-                        {"name": "RSI", "params": {"period": 14}, "timeframe": "daily"},
-                        {"name": "SMA", "params": {"period": 20}, "timeframe": "daily"},
-                        {"name": "EMA", "params": {"period": 12}, "timeframe": "daily"},
-                        {"name": "SuperTrend", "params": {"period": 10, "multiplier": 2}, "timeframe": "daily"},
-                        {"name": "SuperTrend", "params": {"period": 30, "multiplier": 5}, "timeframe": "daily"}
-                    ]
-                    
-                    # Use dynamic indicator manager to calculate defaults
-                    from services.dynamic_indicator_manager import dynamic_indicator_manager
-                    
-                    for indicator in default_indicators:
-                        try:
-                            # Generate indicator key
-                            indicator_key = dynamic_indicator_manager.generate_indicator_key(indicator)
-                            
-                            # Check if it doesn't already exist
-                            await dynamic_indicator_manager.load_indicator_config()
-                            if indicator_key not in dynamic_indicator_manager.active_indicators:
-                                logger.info(f"Calculating default indicator: {indicator_key}")
-                                
-                                # Add and calculate the indicator
-                                dynamic_indicator_manager.indicator_definitions[indicator_key] = {
-                                    **indicator,
-                                    "description": f"Default {indicator['name']} indicator",
-                                    "auto_added": True,
-                                    "added_at": datetime.now().isoformat()
-                                }
-                                dynamic_indicator_manager.active_indicators.add(indicator_key)
-                                
-                                # Calculate for all stocks
-                                await dynamic_indicator_manager.calculate_indicator_for_all_stocks(indicator_key, indicator)
-                            else:
-                                logger.info(f"Default indicator {indicator_key} already exists")
-                                
-                        except Exception as e:
-                            logger.error(f"Failed to calculate default indicator {indicator}: {e}")
-                    
-                    # Save the updated configuration
-                    await dynamic_indicator_manager.save_indicator_config()
-                    logger.info("Default indicators calculation completed")
+                # Execute comprehensive database calculations (weekly candles + all indicators)
+                logger.info("🗓️ Executing comprehensive database calculations...")
+                update_progress({
+                    "isRunning": True,
+                    "phase": "database_calculations",
+                    "message": "Executing PostgreSQL comprehensive calculations...",
+                    "processed": 0,
+                    "total": total_symbols,
+                    "status": "database_calculations"
+                })
                 
-                # Complete
+                # Call PostgreSQL stored procedures for comprehensive calculations
+                # This includes weekly candle generation and all indicators
+                from services.parallel_calculation_service import ParallelCalculationService
+                
+                parallel_calc_service = ParallelCalculationService(max_concurrent_stocks=20)
+                calculation_start = time.time()
+                
+                # Process all stocks using weekly-only stored procedures (no indicators)
+                calc_results = await parallel_calc_service.process_all_stocks_weekly_only()
+                
+                calculation_time = time.time() - calculation_start
+                logger.info(f"📅 Weekly candle generation completed in {calculation_time:.2f}s")
+                logger.info(f"📅 Weekly generation results: {calc_results['successful']} successful, {calc_results['failed']} failed")
+                
+                logger.info("🎯 Hard refresh completed - OHLCV data + Weekly candles (NO indicators)")
+                
+                update_progress({
+                    "isRunning": True,
+                    "phase": "weekly_complete", 
+                    "message": f"Weekly candle generation completed - {calc_results['successful']} stocks processed with weekly candles (NO indicators)",
+                    "processed": total_symbols,
+                    "total": total_symbols,
+                    "status": "weekly_complete"
+                })
+                
+                # Complete - OHLCV data + Weekly candles (NO indicators)
                 update_progress({
                     "isRunning": False,
                     "phase": "completed",
-                    "message": f"Hard refresh completed! Fetched {candle_count} candles for {successful} stocks",
+                    "message": f"Hard refresh completed! Fetched {candle_count} OHLCV candles for {successful} stocks + Weekly candles ({calc_results['successful']} with weekly candles, NO indicators)",
                     "processed": total_symbols,
                     "total": total_symbols,
                     "successful": successful,

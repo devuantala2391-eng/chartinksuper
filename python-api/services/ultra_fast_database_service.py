@@ -12,6 +12,7 @@ import asyncpg
 import json
 import logging
 import psutil
+import time
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
@@ -215,28 +216,35 @@ class UltraFastDatabaseService:
                     low DECIMAL(20,6) NOT NULL,
                     close DECIMAL(20,6) NOT NULL,
                     volume BIGINT NOT NULL,
+                    week_key INTEGER,                            -- Week number (1, 2, 3...)
+                    day_of_week INTEGER,                         -- Day within week (1=Mon, 5=Fri)
+                    weekly_candle_key_id VARCHAR(50),            -- Foreign key to weekly_candles
                     indicators JSONB DEFAULT '{}',               -- All indicators in JSONB
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             
-            # Create weekly candles table
+            # Create weekly candles table with optimized structure for O(1) lookups
             await conn.execute("""
                 CREATE TABLE weekly_candles (
-                    candle_key_id VARCHAR(50) PRIMARY KEY,
-                    symbol VARCHAR(20) NOT NULL,
-                    candle_sequence_number INTEGER NOT NULL,
-                    timestamp BIGINT NOT NULL,
-                    datetime TIMESTAMP NOT NULL,
-                    open DECIMAL(20,6) NOT NULL,
-                    high DECIMAL(20,6) NOT NULL,
-                    low DECIMAL(20,6) NOT NULL,
-                    close DECIMAL(20,6) NOT NULL,
-                    volume BIGINT NOT NULL,
-                    indicators JSONB DEFAULT '{}',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    weekly_candle_key_id    VARCHAR(50) PRIMARY KEY,    -- "20MICRONS_W1", "20MICRONS_W2"
+                    symbol                  VARCHAR(50) NOT NULL,       -- "20MICRONS"
+                    week_sequence_number    INTEGER NOT NULL,           -- 1, 2, 3...
+                    week_start_timestamp    BIGINT NOT NULL,            -- Monday timestamp
+                    week_end_timestamp      BIGINT NOT NULL,            -- Friday timestamp  
+                    week_start_datetime     TIMESTAMP NOT NULL,         -- Monday datetime
+                    week_end_datetime       TIMESTAMP NOT NULL,         -- Friday datetime
+                    open                    NUMERIC NOT NULL,           -- Monday open
+                    high                    NUMERIC NOT NULL,           -- Week max high
+                    low                     NUMERIC NOT NULL,           -- Week min low
+                    close                   NUMERIC NOT NULL,           -- Friday close
+                    volume                  BIGINT NOT NULL,            -- Week total volume
+                    trading_days_count      INTEGER NOT NULL,           -- Days in week (1-5)
+                    indicators              JSONB DEFAULT '{}',         -- Weekly indicators
+                    created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(symbol, week_sequence_number)
                 )
             """)
             
@@ -500,8 +508,8 @@ class UltraFastDatabaseService:
             return True
         
         try:
-            # Calculate basic indicators for chunk_data BEFORE storing (one-go approach)
-            enhanced_chunk_data = self._calculate_basic_indicators(chunk_data, symbol)
+            # Filter and validate OHLCV data only - NO CALCULATIONS
+            enhanced_chunk_data = self._filter_valid_ohlcv_data(chunk_data, symbol)
             
             # Get next key batch for this chunk
             start_key = await self.get_next_key_batch(symbol, len(enhanced_chunk_data), timeframe)
@@ -520,6 +528,12 @@ class UltraFastDatabaseService:
                     logger.warning(f"Skipping invalid data type for {symbol}: {type(candle)}")
                     continue
                 
+                # Calculate weekly data using timestamp
+                timestamp_ms = candle.get('timestamp', 0)
+                week_key = int(timestamp_ms / 1000 // 604800)  # 604800 = seconds in a week
+                day_of_week = (sequence_number % 5) + 1  # Day within week (1=Mon, 5=Fri)
+                weekly_candle_key_id = None  # Will be populated later during weekly candle generation
+                
                 # Extract OHLCV data
                 ohlcv_data = [
                     candle_key_id,                           # candle_key_id (PRIMARY KEY)
@@ -531,17 +545,14 @@ class UltraFastDatabaseService:
                     float(candle.get('high', 0)),           # high
                     float(candle.get('low', 0)),            # low
                     float(candle.get('close', 0)),          # close
-                    int(candle.get('volume', 0))            # volume
+                    int(candle.get('volume', 0)),           # volume
+                    week_key,                               # week_key
+                    day_of_week,                            # day_of_week
+                    weekly_candle_key_id                    # weekly_candle_key_id (NULL initially)
                 ]
                 
-                # Extract all indicators into JSONB
-                indicators = {}
-                for key, value in candle.items():
-                    if key not in ['timestamp', 'datetime', 'open', 'high', 'low', 'close', 'volume']:
-                        if value is not None:
-                            indicators[key] = float(value) if isinstance(value, (int, float)) else value
-                
-                ohlcv_data.append(json.dumps(indicators))   # indicators JSONB
+                # No indicators - empty JSONB object (calculations done by PostgreSQL)
+                ohlcv_data.append('{}')  # Empty indicators JSONB - will be populated by stored procedures
                 values.append(tuple(ohlcv_data))
             
             # Bulk insert chunk using new table structure
@@ -550,8 +561,8 @@ class UltraFastDatabaseService:
                 await conn.executemany(f"""
                     INSERT INTO {table_name} 
                     (candle_key_id, symbol, candle_sequence_number, timestamp, datetime, 
-                     open, high, low, close, volume, indicators)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                     open, high, low, close, volume, week_key, day_of_week, weekly_candle_key_id, indicators)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                     ON CONFLICT (candle_key_id) 
                     DO UPDATE SET
                         timestamp = EXCLUDED.timestamp,
@@ -561,6 +572,9 @@ class UltraFastDatabaseService:
                         low = EXCLUDED.low,
                         close = EXCLUDED.close,
                         volume = EXCLUDED.volume,
+                        week_key = EXCLUDED.week_key,
+                        day_of_week = EXCLUDED.day_of_week,
+                        weekly_candle_key_id = EXCLUDED.weekly_candle_key_id,
                         indicators = EXCLUDED.indicators,
                         updated_at = CURRENT_TIMESTAMP
                 """, values)
@@ -920,61 +934,256 @@ class UltraFastDatabaseService:
             traceback.print_exc()
             return False
 
-    def _calculate_basic_indicators(self, chunk_data: List[Dict], symbol: str) -> List[Dict]:
+    def _filter_valid_ohlcv_data(self, chunk_data: List[Dict], symbol: str) -> List[Dict]:
         """
-        Calculate basic indicators for chunk data before storing (one-go approach).
-        This implements the user's requirement to calculate indicators during insertion, not as separate step.
+        Filter and clean OHLCV data for database insertion.
+        NO CALCULATIONS - Only data cleaning and validation.
+        All indicators will be calculated by PostgreSQL stored procedures.
         """
         if not chunk_data or len(chunk_data) == 0:
             return chunk_data
             
-        logger.debug(f"Calculating basic indicators for {len(chunk_data)} candles of {symbol}")
+        logger.debug(f"Filtering OHLCV data for {len(chunk_data)} candles of {symbol}")
         
-        # First pass: Filter out invalid data to get clean candle list
+        # Filter out invalid data to get clean candle list
         valid_candles = []
         for candle in chunk_data:
             if isinstance(candle, str):
-                logger.warning(f"Skipping string data in indicator calculation for {symbol}: {candle}")
+                logger.warning(f"Skipping string data for {symbol}: {candle}")
                 continue
             elif not isinstance(candle, dict):
-                logger.warning(f"Skipping invalid data type in indicator calculation for {symbol}: {type(candle)}")
+                logger.warning(f"Skipping invalid data type for {symbol}: {type(candle)}")
                 continue
-            valid_candles.append(candle)
+            
+            # Validate required OHLCV fields
+            required_fields = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+            if all(field in candle for field in required_fields):
+                valid_candles.append(candle)
+            else:
+                logger.warning(f"Skipping candle with missing OHLCV fields for {symbol}")
+                continue
         
         if not valid_candles:
-            logger.warning(f"No valid candle data found for {symbol}")
+            logger.warning(f"No valid OHLCV data found for {symbol}")
             return chunk_data
             
-        logger.debug(f"Processing {len(valid_candles)} valid candles for {symbol}")
+        logger.debug(f"Filtered {len(valid_candles)} valid OHLCV candles for {symbol}")
+        return valid_candles
+    
+    # REMOVED: All calculation methods moved to PostgreSQL stored procedures
+    # Python server is now only responsible for OHLCV data ingestion
+
+    async def call_database_calculations(self, symbol: str) -> Dict[str, Any]:
+        """
+        Call PostgreSQL stored procedures to perform all calculations.
+        This ensures single source of truth in the database.
         
-        # Second pass: Calculate indicators on valid candles
-        enhanced_data = []
-        for i, candle in enumerate(valid_candles):
-            # Copy original candle data
-            enhanced_candle = candle.copy()
+        Args:
+            symbol: Stock symbol to process
             
-            # Calculate daily percentage change (daily_pctchg)
-            if i > 0:  # Need previous candle for comparison
-                current_close = float(candle.get('close', 0))
-                previous_close = float(valid_candles[i-1].get('close', 0))  # Use valid_candles list
+        Returns:
+            Dict with calculation results
+        """
+        try:
+            start_time = time.time()
+            logger.info(f"🔢 Calling database calculations for {symbol}")
+            
+            async with self.pool.acquire() as conn:
+                # Call comprehensive PostgreSQL stored procedure
+                result = await conn.fetchrow("""
+                    SELECT * FROM process_symbol_comprehensive($1)
+                """, symbol)
                 
-                if previous_close > 0:
-                    pct_change = ((current_close - previous_close) / previous_close) * 100
-                    enhanced_candle['daily_pctchg'] = round(pct_change, 4)
+                processing_time = time.time() - start_time
+                
+                if result and result['status'] == 'SUCCESS':
+                    logger.info(f"✅ Database calculation for {symbol}: "
+                              f"{result['weekly_candles_generated']} weekly candles, "
+                              f"{result['daily_candles_updated']} daily updated in {processing_time:.3f}s")
+                    
+                    return {
+                        "success": True,
+                        "symbol": symbol,
+                        "weekly_candles_generated": result['weekly_candles_generated'],
+                        "daily_candles_updated": result['daily_candles_updated'],
+                        "indicators_calculated": result['indicators_calculated'],
+                        "processing_time_seconds": round(processing_time, 3),
+                        "method": "postgresql_comprehensive_procedure"
+                    }
                 else:
-                    enhanced_candle['daily_pctchg'] = None
-            else:
-                # First candle (0th) - no previous candle for comparison
-                enhanced_candle['daily_pctchg'] = None
+                    error_msg = result['status'] if result else "No result returned"
+                    logger.error(f"❌ Database calculation failed for {symbol}: {error_msg}")
+                    
+                    return {
+                        "success": False,
+                        "symbol": symbol,
+                        "error": error_msg,
+                        "processing_time_seconds": round(processing_time, 3),
+                        "method": "postgresql_comprehensive_procedure"
+                    }
+                
+        except Exception as e:
+            processing_time = time.time() - start_time
+            logger.error(f"❌ Database calculation failed for {symbol}: {e}")
             
-            # Add more basic indicators here as needed
-            # enhanced_candle['daily_pctchg_5'] = self._calculate_pct_change(valid_candles, i, 5)
-            # enhanced_candle['volume_sma_10'] = self._calculate_volume_sma(valid_candles, i, 10)
-            
-            enhanced_data.append(enhanced_candle)
+            return {
+                "success": False,
+                "symbol": symbol,
+                "error": str(e),
+                "processing_time_seconds": round(processing_time, 3),
+                "method": "postgresql_comprehensive_procedure"
+            }
+
+    async def call_database_weekly_only(self, symbol: str) -> Dict[str, Any]:
+        """
+        Call PostgreSQL stored procedures to generate ONLY weekly candles (no indicators).
+        Used during hard refresh to avoid calculating indicators.
         
-        logger.debug(f"Enhanced {len(enhanced_data)} candles with basic indicators for {symbol}")
-        return enhanced_data
+        Args:
+            symbol: Stock symbol to process
+            
+        Returns:
+            Dict with weekly generation results
+        """
+        try:
+            start_time = time.time()
+            logger.info(f"📅 Calling weekly-only processing for {symbol}")
+            
+            async with self.pool.acquire() as conn:
+                # Call weekly-only PostgreSQL stored procedure
+                result = await conn.fetchrow("""
+                    SELECT * FROM process_symbol_weekly_only($1)
+                """, symbol)
+                
+                processing_time = time.time() - start_time
+                
+                if result and result['status'] == 'SUCCESS':
+                    logger.info(f"✅ Weekly-only processing for {symbol}: "
+                              f"{result['weekly_candles_generated']} weekly candles, "
+                              f"{result['daily_candles_updated']} daily updated in {processing_time:.3f}s")
+                    
+                    return {
+                        "success": True,
+                        "symbol": symbol,
+                        "weekly_candles_generated": result['weekly_candles_generated'],
+                        "daily_candles_updated": result['daily_candles_updated'],
+                        "indicators_calculated": [],  # No indicators calculated
+                        "processing_time_seconds": round(processing_time, 3),
+                        "method": "postgresql_weekly_only_procedure"
+                    }
+                else:
+                    error_msg = result['status'] if result else "No result returned"
+                    logger.error(f"❌ Weekly-only processing failed for {symbol}: {error_msg}")
+                    
+                    return {
+                        "success": False,
+                        "symbol": symbol,
+                        "error": error_msg,
+                        "processing_time_seconds": round(processing_time, 3),
+                        "method": "postgresql_weekly_only_procedure"
+                    }
+                
+        except Exception as e:
+            processing_time = time.time() - start_time
+            logger.error(f"❌ Weekly-only processing failed for {symbol}: {e}")
+            
+            return {
+                "success": False,
+                "symbol": symbol,
+                "error": str(e),
+                "processing_time_seconds": round(processing_time, 3),
+                "method": "postgresql_weekly_only_procedure"
+            }
+
+    async def generate_and_store_weekly_candles(self, symbol: str) -> bool:
+        """
+        Generate weekly candles using PostgreSQL stored procedure.
+        Single source of truth - all calculations done in database.
+        
+        Args:
+            symbol: Stock symbol to process
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            logger.info(f"🗓️ Generating weekly candles for {symbol}")
+            
+            async with self.pool.acquire() as conn:
+                # Call PostgreSQL stored procedure for weekly candle generation
+                result = await conn.fetchrow("""
+                    SELECT * FROM generate_weekly_candles_for_symbol($1)
+                """, symbol)
+                
+                if result and result['status'] == 'SUCCESS':
+                    logger.info(f"✅ Generated {result['generated_weeks']} weekly candles for {symbol}, "
+                              f"updated {result['updated_daily_refs']} daily references")
+                    return True
+                else:
+                    error_msg = result['status'] if result else "No result returned"
+                    logger.error(f"❌ Weekly candle generation failed for {symbol}: {error_msg}")
+                    return False
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to generate weekly candles for {symbol}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    async def batch_generate_weekly_candles(self, symbols: List[str] = None) -> Dict[str, Any]:
+        """
+        Generate weekly candles using PostgreSQL stored procedure for all symbols.
+        Single source of truth - all calculations done in database.
+        
+        Args:
+            symbols: List of symbols to process. If None, processes all symbols
+            
+        Returns:
+            Dict with processing statistics
+        """
+        try:
+            start_time = time.time()
+            
+            logger.info(f"🗓️ Calling database to process all symbols comprehensively")
+            
+            async with self.pool.acquire() as conn:
+                # Call the batch processing stored procedure
+                results = await conn.fetch("SELECT * FROM process_all_symbols_comprehensive()")
+                
+                successful = 0
+                failed = 0
+                total_weekly_candles = 0
+                total_daily_updated = 0
+                
+                # Process results from stored procedure
+                for result in results:
+                    if result['status'] == 'SUCCESS':
+                        successful += 1
+                        total_weekly_candles += result['weekly_candles']
+                        total_daily_updated += result['daily_updated']
+                        logger.info(f"✅ {result['symbol']}: {result['weekly_candles']} weekly, {result['daily_updated']} daily updated")
+                    else:
+                        failed += 1
+                        logger.error(f"❌ {result['symbol']}: {result['status']}")
+                
+                processing_time = time.time() - start_time
+                
+                return {
+                    "successful_symbols": successful,
+                    "failed_symbols": failed,
+                    "total_symbols_processed": successful + failed,
+                    "total_weekly_candles": total_weekly_candles,
+                    "total_daily_updated": total_daily_updated,
+                    "processing_time_seconds": round(processing_time, 2)
+                }
+            
+        except Exception as e:
+            logger.error(f"❌ Batch weekly candle generation failed: {e}")
+            return {
+                "successful_symbols": 0,
+                "failed_symbols": len(symbols) if symbols else 0,
+                "error": str(e)
+            }
 
     @asynccontextmanager
     async def get_connection(self):

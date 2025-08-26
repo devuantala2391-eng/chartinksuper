@@ -134,7 +134,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   
   // Parameterized indicators
   parameterizedIndicators = [
-    'sma', 'ema', 'rsi', 'supertrend', 'bb', 'pctchg'
+    'sma', 'ema', 'rsi', 'supertrend', 'bb'
   ];
   
   // Multi-component indicators - indicators that have multiple output values
@@ -149,8 +149,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     'ema': ['12'],
     'rsi': ['14'],
     'bb': ['20', '2'],
-    'supertrend': ['10', '3'],
-    'pctchg': ['1']
+    'supertrend': ['10', '3']
   };
 
   operators = [
@@ -1516,7 +1515,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   }
 
   loadTestQuery() {
-    const testQuery = "daily_volume > 50000 and daily_pctchg_1 < 9 and daily_pctchg_1 > 0 and daily_close > 30 and weekly_volume > 1 week ago weekly_volume and daily_high < 1 day ago daily_volume * 2 and weekly_close crossed above weekly_supertrend_10_2";
+    const testQuery = "daily_volume > 50000 and daily_pctchg < 9 and daily_pctchg > 0 and daily_close > 30 and weekly_volume > 1 week ago weekly_volume and daily_high < 1 day ago daily_volume * 2 and weekly_close crossed above weekly_supertrend_10_2";
     
     this.pasteQueryText = testQuery;
     this.pasteQueryStatus = 'Test query loaded';

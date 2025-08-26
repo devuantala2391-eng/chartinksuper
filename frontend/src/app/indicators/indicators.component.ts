@@ -483,7 +483,7 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
         this.newIndicator.params = { period: 14 };
         break;
       case 'pctchg':
-        this.newIndicator.params = { period: 1 };
+        this.newIndicator.params = {};
         break;
       case 'volume':
         this.newIndicator.params = {};
