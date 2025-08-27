@@ -216,53 +216,59 @@ class TimeframeAggregator:
                         }
                         monthly_candles.append(candle)
                     
-                    # Calculate indicators for monthly candles
-                    monthly_candles = static_indicator_calculator.calculate_static_indicators(
-                        monthly_candles, 'monthly_candles'
-                    )
+                    # Monthly candles should have empty indicators by default (like daily candles)
+                    # Do NOT calculate indicators - keep them empty like daily candles
                     
-                    # Insert monthly candles
-                    for candle in monthly_candles:
-                        # Calculate month_start_date from timestamp
-                        month_start_date = datetime.fromtimestamp(candle['month_start_timestamp'] / 1000).date()
+                    # Insert monthly candles with updated structure
+                    for i, candle in enumerate(monthly_candles):
+                        # Calculate month_start_date and month_end_date from timestamp
+                        month_start_date = datetime.fromtimestamp(candle['month_start_timestamp'] / 1000)
+                        
+                        # Calculate month end timestamp (last day of month)
+                        if month_start_date.month == 12:
+                            month_end_date = month_start_date.replace(year=month_start_date.year + 1, month=1, day=1) - timedelta(days=1)
+                        else:
+                            month_end_date = month_start_date.replace(month=month_start_date.month + 1, day=1) - timedelta(days=1)
+                        
+                        month_end_ts = int(month_end_date.timestamp() * 1000)
+                        
+                        # Create monthly_candle_key_id
+                        monthly_candle_key_id = f"{sym}_{month_start_date.strftime('%Y%m')}"
+                        
+                        # Monthly candles should have empty indicators JSON like daily candles
+                        import json
+                        indicators_json = json.dumps({})
                         
                         await conn.execute("""
                             INSERT INTO monthly_candles (
-                                symbol, month_start_timestamp, month_start_date,
-                                open, high, low, close, volume, trading_days,
-                                rsi_14, rsi_21, sma_10, sma_20, ema_12, ema_26,
-                                supertrend_10_2, supertrend_signal_10_2,
-                                supertrend_10_3, supertrend_signal_10_3
+                                monthly_candle_key_id, symbol, month_sequence_number,
+                                month_start_timestamp, month_end_timestamp,
+                                month_start_datetime, month_end_datetime,
+                                open, high, low, close, volume, trading_days_count,
+                                indicators
                             )
-                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
-                            ON CONFLICT (symbol, month_start_timestamp) DO UPDATE SET
-                                month_start_date = EXCLUDED.month_start_date,
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                            ON CONFLICT (monthly_candle_key_id) DO UPDATE SET
+                                month_sequence_number = EXCLUDED.month_sequence_number,
+                                month_start_timestamp = EXCLUDED.month_start_timestamp,
+                                month_end_timestamp = EXCLUDED.month_end_timestamp,
+                                month_start_datetime = EXCLUDED.month_start_datetime,
+                                month_end_datetime = EXCLUDED.month_end_datetime,
                                 open = EXCLUDED.open,
                                 high = EXCLUDED.high,
                                 low = EXCLUDED.low,
                                 close = EXCLUDED.close,
                                 volume = EXCLUDED.volume,
-                                trading_days = EXCLUDED.trading_days,
-                                rsi_14 = EXCLUDED.rsi_14,
-                                rsi_21 = EXCLUDED.rsi_21,
-                                sma_10 = EXCLUDED.sma_10,
-                                sma_20 = EXCLUDED.sma_20,
-                                ema_12 = EXCLUDED.ema_12,
-                                ema_26 = EXCLUDED.ema_26,
-                                supertrend_10_2 = EXCLUDED.supertrend_10_2,
-                                supertrend_signal_10_2 = EXCLUDED.supertrend_signal_10_2,
-                                supertrend_10_3 = EXCLUDED.supertrend_10_3,
-                                supertrend_signal_10_3 = EXCLUDED.supertrend_signal_10_3,
+                                trading_days_count = EXCLUDED.trading_days_count,
+                                indicators = EXCLUDED.indicators,
                                 updated_at = CURRENT_TIMESTAMP
                         """, 
-                        candle['symbol'], candle['month_start_timestamp'], month_start_date,
+                        monthly_candle_key_id, candle['symbol'], i + 1,
+                        candle['month_start_timestamp'], month_end_ts,
+                        month_start_date, month_end_date,
                         candle['open'], candle['high'], candle['low'], candle['close'], candle['volume'],
                         20,  # Assuming 20 trading days per month
-                        candle.get('rsi_14'), candle.get('rsi_21'),
-                        candle.get('sma_10'), candle.get('sma_20'),
-                        candle.get('ema_12'), candle.get('ema_26'),
-                        candle.get('supertrend_10_2'), candle.get('supertrend_signal_10_2'),
-                        candle.get('supertrend_10_3'), candle.get('supertrend_signal_10_3')
+                        indicators_json
                         )
                     
                     total_candles += len(monthly_candles)

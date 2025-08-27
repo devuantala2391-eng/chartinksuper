@@ -248,31 +248,25 @@ class UltraFastDatabaseService:
                 )
             """)
             
-            # Create monthly candles table to match TimeframeAggregator expectations
+            # Create monthly candles table with consistent structure (JSONB indicators like daily/weekly)
             await conn.execute("""
                 CREATE TABLE monthly_candles (
+                    monthly_candle_key_id VARCHAR(50) PRIMARY KEY,
                     symbol VARCHAR(20) NOT NULL,
+                    month_sequence_number INTEGER NOT NULL,
                     month_start_timestamp BIGINT NOT NULL,
-                    month_start_date DATE NOT NULL,
+                    month_end_timestamp BIGINT NOT NULL,
+                    month_start_datetime TIMESTAMP NOT NULL,
+                    month_end_datetime TIMESTAMP NOT NULL,
                     open DECIMAL(20,6) NOT NULL,
                     high DECIMAL(20,6) NOT NULL,
                     low DECIMAL(20,6) NOT NULL,
                     close DECIMAL(20,6) NOT NULL,
                     volume BIGINT NOT NULL,
-                    trading_days INTEGER DEFAULT 20,
-                    rsi_14 DECIMAL(10,4),
-                    rsi_21 DECIMAL(10,4),
-                    sma_10 DECIMAL(10,4),
-                    sma_20 DECIMAL(10,4),
-                    ema_12 DECIMAL(10,4),
-                    ema_26 DECIMAL(10,4),
-                    supertrend_10_2 DECIMAL(10,4),
-                    supertrend_signal_10_2 INTEGER,
-                    supertrend_10_3 DECIMAL(10,4),
-                    supertrend_signal_10_3 INTEGER,
+                    trading_days_count INTEGER NOT NULL DEFAULT 20,
+                    indicators JSONB,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (symbol, month_start_timestamp)
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             
