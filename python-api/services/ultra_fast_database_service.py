@@ -248,22 +248,31 @@ class UltraFastDatabaseService:
                 )
             """)
             
-            # Create monthly candles table
+            # Create monthly candles table to match TimeframeAggregator expectations
             await conn.execute("""
                 CREATE TABLE monthly_candles (
-                    candle_key_id VARCHAR(50) PRIMARY KEY,
                     symbol VARCHAR(20) NOT NULL,
-                    candle_sequence_number INTEGER NOT NULL,
-                    timestamp BIGINT NOT NULL,
-                    datetime TIMESTAMP NOT NULL,
+                    month_start_timestamp BIGINT NOT NULL,
+                    month_start_date DATE NOT NULL,
                     open DECIMAL(20,6) NOT NULL,
                     high DECIMAL(20,6) NOT NULL,
                     low DECIMAL(20,6) NOT NULL,
                     close DECIMAL(20,6) NOT NULL,
                     volume BIGINT NOT NULL,
-                    indicators JSONB DEFAULT '{}',
+                    trading_days INTEGER DEFAULT 20,
+                    rsi_14 DECIMAL(10,4),
+                    rsi_21 DECIMAL(10,4),
+                    sma_10 DECIMAL(10,4),
+                    sma_20 DECIMAL(10,4),
+                    ema_12 DECIMAL(10,4),
+                    ema_26 DECIMAL(10,4),
+                    supertrend_10_2 DECIMAL(10,4),
+                    supertrend_signal_10_2 INTEGER,
+                    supertrend_10_3 DECIMAL(10,4),
+                    supertrend_signal_10_3 INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (symbol, month_start_timestamp)
                 )
             """)
             
@@ -367,21 +376,31 @@ class UltraFastDatabaseService:
                 )
             """)
             
-            # Monthly candles table (same structure)
+            # Monthly candles table to match TimeframeAggregator expectations
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS monthly_candles (
-                    composite_key VARCHAR(50) PRIMARY KEY,
                     symbol VARCHAR(20) NOT NULL,
-                    key_number INTEGER NOT NULL,
-                    timestamp BIGINT NOT NULL,
-                    datetime TIMESTAMP NOT NULL,
+                    month_start_timestamp BIGINT NOT NULL,
+                    month_start_date DATE NOT NULL,
                     open DECIMAL(20,6) NOT NULL,
                     high DECIMAL(20,6) NOT NULL,
                     low DECIMAL(20,6) NOT NULL,
                     close DECIMAL(20,6) NOT NULL,
                     volume BIGINT NOT NULL,
-                    indicators JSONB DEFAULT '{}',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    trading_days INTEGER DEFAULT 20,
+                    rsi_14 DECIMAL(10,4),
+                    rsi_21 DECIMAL(10,4),
+                    sma_10 DECIMAL(10,4),
+                    sma_20 DECIMAL(10,4),
+                    ema_12 DECIMAL(10,4),
+                    ema_26 DECIMAL(10,4),
+                    supertrend_10_2 DECIMAL(10,4),
+                    supertrend_signal_10_2 INTEGER,
+                    supertrend_10_3 DECIMAL(10,4),
+                    supertrend_signal_10_3 INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (symbol, month_start_timestamp)
                 )
             """)
             
@@ -424,37 +443,70 @@ class UltraFastDatabaseService:
                     logger.info(f"Table {table_name} doesn't exist, skipping indexes")
                     continue
                 
-                # Check if candle_sequence_number column exists for this table
-                has_sequence_column = await conn.fetchval(f"""
-                    SELECT EXISTS (
-                        SELECT 1 FROM information_schema.columns 
-                        WHERE table_name = '{table_name}' AND column_name = 'candle_sequence_number'
-                    )
-                """)
+                # Find the appropriate sequence column for each table
+                sequence_column = None
+                possible_sequence_columns = ['candle_sequence_number', 'week_sequence_number', 'month_sequence_number']
                 
-                # Create indexes based on available columns
-                if has_sequence_column:
-                    await conn.execute(f"""
-                        CREATE INDEX IF NOT EXISTS idx_{timeframe}_symbol_key 
-                        ON {table_name}(symbol, candle_sequence_number DESC)
-                    """)
-                    logger.info(f"Created symbol+sequence index for {table_name}")
+                # Monthly candles table has a different structure, skip sequence for it
+                if table_name == 'monthly_candles':
+                    sequence_column = None
+                    logger.info(f"No sequence column for {table_name} (uses composite primary key)")
                 else:
-                    logger.warning(f"Skipping candle_sequence_number index for {table_name} - column doesn't exist")
+                    for col in possible_sequence_columns:
+                        has_sequence_column = await conn.fetchval(f"""
+                            SELECT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = '{table_name}' AND column_name = '{col}'
+                            )
+                        """)
+                        if has_sequence_column:
+                            sequence_column = col
+                            break
                 
-                # Always create timestamp index (this column should always exist)
-                await conn.execute(f"""
-                    CREATE INDEX IF NOT EXISTS idx_{timeframe}_timestamp 
-                    ON {table_name}(timestamp DESC)
-                """)
-                logger.info(f"Created timestamp index for {table_name}")
+                # Create sequence-based index if available
+                if sequence_column:
+                    await conn.execute(f"""
+                        CREATE INDEX IF NOT EXISTS idx_{timeframe}_symbol_sequence 
+                        ON {table_name}(symbol, {sequence_column} DESC)
+                    """)
+                    logger.info(f"Created symbol+sequence index for {table_name} using {sequence_column}")
+                else:
+                    logger.info(f"No sequence column found for {table_name}, will use timestamp-based indexes only")
                 
-                # Create symbol+timestamp index (alternative to sequence index)
-                await conn.execute(f"""
-                    CREATE INDEX IF NOT EXISTS idx_{timeframe}_symbol_timestamp 
-                    ON {table_name}(symbol, timestamp DESC)
-                """)
-                logger.info(f"Created symbol+timestamp index for {table_name}")
+                # Find the appropriate timestamp column for each table
+                timestamp_column = None
+                if table_name == 'monthly_candles':
+                    possible_timestamp_columns = ['month_start_timestamp']
+                else:
+                    possible_timestamp_columns = ['timestamp', 'week_start_timestamp', 'month_start_timestamp']
+                
+                for col in possible_timestamp_columns:
+                    has_timestamp_column = await conn.fetchval(f"""
+                        SELECT EXISTS (
+                            SELECT 1 FROM information_schema.columns 
+                            WHERE table_name = '{table_name}' AND column_name = '{col}'
+                        )
+                    """)
+                    if has_timestamp_column:
+                        timestamp_column = col
+                        break
+                
+                if timestamp_column:
+                    # Create timestamp index
+                    await conn.execute(f"""
+                        CREATE INDEX IF NOT EXISTS idx_{timeframe}_timestamp 
+                        ON {table_name}({timestamp_column} DESC)
+                    """)
+                    logger.info(f"Created timestamp index for {table_name} using {timestamp_column}")
+                    
+                    # Create symbol+timestamp index (alternative to sequence index)
+                    await conn.execute(f"""
+                        CREATE INDEX IF NOT EXISTS idx_{timeframe}_symbol_timestamp 
+                        ON {table_name}(symbol, {timestamp_column} DESC)
+                    """)
+                    logger.info(f"Created symbol+timestamp index for {table_name} using {timestamp_column}")
+                else:
+                    logger.warning(f"No timestamp column found for {table_name}, skipping timestamp indexes")
                 
                 # Create indicators GIN index if column exists
                 has_indicators = await conn.fetchval(f"""
@@ -1200,6 +1252,35 @@ class UltraFastDatabaseService:
             traceback.print_exc()
             return False
 
+    async def generate_monthly_candles_for_symbol(self, symbol: str) -> bool:
+        """
+        Generate monthly candles for a single symbol using timeframe aggregator
+        
+        Args:
+            symbol: Stock symbol to process
+        """
+        try:
+            from services.timeframe_aggregator import TimeframeAggregator
+            
+            # Initialize timeframe aggregator with our pool
+            aggregator = TimeframeAggregator(self.pool)
+            
+            # Generate monthly candles for this symbol
+            candles_generated = await aggregator.generate_monthly_candles(symbol)
+            
+            if candles_generated > 0:
+                logger.info(f"✅ Generated {candles_generated} monthly candles for {symbol}")
+                return True
+            else:
+                logger.warning(f"⚠️ No monthly candles generated for {symbol}")
+                return True  # Not an error, just no data to aggregate
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to generate monthly candles for {symbol}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
     async def batch_generate_weekly_candles(self, symbols: List[str] = None) -> Dict[str, Any]:
         """
         Generate weekly candles using PostgreSQL stored procedure for all symbols.
@@ -1249,6 +1330,72 @@ class UltraFastDatabaseService:
             
         except Exception as e:
             logger.error(f"❌ Batch weekly candle generation failed: {e}")
+            return {
+                "successful_symbols": 0,
+                "failed_symbols": len(symbols) if symbols else 0,
+                "error": str(e)
+            }
+
+    async def batch_generate_monthly_candles(self, symbols: List[str] = None) -> Dict[str, Any]:
+        """
+        Generate monthly candles using timeframe aggregator for all symbols.
+        
+        Args:
+            symbols: List of symbols to process. If None, processes all symbols
+            
+        Returns:
+            Dict with processing statistics
+        """
+        try:
+            import time
+            start_time = time.time()
+            
+            # Get symbols to process
+            if not symbols:
+                async with self.pool.acquire() as conn:
+                    symbol_rows = await conn.fetch("SELECT DISTINCT symbol FROM daily_candles ORDER BY symbol")
+                    symbols = [row['symbol'] for row in symbol_rows]
+            
+            if not symbols:
+                return {"successful_symbols": 0, "failed_symbols": 0, "message": "No symbols to process"}
+            
+            logger.info(f"🗓️ Generating monthly candles for {len(symbols)} symbols")
+            
+            successful = 0
+            failed = 0
+            total_monthly_candles = 0
+            
+            # Process each symbol
+            for symbol in symbols:
+                try:
+                    success = await self.generate_monthly_candles_for_symbol(symbol)
+                    if success:
+                        successful += 1
+                        # Count how many monthly candles were generated
+                        async with self.pool.acquire() as conn:
+                            count = await conn.fetchval("SELECT COUNT(*) FROM monthly_candles WHERE symbol = $1", symbol)
+                            total_monthly_candles += count
+                    else:
+                        failed += 1
+                        
+                except Exception as e:
+                    logger.error(f"❌ Monthly candle generation failed for {symbol}: {e}")
+                    failed += 1
+            
+            processing_time = time.time() - start_time
+            
+            logger.info(f"✅ Monthly candle generation completed: {successful} successful, {failed} failed, {total_monthly_candles} total candles generated")
+            
+            return {
+                "successful_symbols": successful,
+                "failed_symbols": failed,
+                "total_symbols_processed": successful + failed,
+                "total_monthly_candles": total_monthly_candles,
+                "processing_time_seconds": round(processing_time, 2)
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Batch monthly candle generation failed: {e}")
             return {
                 "successful_symbols": 0,
                 "failed_symbols": len(symbols) if symbols else 0,

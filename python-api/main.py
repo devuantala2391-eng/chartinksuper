@@ -3672,11 +3672,11 @@ async def process_refresh_in_background(symbols: List[str], request_time: dateti
     background_start = datetime.now()
     
     try:
-        print(f"\n{'🔄'*30}")
-        print(f"🔄 BACKGROUND REFRESH STARTED")
-        print(f"🔄 {background_start.strftime('%H:%M:%S.%f')[:-3]} - Processing {total} symbols")
-        print(f"🔄 Time since request: {(background_start - request_time).total_seconds():.3f} seconds")
-        print(f"{'🔄'*30}")
+        print(f"\n{'='*60}")
+        print(f"BACKGROUND REFRESH STARTED")
+        print(f"{background_start.strftime('%H:%M:%S.%f')[:-3]} - Processing {total} symbols")
+        print(f"Time since request: {(background_start - request_time).total_seconds():.3f} seconds")
+        print(f"{'='*60}")
         sys.stdout.flush()
         logger.info(f"Background refresh started for {total} symbols")
         
@@ -4442,22 +4442,31 @@ async def hard_refresh_database():
                 logger.info(f"📅 Weekly candle generation completed in {calculation_time:.2f}s")
                 logger.info(f"📅 Weekly generation results: {calc_results.get('successful', 0)} successful, {calc_results.get('failed', 0)} failed")
                 
-                logger.info("🎯 Hard refresh completed - OHLCV data + Weekly candles (NO indicators)")
+                # Generate monthly candles after weekly candles
+                logger.info("📅 Starting monthly candle generation...")
+                monthly_start = time.time()
+                monthly_results = await high_speed_db.batch_generate_monthly_candles()
+                monthly_time = time.time() - monthly_start
+                
+                logger.info(f"📅 Monthly candle generation completed in {monthly_time:.2f}s")
+                logger.info(f"📅 Monthly generation results: {monthly_results.get('successful_symbols', 0)} successful, {monthly_results.get('failed_symbols', 0)} failed, {monthly_results.get('total_monthly_candles', 0)} total candles")
+                
+                logger.info("🎯 Hard refresh completed - OHLCV data + Weekly + Monthly candles (NO indicators)")
                 
                 update_progress({
                     "isRunning": True,
-                    "phase": "weekly_complete", 
-                    "message": f"Weekly candle generation completed - {calc_results['successful']} stocks processed with weekly candles (NO indicators)",
+                    "phase": "monthly_complete", 
+                    "message": f"Weekly + Monthly candle generation completed - {calc_results['successful']} stocks with weekly candles, {monthly_results.get('successful_symbols', 0)} stocks with monthly candles (NO indicators)",
                     "processed": total_symbols,
                     "total": total_symbols,
-                    "status": "weekly_complete"
+                    "status": "monthly_complete"
                 })
                 
-                # Complete - OHLCV data + Weekly candles (NO indicators)
+                # Complete - OHLCV data + Weekly + Monthly candles (NO indicators)
                 update_progress({
                     "isRunning": False,
                     "phase": "completed",
-                    "message": f"Hard refresh completed! Fetched {candle_count} OHLCV candles for {successful} stocks + Weekly candles ({calc_results['successful']} with weekly candles, NO indicators)",
+                    "message": f"Hard refresh completed! Fetched {candle_count} OHLCV candles for {successful} stocks + Weekly candles ({calc_results['successful']} weekly) + Monthly candles ({monthly_results.get('successful_symbols', 0)} monthly, NO indicators)",
                     "processed": total_symbols,
                     "total": total_symbols,
                     "successful": successful,
