@@ -5,15 +5,29 @@
 -- Single source of truth for all indicators, weekly, and monthly calculations
 -- =====================================================
 
--- Helper function to calculate week key from timestamp
-CREATE OR REPLACE FUNCTION calculate_week_key(timestamp_ms BIGINT)
+-- Helper function to calculate week key from timestamp (relative to database data)
+CREATE OR REPLACE FUNCTION calculate_week_key(p_symbol TEXT, timestamp_ms BIGINT)
 RETURNS INTEGER AS $$
+DECLARE
+    v_min_timestamp BIGINT;
+    v_week_offset INTEGER;
 BEGIN
-    -- Convert timestamp to date and calculate week number
-    -- Using epoch week (weeks since Unix epoch)
-    RETURN FLOOR((timestamp_ms / 1000) / 604800);  -- 604800 = seconds in a week
+    -- Get the minimum timestamp for this symbol from daily_candles
+    SELECT MIN(timestamp) INTO v_min_timestamp 
+    FROM daily_candles 
+    WHERE symbol = p_symbol;
+    
+    IF v_min_timestamp IS NULL THEN
+        RETURN 1; -- Default to week 1 if no data
+    END IF;
+    
+    -- Calculate week offset from the first week of data (not epoch)
+    v_week_offset := FLOOR((timestamp_ms - v_min_timestamp) / (1000 * 604800));  -- 604800 = seconds in a week
+    
+    -- Return week number starting from 1
+    RETURN v_week_offset + 1;
 END;
-$$ LANGUAGE plpgsql IMMUTABLE;
+$$ LANGUAGE plpgsql;
 
 -- =====================================================
 -- 1. ROBUST WEEKLY CANDLE GENERATION PROCEDURE WITH EDGE CASE HANDLING
@@ -200,7 +214,7 @@ BEGIN
         
         v_current_week_candles := v_current_week_candles + 1;
         
-        -- Update daily candle with week reference
+        -- Update daily candle with week reference using proper week key calculation
         UPDATE daily_candles 
         SET 
             weekly_candle_key_id = p_symbol || '_W' || v_current_week_number,
@@ -563,7 +577,7 @@ $$;
 -- =====================================================
 CREATE OR REPLACE FUNCTION process_all_symbols_weekly_only()
 RETURNS TABLE(
-    symbol TEXT,
+    symbol VARCHAR(20),
     weekly_candles INTEGER,
     daily_updated INTEGER,
     execution_time_ms INTEGER,
@@ -573,7 +587,7 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
     symbol_cursor CURSOR FOR 
-        SELECT DISTINCT symbol FROM daily_candles ORDER BY symbol;
+        SELECT DISTINCT dc.symbol FROM daily_candles dc ORDER BY dc.symbol;
     symbol_rec RECORD;
     processing_result RECORD;
 BEGIN
@@ -603,7 +617,7 @@ $$;
 -- =====================================================
 CREATE OR REPLACE FUNCTION process_all_symbols_comprehensive()
 RETURNS TABLE(
-    symbol TEXT,
+    symbol VARCHAR(20),
     weekly_candles INTEGER,
     daily_updated INTEGER,
     execution_time_ms INTEGER,

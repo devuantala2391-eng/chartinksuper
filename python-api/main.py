@@ -4432,19 +4432,15 @@ async def hard_refresh_database():
                     "status": "database_calculations"
                 })
                 
-                # Call PostgreSQL stored procedures for comprehensive calculations
-                # This includes weekly candle generation and all indicators
-                from services.parallel_calculation_service import ParallelCalculationService
-                
-                parallel_calc_service = ParallelCalculationService(max_concurrent_stocks=20)
+                # Call PostgreSQL stored procedures for weekly candle generation only (no indicators)
                 calculation_start = time.time()
                 
-                # Process all stocks using weekly-only stored procedures (no indicators)
-                calc_results = await parallel_calc_service.process_all_stocks_weekly_only()
+                # Process all stocks using weekly-only stored procedures directly
+                calc_results = await high_speed_db.call_database_weekly_only_all_symbols()
                 
                 calculation_time = time.time() - calculation_start
                 logger.info(f"📅 Weekly candle generation completed in {calculation_time:.2f}s")
-                logger.info(f"📅 Weekly generation results: {calc_results['successful']} successful, {calc_results['failed']} failed")
+                logger.info(f"📅 Weekly generation results: {calc_results.get('successful', 0)} successful, {calc_results.get('failed', 0)} failed")
                 
                 logger.info("🎯 Hard refresh completed - OHLCV data + Weekly candles (NO indicators)")
                 

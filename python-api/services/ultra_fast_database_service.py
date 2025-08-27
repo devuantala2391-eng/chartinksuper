@@ -1094,6 +1094,76 @@ class UltraFastDatabaseService:
                 "processing_time_seconds": round(processing_time, 3),
                 "method": "postgresql_weekly_only_procedure"
             }
+    
+    async def call_database_weekly_only_all_symbols(self) -> Dict[str, Any]:
+        """
+        Call PostgreSQL stored procedures to generate ONLY weekly candles for all symbols (no indicators).
+        Used during hard refresh to avoid calculating indicators.
+        
+        Returns:
+            Dict with batch processing results
+        """
+        try:
+            start_time = time.time()
+            logger.info("📅 Starting weekly-only processing for all symbols")
+            
+            async with self.pool.acquire() as conn:
+                # Call batch weekly-only PostgreSQL stored procedure (returns multiple rows)
+                results = await conn.fetch("""
+                    SELECT * FROM process_all_symbols_weekly_only()
+                """)
+                
+                processing_time = time.time() - start_time
+                
+                if results:
+                    # Count successful and failed results
+                    successful = sum(1 for r in results if r['status'] == 'SUCCESS')
+                    failed = len(results) - successful
+                    total_weekly_candles = sum(r['weekly_candles'] for r in results if r['status'] == 'SUCCESS')
+                    total_daily_updated = sum(r['daily_updated'] for r in results if r['status'] == 'SUCCESS')
+                    
+                    logger.info(f"✅ Weekly-only batch processing completed: "
+                              f"{successful}/{len(results)} symbols successful, "
+                              f"{total_weekly_candles} weekly candles generated in {processing_time:.3f}s")
+                    
+                    return {
+                        "success": True,
+                        "successful": successful,
+                        "failed": failed,
+                        "total_symbols": len(results),
+                        "total_weekly_candles": total_weekly_candles,
+                        "total_daily_updated": total_daily_updated,
+                        "processing_time_seconds": round(processing_time, 3),
+                        "method": "postgresql_batch_weekly_only_procedure",
+                        "details": [{"symbol": r['symbol'], "status": r['status'], "weekly_candles": r['weekly_candles']} for r in results]
+                    }
+                else:
+                    logger.error("❌ Weekly-only batch processing returned no results")
+                    
+                    return {
+                        "success": False,
+                        "successful": 0,
+                        "failed": 0,
+                        "total_symbols": 0,
+                        "error": "No results returned",
+                        "processing_time_seconds": round(processing_time, 3),
+                        "method": "postgresql_batch_weekly_only_procedure"
+                    }
+                
+        except Exception as e:
+            processing_time = time.time() - start_time
+            logger.error(f"❌ Failed to call batch weekly-only processing: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            return {
+                "success": False,
+                "successful": 0,
+                "failed": 0,
+                "error": str(e),
+                "processing_time_seconds": round(processing_time, 3),
+                "method": "postgresql_batch_weekly_only_procedure"
+            }
 
     async def generate_and_store_weekly_candles(self, symbol: str) -> bool:
         """

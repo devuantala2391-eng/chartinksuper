@@ -9,8 +9,8 @@
     },
     "daily_pctchg": {
       "name": "PercentageChange",
-      "params": {},
-      "timeframe": "daily"
+      "timeframe": "daily",
+      "params": {}
     },
     "weekly_pctchg": {
       "name": "PercentageChange",
@@ -28,9 +28,9 @@
   },
   "active_indicators": [
     "supertrend_10_3",
-    "weekly_pctchg",
+    "daily_pctchg_1",
     "daily_pctchg",
-    "daily_pctchg_1"
+    "weekly_pctchg"
   ],
-  "last_updated": "2025-08-27T00:05:50.540109"
+  "last_updated": "2025-08-27T14:23:50.336926"
 }
