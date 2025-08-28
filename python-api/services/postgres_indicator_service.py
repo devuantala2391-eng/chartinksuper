@@ -50,6 +50,24 @@ class PostgresIndicatorService:
                 raise FileNotFoundError(f"Weekly procedure file not found: {weekly_sql_path}")
             
             async with ultra_fast_db.pool.acquire() as conn:
+                # First, drop any existing conflicting functions to prevent signature conflicts
+                conflicting_functions = [
+                    "calculate_daily_percentage_change",
+                    "calculate_weekly_percentage_change", 
+                    "calculate_monthly_percentage_change",
+                    "install_percentage_change_procedures",
+                    "batch_calculate_daily_percentage",
+                    "batch_calculate_weekly_percentage",
+                    "batch_calculate_monthly_percentage"
+                ]
+                
+                for func_name in conflicting_functions:
+                    try:
+                        await conn.execute(f"DROP FUNCTION IF EXISTS {func_name} CASCADE")
+                        logger.debug(f"Dropped conflicting function: {func_name}")
+                    except Exception:
+                        pass  # Ignore errors if function doesn't exist
+                
                 # Install daily procedures
                 with open(daily_sql_path, 'r', encoding='utf-8') as f:
                     daily_sql_content = f.read()

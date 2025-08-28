@@ -32,11 +32,11 @@
     }
   },
   "active_indicators": [
-    "monthly_pctchg",
     "daily_pctchg_1",
     "supertrend_10_3",
-    "daily_pctchg",
-    "weekly_pctchg"
+    "weekly_pctchg",
+    "monthly_pctchg",
+    "daily_pctchg"
   ],
-  "last_updated": "2025-08-27T21:15:17.096979"
+  "last_updated": "2025-08-28T18:41:24.255577"
 }

@@ -4286,6 +4286,29 @@ async def _clean_high_speed_database():
                 await conn.execute(f"DROP TABLE IF EXISTS {table_name} CASCADE")
                 logger.info(f"   Dropped high-speed table: {table_name}")
             
+            # Also drop any percentage calculation stored procedures to prevent conflicts
+            percentage_functions = [
+                "calculate_daily_percentage_change",
+                "calculate_weekly_percentage_change", 
+                "calculate_monthly_percentage_change",
+                "install_percentage_change_procedures",
+                "batch_calculate_daily_percentage",
+                "batch_calculate_weekly_percentage",
+                "batch_calculate_monthly_percentage",
+                "calculate_percentage_change",
+                "calculate_percentage_change_for_symbol",
+                "check_percentage_change_coverage",
+                "check_percentage_migration_status",
+                "migrate_percentage_indicators"
+            ]
+            
+            for func_name in percentage_functions:
+                try:
+                    await conn.execute(f"DROP FUNCTION IF EXISTS {func_name} CASCADE")
+                    logger.debug(f"   Dropped percentage function: {func_name}")
+                except Exception:
+                    pass  # Ignore errors if function doesn't exist
+            
             logger.info("✅ High-speed PostgreSQL database cleaned successfully")
             
     except Exception as e:
