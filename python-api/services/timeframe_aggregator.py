@@ -7,7 +7,7 @@ import asyncio
 import asyncpg
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List
+from typing import Dict, List, Tuple
 import pandas as pd
 from services.static_indicator_calculator import static_indicator_calculator
 
@@ -94,10 +94,19 @@ class TimeframeAggregator:
                         weekly_candles, 'weekly_candles'
                     )
                     
+                    # Find monthly assignments for weekly candles based on their END dates
+                    weekly_monthly_assignments = await self._find_monthly_assignments_for_weekly_candles(
+                        conn, weekly_candles
+                    )
+                    
                     # Insert weekly candles
                     for candle in weekly_candles:
                         # Calculate week_start_date from timestamp
                         week_start_date = datetime.fromtimestamp(candle['week_start_timestamp'] / 1000).date()
+                        
+                        # Get monthly assignment for this candle
+                        candle_key = (candle['symbol'], candle.get('week_end_timestamp'))
+                        monthly_key, monthly_candle_key_id = weekly_monthly_assignments.get(candle_key, (None, None))
                         
                         await conn.execute("""
                             INSERT INTO weekly_candles (
@@ -105,9 +114,10 @@ class TimeframeAggregator:
                                 open, high, low, close, volume, trading_days,
                                 rsi_14, rsi_21, sma_10, sma_20, ema_12, ema_26,
                                 supertrend_10_2, supertrend_signal_10_2,
-                                supertrend_10_3, supertrend_signal_10_3
+                                supertrend_10_3, supertrend_signal_10_3,
+                                monthly_key, monthly_candle_key_id
                             )
-                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
                             ON CONFLICT (symbol, week_start_timestamp) DO UPDATE SET
                                 week_start_date = EXCLUDED.week_start_date,
                                 open = EXCLUDED.open,
@@ -126,6 +136,8 @@ class TimeframeAggregator:
                                 supertrend_signal_10_2 = EXCLUDED.supertrend_signal_10_2,
                                 supertrend_10_3 = EXCLUDED.supertrend_10_3,
                                 supertrend_signal_10_3 = EXCLUDED.supertrend_signal_10_3,
+                                monthly_key = EXCLUDED.monthly_key,
+                                monthly_candle_key_id = EXCLUDED.monthly_candle_key_id,
                                 updated_at = CURRENT_TIMESTAMP
                         """, 
                         candle['symbol'], candle['week_start_timestamp'], week_start_date,
@@ -135,7 +147,8 @@ class TimeframeAggregator:
                         candle.get('sma_10'), candle.get('sma_20'),
                         candle.get('ema_12'), candle.get('ema_26'),
                         candle.get('supertrend_10_2'), candle.get('supertrend_signal_10_2'),
-                        candle.get('supertrend_10_3'), candle.get('supertrend_signal_10_3')
+                        candle.get('supertrend_10_3'), candle.get('supertrend_signal_10_3'),
+                        monthly_key, monthly_candle_key_id
                         )
                     
                     total_candles += len(weekly_candles)
@@ -146,6 +159,46 @@ class TimeframeAggregator:
         except Exception as e:
             logger.error(f"Error generating weekly candles: {e}")
             raise
+    
+    async def _find_monthly_assignments_for_weekly_candles(self, conn, weekly_candles: List[Dict]) -> Dict[Tuple[str, int], Tuple[int, str]]:
+        """Find monthly_key and monthly_candle_key_id for weekly candles based on their END dates (per user requirement)"""
+        assignments = {}
+        
+        # Get unique symbols from weekly candles
+        symbols = list(set(candle['symbol'] for candle in weekly_candles))
+        
+        # Get all monthly candles for these symbols
+        monthly_candles = await conn.fetch("""
+            SELECT symbol, month_sequence_number, monthly_candle_key_id,
+                   month_start_datetime, month_end_datetime
+            FROM monthly_candles 
+            WHERE symbol = ANY($1)
+            ORDER BY month_start_datetime
+        """, symbols)
+        
+        # For each weekly candle, find which monthly candle it belongs to (based on END date)
+        for candle in weekly_candles:
+            symbol = candle['symbol']
+            week_end_timestamp = candle.get('week_end_timestamp')
+            
+            if week_end_timestamp:
+                # Convert timestamp to date for comparison
+                week_end_date = datetime.fromtimestamp(week_end_timestamp / 1000).date()
+                
+                # Find matching monthly candle
+                monthly_key = None
+                monthly_candle_key_id = None
+                
+                for mc in monthly_candles:
+                    if (mc['symbol'] == symbol and 
+                        mc['month_start_datetime'].date() <= week_end_date <= mc['month_end_datetime'].date()):
+                        monthly_key = mc['month_sequence_number']
+                        monthly_candle_key_id = mc['monthly_candle_key_id']
+                        break
+                
+                assignments[(symbol, week_end_timestamp)] = (monthly_key, monthly_candle_key_id)
+        
+        return assignments
     
     async def generate_monthly_candles(self, symbol: str = None) -> int:
         """

@@ -216,9 +216,9 @@ class UltraFastDatabaseService:
                     low DECIMAL(20,6) NOT NULL,
                     close DECIMAL(20,6) NOT NULL,
                     volume BIGINT NOT NULL,
-                    week_key INTEGER,                            -- Week number (1, 2, 3...)
                     day_of_week INTEGER,                         -- Day within week (1=Mon, 5=Fri)
                     weekly_candle_key_id VARCHAR(50),            -- Foreign key to weekly_candles
+                    monthly_candle_key_id VARCHAR(50),           -- Foreign key to monthly_candles
                     indicators JSONB DEFAULT '{}',               -- All indicators in JSONB
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -241,6 +241,7 @@ class UltraFastDatabaseService:
                     close                   NUMERIC NOT NULL,           -- Friday close
                     volume                  BIGINT NOT NULL,            -- Week total volume
                     trading_days_count      INTEGER NOT NULL,           -- Days in week (1-5)
+                    monthly_candle_key_id   VARCHAR(50),                -- Foreign key to monthly_candles
                     indicators              JSONB DEFAULT '{}',         -- Weekly indicators
                     created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -276,7 +277,6 @@ class UltraFastDatabaseService:
                     symbol VARCHAR(20) PRIMARY KEY,
                     latest_daily_key INTEGER DEFAULT -1,        -- Start at -1 so first key becomes 0
                     latest_weekly_key INTEGER DEFAULT -1,
-                    latest_monthly_key INTEGER DEFAULT -1,
                     total_daily_candles INTEGER DEFAULT 0,
                     total_weekly_candles INTEGER DEFAULT 0,
                     total_monthly_candles INTEGER DEFAULT 0,
@@ -325,8 +325,7 @@ class UltraFastDatabaseService:
                         symbol VARCHAR(20) PRIMARY KEY,
                         latest_daily_key INTEGER DEFAULT -1,
                         latest_weekly_key INTEGER DEFAULT -1,
-                        latest_monthly_key INTEGER DEFAULT -1,
-                        total_daily_candles INTEGER DEFAULT 0,
+                            total_daily_candles INTEGER DEFAULT 0,
                         total_weekly_candles INTEGER DEFAULT 0,
                         total_monthly_candles INTEGER DEFAULT 0,
                         first_timestamp BIGINT,
@@ -517,6 +516,23 @@ class UltraFastDatabaseService:
                     """)
                     logger.info(f"Created indicators GIN index for {table_name}")
                 
+                # Create monthly_candle_key_id indexes for daily and weekly candles
+                if timeframe in ['daily', 'weekly']:
+                    has_monthly_candle_key_id = await conn.fetchval(f"""
+                        SELECT EXISTS (
+                            SELECT 1 FROM information_schema.columns 
+                            WHERE table_name = '{table_name}' AND column_name = 'monthly_candle_key_id'
+                        )
+                    """)
+                    
+                    if has_monthly_candle_key_id:
+                        await conn.execute(f"""
+                            CREATE INDEX IF NOT EXISTS idx_{timeframe}_monthly_key_id 
+                            ON {table_name}(monthly_candle_key_id)
+                        """)
+                        
+                        logger.info(f"Created monthly_candle_key_id index for {table_name}")
+                
             except Exception as e:
                 logger.error(f"Failed to create indexes for {table_name}: {e}")
                 # Continue with other tables instead of failing completely
@@ -574,9 +590,7 @@ class UltraFastDatabaseService:
                     logger.warning(f"Skipping invalid data type for {symbol}: {type(candle)}")
                     continue
                 
-                # Calculate weekly data using timestamp
-                timestamp_ms = candle.get('timestamp', 0)
-                week_key = int(timestamp_ms / 1000 // 604800)  # 604800 = seconds in a week
+                # Calculate daily data within week
                 day_of_week = (sequence_number % 5) + 1  # Day within week (1=Mon, 5=Fri)
                 weekly_candle_key_id = None  # Will be populated later during weekly candle generation
                 
@@ -592,7 +606,6 @@ class UltraFastDatabaseService:
                     float(candle.get('low', 0)),            # low
                     float(candle.get('close', 0)),          # close
                     int(candle.get('volume', 0)),           # volume
-                    week_key,                               # week_key
                     day_of_week,                            # day_of_week
                     weekly_candle_key_id                    # weekly_candle_key_id (NULL initially)
                 ]
@@ -604,26 +617,64 @@ class UltraFastDatabaseService:
             # Bulk insert chunk using new table structure
             table_name = f"{timeframe}_candles"
             async with self.pool.acquire() as conn:
-                await conn.executemany(f"""
-                    INSERT INTO {table_name} 
-                    (candle_key_id, symbol, candle_sequence_number, timestamp, datetime, 
-                     open, high, low, close, volume, week_key, day_of_week, weekly_candle_key_id, indicators)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-                    ON CONFLICT (candle_key_id) 
-                    DO UPDATE SET
-                        timestamp = EXCLUDED.timestamp,
-                        datetime = EXCLUDED.datetime,
-                        open = EXCLUDED.open,
-                        high = EXCLUDED.high,
-                        low = EXCLUDED.low,
-                        close = EXCLUDED.close,
-                        volume = EXCLUDED.volume,
-                        week_key = EXCLUDED.week_key,
-                        day_of_week = EXCLUDED.day_of_week,
-                        weekly_candle_key_id = EXCLUDED.weekly_candle_key_id,
-                        indicators = EXCLUDED.indicators,
-                        updated_at = CURRENT_TIMESTAMP
-                """, values)
+                # If this is daily candles, find monthly assignments
+                if timeframe == 'daily':
+                    monthly_assignments = await self._find_monthly_assignments_for_daily_candles_bulk(
+                        conn, [(symbol, datetime.fromtimestamp(candle.get('timestamp', 0) / 1000)) 
+                               for candle in enhanced_chunk_data]
+                    )
+                    
+                    # Add monthly_candle_key_id to values
+                    for i, candle in enumerate(enhanced_chunk_data):
+                        candle_datetime = datetime.fromtimestamp(candle.get('timestamp', 0) / 1000)
+                        _, monthly_candle_key_id = monthly_assignments.get(
+                            (symbol, candle_datetime), (None, None)
+                        )
+                        # Extend the row data for this candle with monthly field
+                        values[i] = values[i] + (monthly_candle_key_id,)
+                    
+                    await conn.executemany(f"""
+                        INSERT INTO {table_name} 
+                        (candle_key_id, symbol, candle_sequence_number, timestamp, datetime, 
+                         open, high, low, close, volume, day_of_week, weekly_candle_key_id, indicators,
+                         monthly_candle_key_id)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                        ON CONFLICT (candle_key_id) 
+                        DO UPDATE SET
+                            timestamp = EXCLUDED.timestamp,
+                            datetime = EXCLUDED.datetime,
+                            open = EXCLUDED.open,
+                            high = EXCLUDED.high,
+                            low = EXCLUDED.low,
+                            close = EXCLUDED.close,
+                            volume = EXCLUDED.volume,
+                            day_of_week = EXCLUDED.day_of_week,
+                            weekly_candle_key_id = EXCLUDED.weekly_candle_key_id,
+                            indicators = EXCLUDED.indicators,
+                            monthly_candle_key_id = EXCLUDED.monthly_candle_key_id,
+                            updated_at = CURRENT_TIMESTAMP
+                    """, values)
+                else:
+                    # For non-daily candles (if any), use the original INSERT without monthly fields
+                    await conn.executemany(f"""
+                        INSERT INTO {table_name} 
+                        (candle_key_id, symbol, candle_sequence_number, timestamp, datetime, 
+                         open, high, low, close, volume, day_of_week, weekly_candle_key_id, indicators)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                        ON CONFLICT (candle_key_id) 
+                        DO UPDATE SET
+                            timestamp = EXCLUDED.timestamp,
+                            datetime = EXCLUDED.datetime,
+                            open = EXCLUDED.open,
+                            high = EXCLUDED.high,
+                            low = EXCLUDED.low,
+                            close = EXCLUDED.close,
+                            volume = EXCLUDED.volume,
+                            day_of_week = EXCLUDED.day_of_week,
+                            weekly_candle_key_id = EXCLUDED.weekly_candle_key_id,
+                            indicators = EXCLUDED.indicators,
+                            updated_at = CURRENT_TIMESTAMP
+                    """, values)
             
             logger.debug(f"✅ Stored chunk of {len(chunk_data)} candles for {symbol} (keys {start_key}-{start_key + len(chunk_data) - 1})")
             return True
@@ -631,6 +682,136 @@ class UltraFastDatabaseService:
         except Exception as e:
             logger.error(f"❌ Failed to store chunk for {symbol}: {e}")
             return False
+
+    async def _find_monthly_assignments_for_daily_candles_bulk(self, conn, candle_refs: List[Tuple[str, datetime]]) -> Dict[Tuple[str, datetime], Tuple[int, str]]:
+        """Find monthly_candle_key_id for daily candles based on their date"""
+        assignments = {}
+        
+        # Get unique symbols from candle references
+        symbols = list(set(ref[0] for ref in candle_refs))
+        
+        # Get all monthly candles for these symbols
+        monthly_candles = await conn.fetch("""
+            SELECT symbol, month_sequence_number, monthly_candle_key_id,
+                   month_start_datetime, month_end_datetime
+            FROM monthly_candles 
+            WHERE symbol = ANY($1)
+            ORDER BY month_start_datetime
+        """, symbols)
+        
+        # For each daily candle, find which monthly candle it belongs to
+        for symbol, candle_datetime in candle_refs:
+            candle_date = candle_datetime.date()
+            
+            # Find matching monthly candle
+            monthly_candle_key_id = None
+            
+            for mc in monthly_candles:
+                if (mc['symbol'] == symbol and 
+                    mc['month_start_datetime'].date() <= candle_date <= mc['month_end_datetime'].date()):
+                    monthly_candle_key_id = mc['monthly_candle_key_id']
+                    break
+            
+            # Keep the same return format for compatibility, but monthly_key is always None now
+            assignments[(symbol, candle_datetime)] = (None, monthly_candle_key_id)
+        
+        return assignments
+
+    async def _assign_monthly_keys_to_weekly_candles(self, conn, symbol: str) -> None:
+        """Assign monthly_candle_key_id to weekly candles based on their END dates (per user requirement)"""
+        # Get all weekly candles for this symbol that don't have monthly_candle_key_id assigned
+        weekly_candles = await conn.fetch("""
+            SELECT weekly_candle_key_id, symbol, week_end_datetime 
+            FROM weekly_candles 
+            WHERE symbol = $1 AND monthly_candle_key_id IS NULL
+            ORDER BY week_end_datetime
+        """, symbol)
+        
+        if not weekly_candles:
+            return
+        
+        # Get all monthly candles for this symbol
+        monthly_candles = await conn.fetch("""
+            SELECT symbol, month_sequence_number, monthly_candle_key_id,
+                   month_start_datetime, month_end_datetime
+            FROM monthly_candles 
+            WHERE symbol = $1
+            ORDER BY month_start_datetime
+        """, symbol)
+        
+        # For each weekly candle, find which monthly candle it belongs to (based on END date per user requirement)
+        updates_made = 0
+        for weekly in weekly_candles:
+            week_end_date = weekly['week_end_datetime'].date()
+            
+            # Find matching monthly candle
+            monthly_candle_key_id = None
+            
+            for mc in monthly_candles:
+                if (mc['symbol'] == symbol and 
+                    mc['month_start_datetime'].date() <= week_end_date <= mc['month_end_datetime'].date()):
+                    monthly_candle_key_id = mc['monthly_candle_key_id']
+                    break
+            
+            # Update the weekly candle with monthly assignment
+            if monthly_candle_key_id is not None:
+                await conn.execute("""
+                    UPDATE weekly_candles 
+                    SET monthly_candle_key_id = $1
+                    WHERE weekly_candle_key_id = $2
+                """, monthly_candle_key_id, weekly['weekly_candle_key_id'])
+                updates_made += 1
+        
+        if updates_made > 0:
+            logger.debug(f"SUCCESS: Assigned monthly_candle_key_id to {updates_made} weekly candles for {symbol}")
+
+    async def _assign_monthly_keys_to_daily_candles(self, conn, symbol: str) -> None:
+        """Assign monthly_candle_key_id to daily candles based on their date"""
+        # Get all daily candles for this symbol that don't have monthly_candle_key_id assigned
+        daily_candles = await conn.fetch("""
+            SELECT candle_key_id, symbol, datetime 
+            FROM daily_candles 
+            WHERE symbol = $1 AND monthly_candle_key_id IS NULL
+            ORDER BY datetime
+        """, symbol)
+        
+        if not daily_candles:
+            return
+        
+        # Get all monthly candles for this symbol
+        monthly_candles = await conn.fetch("""
+            SELECT symbol, month_sequence_number, monthly_candle_key_id,
+                   month_start_datetime, month_end_datetime
+            FROM monthly_candles 
+            WHERE symbol = $1
+            ORDER BY month_start_datetime
+        """, symbol)
+        
+        # For each daily candle, find which monthly candle it belongs to (based on date)
+        updates_made = 0
+        for daily in daily_candles:
+            daily_date = daily['datetime'].date()
+            
+            # Find matching monthly candle
+            monthly_candle_key_id = None
+            
+            for mc in monthly_candles:
+                if (mc['symbol'] == symbol and 
+                    mc['month_start_datetime'].date() <= daily_date <= mc['month_end_datetime'].date()):
+                    monthly_candle_key_id = mc['monthly_candle_key_id']
+                    break
+            
+            # Update the daily candle with monthly assignment
+            if monthly_candle_key_id is not None:
+                await conn.execute("""
+                    UPDATE daily_candles 
+                    SET monthly_candle_key_id = $1
+                    WHERE candle_key_id = $2
+                """, monthly_candle_key_id, daily['candle_key_id'])
+                updates_made += 1
+        
+        if updates_made > 0:
+            logger.debug(f"SUCCESS: Assigned monthly_candle_key_id to {updates_made} daily candles for {symbol}")
 
     async def get_candle_by_key(self, symbol: str, key_number: int, 
                                timeframe: str = 'daily') -> Optional[Dict]:
@@ -1234,6 +1415,10 @@ class UltraFastDatabaseService:
                 if result and result['status'] == 'SUCCESS':
                     logger.info(f"✅ Generated {result['generated_weeks']} weekly candles for {symbol}, "
                               f"updated {result['updated_daily_refs']} daily references")
+                    
+                    # Now assign monthly_candle_key_id to the newly generated weekly candles
+                    await self._assign_monthly_keys_to_weekly_candles(conn, symbol)
+                    
                     return True
                 else:
                     error_msg = result['status'] if result else "No result returned"
@@ -1301,15 +1486,23 @@ class UltraFastDatabaseService:
                 total_daily_updated = 0
                 
                 # Process results from stored procedure
+                successful_symbols = []
                 for result in results:
                     if result['status'] == 'SUCCESS':
                         successful += 1
                         total_weekly_candles += result['weekly_candles']
                         total_daily_updated += result['daily_updated']
+                        successful_symbols.append(result['symbol'])
                         logger.info(f"✅ {result['symbol']}: {result['weekly_candles']} weekly, {result['daily_updated']} daily updated")
                     else:
                         failed += 1
                         logger.error(f"❌ {result['symbol']}: {result['status']}")
+                
+                # Assign monthly_candle_key_id to all successfully generated weekly candles
+                if successful_symbols:
+                    logger.info(f"Assigning monthly_candle_key_id to weekly candles for {len(successful_symbols)} symbols...")
+                    for symbol in successful_symbols:
+                        await self._assign_monthly_keys_to_weekly_candles(conn, symbol)
                 
                 processing_time = time.time() - start_time
                 

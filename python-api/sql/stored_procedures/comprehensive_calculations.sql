@@ -214,11 +214,10 @@ BEGIN
         
         v_current_week_candles := v_current_week_candles + 1;
         
-        -- Update daily candle with week reference using proper week key calculation
+        -- Update daily candle with week reference
         UPDATE daily_candles 
         SET 
-            weekly_candle_key_id = p_symbol || '_W' || v_current_week_number,
-            week_key = v_current_week_number
+            weekly_candle_key_id = p_symbol || '_W' || v_current_week_number
         WHERE candle_key_id = current_candle.candle_key_id;
         
         v_daily_updated := v_daily_updated + 1;

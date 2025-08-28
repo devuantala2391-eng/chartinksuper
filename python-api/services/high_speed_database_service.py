@@ -583,6 +583,19 @@ class HighSpeedDatabaseService:
                     row_values.append(json.dumps(dynamic_indicators) if dynamic_indicators else '{}')
                     values.append(tuple(row_values))
                 
+                # Find monthly relationships for all candles
+                monthly_assignments = await self._find_monthly_assignments_for_daily_candles(
+                    conn, [(candle['symbol'], candle['datetime']) for candle in candles_with_indicators]
+                )
+                
+                # Add monthly_key and monthly_candle_key_id to values
+                for i, candle in enumerate(candles_with_indicators):
+                    monthly_key, monthly_candle_key_id = monthly_assignments.get(
+                        (candle['symbol'], candle['datetime']), (None, None)
+                    )
+                    # Extend the row_values for this candle with monthly fields
+                    values[i] = values[i] + (monthly_key, monthly_candle_key_id)
+                
                 # Bulk insert with UPSERT
                 query = """
                     INSERT INTO daily_candles (
@@ -590,9 +603,9 @@ class HighSpeedDatabaseService:
                         rsi_14, sma_20, sma_50, ema_12, ema_26,
                         supertrend_10_2, supertrend_10_3,
                         supertrend_signal_10_2, supertrend_signal_10_3,
-                        indicators
+                        indicators, monthly_key, monthly_candle_key_id
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
                     ON CONFLICT (symbol, timestamp) DO UPDATE SET
                         datetime = EXCLUDED.datetime,
                         open = EXCLUDED.open,
@@ -610,6 +623,8 @@ class HighSpeedDatabaseService:
                         supertrend_signal_10_2 = EXCLUDED.supertrend_signal_10_2,
                         supertrend_signal_10_3 = EXCLUDED.supertrend_signal_10_3,
                         indicators = EXCLUDED.indicators,
+                        monthly_key = EXCLUDED.monthly_key,
+                        monthly_candle_key_id = EXCLUDED.monthly_candle_key_id,
                         updated_at = CURRENT_TIMESTAMP
                 """
                 
@@ -623,6 +638,40 @@ class HighSpeedDatabaseService:
             import traceback
             logger.error(traceback.format_exc())
             return False
+
+    async def _find_monthly_assignments_for_daily_candles(self, conn, candle_refs: List[Tuple[str, datetime]]) -> Dict[Tuple[str, datetime], Tuple[int, str]]:
+        """Find monthly_key and monthly_candle_key_id for daily candles based on their date"""
+        assignments = {}
+        
+        # Get all monthly candles for the symbols we need
+        symbols = list(set(ref[0] for ref in candle_refs))
+        
+        monthly_candles = await conn.fetch("""
+            SELECT symbol, month_sequence_number, monthly_candle_key_id,
+                   month_start_datetime, month_end_datetime
+            FROM monthly_candles 
+            WHERE symbol = ANY($1)
+            ORDER BY month_start_datetime
+        """, symbols)
+        
+        # For each daily candle, find which monthly candle it belongs to
+        for symbol, candle_datetime in candle_refs:
+            candle_date = candle_datetime.date()
+            
+            # Find matching monthly candle
+            monthly_key = None
+            monthly_candle_key_id = None
+            
+            for mc in monthly_candles:
+                if (mc['symbol'] == symbol and 
+                    mc['month_start_datetime'].date() <= candle_date <= mc['month_end_datetime'].date()):
+                    monthly_key = mc['month_sequence_number']
+                    monthly_candle_key_id = mc['monthly_candle_key_id']
+                    break
+            
+            assignments[(symbol, candle_datetime)] = (monthly_key, monthly_candle_key_id)
+        
+        return assignments
 
     # ===============================
     # ULTRA-FAST QUERY METHODS

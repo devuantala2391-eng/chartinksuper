@@ -4451,12 +4451,34 @@ async def hard_refresh_database():
                 logger.info(f"📅 Monthly candle generation completed in {monthly_time:.2f}s")
                 logger.info(f"📅 Monthly generation results: {monthly_results.get('successful_symbols', 0)} successful, {monthly_results.get('failed_symbols', 0)} failed, {monthly_results.get('total_monthly_candles', 0)} total candles")
                 
+                # Assign monthly_candle_key_id to all daily and weekly candles now that monthly candles exist
+                logger.info("🔗 Assigning monthly_candle_key_id to daily and weekly candles...")
+                assignment_start = time.time()
+                async with high_speed_db.pool.acquire() as conn:
+                    # Get all symbols to process
+                    symbol_rows = await conn.fetch("SELECT DISTINCT symbol FROM daily_candles")
+                    assignment_count = 0
+                    
+                    for symbol_row in symbol_rows:
+                        symbol = symbol_row['symbol']
+                        
+                        # Assign monthly_candle_key_id to daily candles
+                        await high_speed_db._assign_monthly_keys_to_daily_candles(conn, symbol)
+                        
+                        # Assign monthly_candle_key_id to weekly candles  
+                        await high_speed_db._assign_monthly_keys_to_weekly_candles(conn, symbol)
+                        
+                        assignment_count += 1
+                
+                assignment_time = time.time() - assignment_start
+                logger.info(f"✅ Monthly_candle_key_id assignment completed in {assignment_time:.2f}s for {assignment_count} symbols")
+                
                 logger.info("🎯 Hard refresh completed - OHLCV data + Weekly + Monthly candles (NO indicators)")
                 
                 update_progress({
                     "isRunning": True,
                     "phase": "monthly_complete", 
-                    "message": f"Weekly + Monthly candle generation completed - {calc_results['successful']} stocks with weekly candles, {monthly_results.get('successful_symbols', 0)} stocks with monthly candles (NO indicators)",
+                    "message": f"Weekly + Monthly candle generation + Monthly_candle_key_id assignment completed - {calc_results['successful']} stocks with weekly candles, {monthly_results.get('successful_symbols', 0)} stocks with monthly candles (NO indicators)",
                     "processed": total_symbols,
                     "total": total_symbols,
                     "status": "monthly_complete"
