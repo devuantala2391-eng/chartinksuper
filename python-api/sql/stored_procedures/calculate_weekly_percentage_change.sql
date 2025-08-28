@@ -36,17 +36,70 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Function to calculate percentage change for all symbols
+-- Drop existing function to avoid signature conflicts
+DROP FUNCTION IF EXISTS calculate_weekly_percentage_change_for_symbol(TEXT);
+
+-- Function to calculate weekly percentage change for a single symbol
+-- Returns status information to match the service expected signature
 CREATE OR REPLACE FUNCTION calculate_weekly_percentage_change_for_symbol(
     p_symbol TEXT
 ) RETURNS TABLE (
-    symbol TEXT,
-    timestamp_ms BIGINT,
-    weekly_pctchg DECIMAL(10,4)
+    updated_rows INTEGER,
+    status TEXT
 ) AS $$
+DECLARE
+    v_updated_rows INTEGER := 0;
 BEGIN
-    RETURN QUERY
-    SELECT * FROM calculate_weekly_percentage_change(p_symbol, 1);
+    -- Calculate weekly percentage change using dynamic sliding window approach
+    -- Each day compares its OWN close to the previous week's final close
+    WITH weekly_pct_data AS (
+        SELECT 
+            dc.candle_key_id,
+            dc.close as current_day_close,
+            wc_prev.close as prev_week_final_close,
+            CASE 
+                WHEN wc_prev.close IS NOT NULL AND wc_prev.close > 0 THEN
+                    ROUND(((dc.close - wc_prev.close) / wc_prev.close * 100)::numeric, 4)
+                ELSE 
+                    NULL
+            END as weekly_pct_change
+        FROM daily_candles dc
+        -- Join with current week's weekly candle to get week info
+        LEFT JOIN weekly_candles wc_current 
+            ON dc.weekly_candle_key_id = wc_current.weekly_candle_key_id
+        -- Join with previous week's weekly candle to get previous week's final close
+        LEFT JOIN weekly_candles wc_prev 
+            ON wc_prev.weekly_candle_key_id = (dc.symbol || '_W' || (wc_current.week_sequence_number - 1)::TEXT)
+        WHERE dc.symbol = p_symbol
+          AND wc_current.week_sequence_number > 1  -- Skip first week since no previous week
+    )
+    UPDATE daily_candles AS target_table
+    SET indicators = COALESCE(target_table.indicators, '{}'::jsonb) || jsonb_build_object('weekly_pctchg', wpd.weekly_pct_change),
+        updated_at = CURRENT_TIMESTAMP
+    FROM weekly_pct_data wpd
+    WHERE target_table.candle_key_id = wpd.candle_key_id
+      AND wpd.weekly_pct_change IS NOT NULL
+      AND (
+          -- Only update if indicator doesn't exist or is null
+          NOT (target_table.indicators ? 'weekly_pctchg') OR 
+          (target_table.indicators->'weekly_pctchg') IS NULL OR
+          (target_table.indicators->'weekly_pctchg') = 'null'::jsonb
+      );
+    
+    -- Get count of updated rows
+    GET DIAGNOSTICS v_updated_rows = ROW_COUNT;
+    
+    -- Return results
+    RETURN QUERY SELECT 
+        v_updated_rows,
+        'SUCCESS'::TEXT;
+        
+EXCEPTION
+    WHEN OTHERS THEN
+        -- Return failure status
+        RETURN QUERY SELECT 
+            0,
+            format('ERROR: %s', SQLERRM)::TEXT;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -103,23 +156,24 @@ BEGIN
     
     -- Process each symbol separately for better performance and memory management
     FOR symbol_rec IN symbol_cursor LOOP
-        -- Calculate weekly percentage change for current symbol and update daily_candles
+        -- Calculate weekly percentage change using dynamic sliding window approach
+        -- Each day compares its close to the previous week's final close
         WITH weekly_pct_data AS (
             SELECT 
                 dc.candle_key_id,
-                wc_current.close as current_close,
-                wc_prev.close as prev_week_close,
+                dc.close as current_day_close,
+                wc_prev.close as prev_week_final_close,
                 CASE 
                     WHEN wc_prev.close IS NOT NULL AND wc_prev.close > 0 THEN
-                        ROUND(((wc_current.close - wc_prev.close) / wc_prev.close * 100)::numeric, 4)
+                        ROUND(((dc.close - wc_prev.close) / wc_prev.close * 100)::numeric, 4)
                     ELSE 
                         NULL
                 END as weekly_pct_change
             FROM daily_candles dc
-            -- Join with current week's weekly candle
+            -- Join with current week's weekly candle to get week info
             LEFT JOIN weekly_candles wc_current 
                 ON dc.weekly_candle_key_id = wc_current.weekly_candle_key_id
-            -- Join with previous week's weekly candle
+            -- Join with previous week's weekly candle to get previous week's final close
             LEFT JOIN weekly_candles wc_prev 
                 ON wc_prev.weekly_candle_key_id = (dc.symbol || '_W' || (wc_current.week_sequence_number - 1)::TEXT)
             WHERE dc.symbol = symbol_rec.symbol
