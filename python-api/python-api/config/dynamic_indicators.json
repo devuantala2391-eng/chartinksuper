@@ -9,13 +9,13 @@
     },
     "daily_pctchg": {
       "name": "PercentageChange",
-      "params": {},
-      "timeframe": "daily"
+      "timeframe": "daily",
+      "params": {}
     },
     "weekly_pctchg": {
       "name": "PercentageChange",
-      "params": {},
-      "timeframe": "weekly"
+      "timeframe": "weekly",
+      "params": {}
     },
     "supertrend_10_3": {
       "name": "SuperTrend",
@@ -27,8 +27,8 @@
     },
     "monthly_pctchg": {
       "name": "PercentageChange",
-      "params": {},
-      "timeframe": "monthly"
+      "timeframe": "monthly",
+      "params": {}
     },
     "Volume": {
       "name": "Volume",
@@ -44,5 +44,5 @@
     "daily_pctchg_1",
     "monthly_pctchg"
   ],
-  "last_updated": "2025-08-29T09:24:25.580464"
+  "last_updated": "2025-08-29T09:28:01.275975"
 }
