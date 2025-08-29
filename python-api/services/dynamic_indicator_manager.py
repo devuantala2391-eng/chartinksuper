@@ -598,7 +598,11 @@ class DynamicIndicatorManager:
             
             logger.info(f"✅ Database saving completed in {save_time:.2f}s")
             logger.info(f"🎯 TOTAL HIGH-PERFORMANCE PROCESSING TIME: {total_time:.2f}s")
-            logger.info(f"⚡ Processing speed: {len(all_symbols) / total_time:.1f} stocks/second")
+            if total_time > 0:
+                rate = len(all_symbols) / total_time
+                logger.info(f"⚡ Processing speed: {rate:.1f} stocks/second")
+            else:
+                logger.info(f"⚡ Processing speed: instant")
             logger.info(f"📊 Phase breakdown: Load={load_time:.1f}s, Calc={calc_time:.1f}s, Save={save_time:.1f}s")
             
             success_rate = (total_processed / len(all_symbols)) * 100

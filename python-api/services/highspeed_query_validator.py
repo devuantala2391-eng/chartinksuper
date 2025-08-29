@@ -313,6 +313,25 @@ class HighSpeedQueryValidator:
                 except ValueError:
                     pass
         
+        # Handle Volume indicators: weekly_volume, monthly_volume
+        elif field_name in ['weekly_volume', 'monthly_volume']:
+            parts = field_name.split('_')
+            if len(parts) == 2:
+                timeframe = parts[0]  # weekly or monthly
+                return {
+                    "name": "Volume",
+                    "timeframe": timeframe,
+                    "params": {}  # No parameters needed for volume
+                }
+        
+        # Handle daily volume (though it's usually just "volume")
+        elif field_name == 'volume':
+            return {
+                "name": "Volume", 
+                "timeframe": "daily",
+                "params": {}
+            }
+        
         return None
 
 # Global instance

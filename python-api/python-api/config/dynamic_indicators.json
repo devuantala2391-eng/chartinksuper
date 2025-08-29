@@ -9,34 +9,40 @@
     },
     "daily_pctchg": {
       "name": "PercentageChange",
-      "timeframe": "daily",
-      "params": {}
+      "params": {},
+      "timeframe": "daily"
     },
     "weekly_pctchg": {
       "name": "PercentageChange",
-      "timeframe": "weekly",
-      "params": {}
+      "params": {},
+      "timeframe": "weekly"
     },
     "supertrend_10_3": {
       "name": "SuperTrend",
-      "timeframe": "daily",
       "params": {
         "period": 10.0,
         "multiplier": 3.0
-      }
+      },
+      "timeframe": "daily"
     },
     "monthly_pctchg": {
       "name": "PercentageChange",
+      "params": {},
+      "timeframe": "monthly"
+    },
+    "Volume": {
+      "name": "Volume",
       "timeframe": "monthly",
       "params": {}
     }
   },
   "active_indicators": [
-    "supertrend_10_3",
-    "daily_pctchg",
+    "Volume",
     "weekly_pctchg",
+    "daily_pctchg",
+    "supertrend_10_3",
     "daily_pctchg_1",
     "monthly_pctchg"
   ],
-  "last_updated": "2025-08-28T19:27:48.995511"
+  "last_updated": "2025-08-29T09:24:25.580464"
 }

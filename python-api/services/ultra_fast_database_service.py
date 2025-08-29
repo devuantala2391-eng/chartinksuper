@@ -619,19 +619,26 @@ class UltraFastDatabaseService:
             async with self.pool.acquire() as conn:
                 # If this is daily candles, find monthly assignments
                 if timeframe == 'daily':
+                    # Filter out non-dict objects before processing timestamps
+                    valid_candles = [candle for candle in enhanced_chunk_data 
+                                   if isinstance(candle, dict)]
                     monthly_assignments = await self._find_monthly_assignments_for_daily_candles_bulk(
                         conn, [(symbol, datetime.fromtimestamp(candle.get('timestamp', 0) / 1000)) 
-                               for candle in enhanced_chunk_data]
+                               for candle in valid_candles]
                     )
                     
                     # Add monthly_candle_key_id to values
+                    valid_candle_index = 0
                     for i, candle in enumerate(enhanced_chunk_data):
-                        candle_datetime = datetime.fromtimestamp(candle.get('timestamp', 0) / 1000)
-                        _, monthly_candle_key_id = monthly_assignments.get(
-                            (symbol, candle_datetime), (None, None)
-                        )
-                        # Extend the row data for this candle with monthly field
-                        values[i] = values[i] + (monthly_candle_key_id,)
+                        if isinstance(candle, dict):
+                            candle_datetime = datetime.fromtimestamp(candle.get('timestamp', 0) / 1000)
+                            _, monthly_candle_key_id = monthly_assignments.get(
+                                (symbol, candle_datetime), (None, None)
+                            )
+                            # Extend the row data for this candle with monthly field
+                            if valid_candle_index < len(values):
+                                values[valid_candle_index] = values[valid_candle_index] + (monthly_candle_key_id,)
+                                valid_candle_index += 1
                     
                     await conn.executemany(f"""
                         INSERT INTO {table_name} 

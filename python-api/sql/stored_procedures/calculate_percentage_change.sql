@@ -118,6 +118,7 @@ BEGIN
                     SELECT 
                         candle_key_id,
                         symbol,
+                        candle_sequence_number,
                         CASE 
                             WHEN prev_close IS NOT NULL AND prev_close != 0 THEN
                                 ROUND(((close - prev_close) / prev_close * 100)::numeric, 4)
@@ -132,6 +133,7 @@ BEGIN
                     updated_at = CURRENT_TIMESTAMP
                 FROM calculated
                 WHERE target_table.candle_key_id = calculated.candle_key_id
+                  AND calculated.candle_sequence_number > 0  -- Skip first candle (sequence 0) for daily since it will always be null
                   AND (
                       -- Only update if indicator doesn't exist or is null
                       NOT (target_table.indicators ? $2) OR 

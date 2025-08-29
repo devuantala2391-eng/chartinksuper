@@ -72,6 +72,7 @@ from services.db_wrapper import db_wrapper as db_service
 from services.indicator_metadata_service import indicator_metadata_service
 from services.dynamic_indicator_manager import dynamic_indicator_manager
 from services.database_health_manager import database_health_manager
+from services.postgres_indicator_service import postgres_indicator_service
 from middleware.api_health_middleware import ensure_query_ready, ensure_latest_ready, ensure_basic_ready
 import asyncio
 
@@ -337,6 +338,42 @@ def load_stock_data_sync(symbol: str, use_fallback: bool = True) -> Optional[Lis
             logger.debug(f"File read failed for {symbol}: {e}")
     
     return None
+
+async def load_volume_indicators_from_db(symbol: str, volume_indicators: List[Dict]) -> Dict[str, Any]:
+    """Load volume indicators from PostgreSQL database for a specific symbol."""
+    volume_data = {}
+    
+    try:
+        # Import the ultra_fast_db service
+        from services.ultra_fast_database_service import ultra_fast_db
+        
+        async with ultra_fast_db.pool.acquire() as conn:
+            # Get all volume indicators for this symbol
+            records = await conn.fetch("""
+                SELECT 
+                    datetime,
+                    volume as daily_volume,
+                    indicators
+                FROM daily_candles 
+                WHERE symbol = $1
+                ORDER BY datetime
+            """, symbol)
+            
+            # Create timestamp-to-indicators mapping
+            for record in records:
+                timestamp = int(record['datetime'].timestamp() * 1000)
+                indicators = record['indicators'] or {}
+                
+                volume_data[timestamp] = {
+                    'weekly_volume': indicators.get('weekly_volume'),
+                    'monthly_volume': indicators.get('monthly_volume'),
+                    'daily_volume': record['daily_volume']
+                }
+                
+    except Exception as e:
+        logger.debug(f"Failed to load volume indicators for {symbol}: {e}")
+    
+    return volume_data
 
 # Technical indicator calculation functions
 def calculate_atr(highs, lows, closes, period=14):
@@ -1322,7 +1359,13 @@ async def process_query(request: QueryRequest):
         
         query_end_time = time.time()
         total_query_time = query_end_time - query_start_time
-        print(f"[DEBUG] Query processing completed in {total_query_time:.2f}s | Rate: {len(stock_list) / total_query_time:.1f} stocks/sec")
+        
+        # Handle division by zero when query time is very small
+        if total_query_time > 0:
+            rate = len(stock_list) / total_query_time
+            print(f"[DEBUG] Query processing completed in {total_query_time:.2f}s | Rate: {rate:.1f} stocks/sec")
+        else:
+            print(f"[DEBUG] Query processing completed in {total_query_time:.2f}s | Rate: instant")
         
         # Deduplicate matches - keep only one match per stock-date combination
         seen_combinations = set()
@@ -1824,7 +1867,13 @@ async def process_latest_query(request: QueryRequest):
         
         scan_end_time = time.time()
         total_scan_time = scan_end_time - scan_start_time
-        print(f"[DEBUG] Latest scan completed in {total_scan_time:.2f}s | Rate: {len(stock_list) / total_scan_time:.1f} stocks/sec")
+        
+        # Handle division by zero when scan time is very small
+        if total_scan_time > 0:
+            rate = len(stock_list) / total_scan_time
+            print(f"[DEBUG] Latest scan completed in {total_scan_time:.2f}s | Rate: {rate:.1f} stocks/sec")
+        else:
+            print(f"[DEBUG] Latest scan completed in {total_scan_time:.2f}s | Rate: instant")
         
         # Deduplicate matches - keep only one match per stock
         seen_stocks = set()
@@ -2912,9 +2961,18 @@ def process_stock_batch_cpu_intensive(stock_batch_data):
                             else:
                                 enhanced_candle[indicator_key] = 0
                     elif name == "volume":
-                        # Volume doesn't need calculation - it's already available as "volume" key
-                        # Skip adding duplicate indicator_key since volume is already present
-                        pass
+                        # For volume indicators, the values should come from PostgreSQL database
+                        # For now, use the OHLCV aggregated values as fallback
+                        # The PostgreSQL values will be available after precalculation
+                        timeframe = config["timeframe"]
+                        if timeframe == "weekly":
+                            # Use OHLCV aggregated weekly volume (will be replaced by PostgreSQL values)
+                            enhanced_candle[indicator_key] = weekly_candle.get("volume", 0)
+                        elif timeframe == "monthly":
+                            # Use OHLCV aggregated monthly volume (will be replaced by PostgreSQL values)
+                            enhanced_candle[indicator_key] = monthly_candle.get("volume", 0)
+                        else:  # daily
+                            enhanced_candle[indicator_key] = candle.get("volume", 0)
                     elif name == "bb":
                         # Map Bollinger Bands values based on timeframe
                         timeframe = config["timeframe"]
@@ -3285,6 +3343,32 @@ async def process_indicators_background(indicators: List[Dict[str, Any]]):
         
         # Extract timeframes from indicators
         timeframes = list(set(ind.get('timeframe', 'daily') for ind in indicators))
+        
+        # Pre-calculate volume indicators using PostgreSQL stored procedures
+        volume_indicators = [ind for ind in indicators if ind.get('name') == 'volume' and ind.get('timeframe') in ['weekly', 'monthly']]
+        if volume_indicators:
+            print(f"\n[API] Pre-calculating {len(volume_indicators)} volume indicators using PostgreSQL...")
+            update_progress({
+                "isRunning": True,
+                "phase": "processing_indicators",
+                "message": "Pre-calculating volume indicators...",
+                "processed": 0,
+                "total": len(STOCK_SYMBOLS),
+                "status": "processing"
+            })
+            
+            # Process volume indicators for all symbols
+            for ind in volume_indicators:
+                timeframe = ind.get('timeframe')
+                if timeframe in ['weekly', 'monthly']:
+                    print(f"[API] Calculating {timeframe} volume indicators...")
+                    
+                    # Calculate for all symbols
+                    result = await postgres_indicator_service.calculate_volume(
+                        symbols=STOCK_SYMBOLS,
+                        timeframe=timeframe
+                    )
+                    print(f"[API] {timeframe.capitalize()} volume calculation: {result.get('message', 'completed')}")
         
         # Send initial progress
         update_progress({
