@@ -4580,22 +4580,64 @@ async def hard_refresh_database():
                 assignment_time = time.time() - assignment_start
                 logger.info(f"✅ Monthly_candle_key_id assignment completed in {assignment_time:.2f}s for {assignment_count} symbols")
                 
-                logger.info("🎯 Hard refresh completed - OHLCV data + Weekly + Monthly candles (NO indicators)")
+                # Calculate OHLCV for all symbols after candle generation
+                logger.info("📊 Calculating weekly and monthly OHLCV for all symbols...")
+                update_progress({
+                    "isRunning": True,
+                    "phase": "calculating_ohlcv",
+                    "message": "Calculating weekly and monthly OHLCV...",
+                    "processed": 0,
+                    "total": assignment_count,
+                    "status": "calculating_ohlcv"
+                })
+                
+                ohlcv_start = time.time()
+                ohlcv_success_count = 0
+                ohlcv_processed = 0
+                
+                async with high_speed_db.pool.acquire() as conn:
+                    for symbol_row in symbol_rows:
+                        symbol = symbol_row['symbol']
+                        
+                        try:
+                            # Calculate OHLCV for this symbol
+                            await high_speed_db._calculate_ohlcv_for_symbol(conn, symbol)
+                            ohlcv_success_count += 1
+                        except Exception as e:
+                            logger.warning(f"OHLCV calculation failed for {symbol}: {e}")
+                        
+                        ohlcv_processed += 1
+                        
+                        # Update progress periodically
+                        if ohlcv_processed % 5 == 0 or ohlcv_processed == assignment_count:
+                            update_progress({
+                                "isRunning": True,
+                                "phase": "calculating_ohlcv",
+                                "message": f"Calculating OHLCV... ({ohlcv_processed}/{assignment_count})",
+                                "processed": ohlcv_processed,
+                                "total": assignment_count,
+                                "status": "calculating_ohlcv"
+                            })
+                
+                ohlcv_time = time.time() - ohlcv_start
+                logger.info(f"✅ OHLCV calculation completed in {ohlcv_time:.2f}s for {ohlcv_success_count}/{assignment_count} symbols")
+                
+                logger.info("🎯 Hard refresh completed - OHLCV data + Weekly + Monthly candles + OHLCV calculated")
                 
                 update_progress({
                     "isRunning": True,
                     "phase": "monthly_complete", 
-                    "message": f"Weekly + Monthly candle generation + Monthly_candle_key_id assignment completed - {calc_results['successful']} stocks with weekly candles, {monthly_results.get('successful_symbols', 0)} stocks with monthly candles (NO indicators)",
+                    "message": f"Weekly + Monthly candle generation + OHLCV calculation completed - {calc_results['successful']} stocks with weekly candles, {monthly_results.get('successful_symbols', 0)} stocks with monthly candles, {ohlcv_success_count} stocks with OHLCV",
                     "processed": total_symbols,
                     "total": total_symbols,
                     "status": "monthly_complete"
                 })
                 
-                # Complete - OHLCV data + Weekly + Monthly candles (NO indicators)
+                # Complete - OHLCV data + Weekly + Monthly candles + OHLCV calculated
                 update_progress({
                     "isRunning": False,
                     "phase": "completed",
-                    "message": f"Hard refresh completed! Fetched {candle_count} OHLCV candles for {successful} stocks + Weekly candles ({calc_results['successful']} weekly) + Monthly candles ({monthly_results.get('successful_symbols', 0)} monthly, NO indicators)",
+                    "message": f"Hard refresh completed! Fetched {candle_count} OHLCV candles for {successful} stocks + Weekly candles ({calc_results['successful']} weekly) + Monthly candles ({monthly_results.get('successful_symbols', 0)} monthly) + OHLCV calculated ({ohlcv_success_count} stocks)",
                     "processed": total_symbols,
                     "total": total_symbols,
                     "successful": successful,

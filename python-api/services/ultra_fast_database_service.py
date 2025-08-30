@@ -219,6 +219,18 @@ class UltraFastDatabaseService:
                     day_of_week INTEGER,                         -- Day within week (1=Mon, 5=Fri)
                     weekly_candle_key_id VARCHAR(50),            -- Foreign key to weekly_candles
                     monthly_candle_key_id VARCHAR(50),           -- Foreign key to monthly_candles
+                    -- Weekly OHLCV columns (dynamic sliding window)
+                    weekly_open DECIMAL(20,6),                   -- Weekly opening price (first day of week)
+                    weekly_high DECIMAL(20,6),                   -- Weekly high (max from week start to current day)
+                    weekly_low DECIMAL(20,6),                    -- Weekly low (min from week start to current day)
+                    weekly_close DECIMAL(20,6),                  -- Weekly close (current day close)
+                    weekly_volume BIGINT,                        -- Weekly volume (sum from week start to current day)
+                    -- Monthly OHLCV columns (dynamic sliding window)
+                    monthly_open DECIMAL(20,6),                  -- Monthly opening price (first day of month)
+                    monthly_high DECIMAL(20,6),                  -- Monthly high (max from month start to current day)
+                    monthly_low DECIMAL(20,6),                   -- Monthly low (min from month start to current day)
+                    monthly_close DECIMAL(20,6),                 -- Monthly close (current day close)
+                    monthly_volume BIGINT,                       -- Monthly volume (sum from month start to current day)
                     indicators JSONB DEFAULT '{}',               -- All indicators in JSONB
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -399,6 +411,9 @@ class UltraFastDatabaseService:
             
             # Create performance indexes
             await self._create_performance_indexes(conn)
+            
+            # Run OHLCV columns migration for existing tables
+            await self._migrate_add_ohlcv_columns(conn)
             
             logger.info("✅ Created unified table structure with composite keys")
     
@@ -684,6 +699,10 @@ class UltraFastDatabaseService:
                     """, values)
             
             logger.debug(f"✅ Stored chunk of {len(chunk_data)} candles for {symbol} (keys {start_key}-{start_key + len(chunk_data) - 1})")
+            
+            # Calculate OHLCV for the inserted data
+            await self._calculate_ohlcv_for_symbol(conn, symbol)
+            
             return True
             
         except Exception as e:
@@ -1601,6 +1620,169 @@ class UltraFastDatabaseService:
         """Get a database connection from the pool"""
         async with self.pool.acquire() as conn:
             yield conn
+
+    async def _migrate_add_ohlcv_columns(self, conn):
+        """Add OHLCV columns to daily_candles table if they don't exist"""
+        try:
+            logger.info("🔄 Checking for OHLCV column migration...")
+            
+            # Check if weekly_open column exists
+            column_exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_name = 'daily_candles' 
+                    AND column_name = 'weekly_open'
+                )
+            """)
+            
+            if column_exists:
+                logger.info("✅ OHLCV columns already exist")
+                return
+                
+            logger.info("🔧 Adding OHLCV columns to daily_candles table...")
+            
+            # Read and execute the migration SQL
+            migration_sql = """
+            -- Add weekly OHLCV columns
+            ALTER TABLE daily_candles 
+            ADD COLUMN IF NOT EXISTS weekly_open DECIMAL(20,6) DEFAULT NULL,
+            ADD COLUMN IF NOT EXISTS weekly_high DECIMAL(20,6) DEFAULT NULL,
+            ADD COLUMN IF NOT EXISTS weekly_low DECIMAL(20,6) DEFAULT NULL,
+            ADD COLUMN IF NOT EXISTS weekly_close DECIMAL(20,6) DEFAULT NULL,
+            ADD COLUMN IF NOT EXISTS weekly_volume BIGINT DEFAULT NULL;
+
+            -- Add monthly OHLCV columns  
+            ALTER TABLE daily_candles 
+            ADD COLUMN IF NOT EXISTS monthly_open DECIMAL(20,6) DEFAULT NULL,
+            ADD COLUMN IF NOT EXISTS monthly_high DECIMAL(20,6) DEFAULT NULL,
+            ADD COLUMN IF NOT EXISTS monthly_low DECIMAL(20,6) DEFAULT NULL,
+            ADD COLUMN IF NOT EXISTS monthly_close DECIMAL(20,6) DEFAULT NULL,
+            ADD COLUMN IF NOT EXISTS monthly_volume BIGINT DEFAULT NULL;
+
+            -- Create indexes for better query performance
+            CREATE INDEX IF NOT EXISTS idx_daily_candles_weekly_high ON daily_candles(weekly_high) WHERE weekly_high IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_daily_candles_weekly_low ON daily_candles(weekly_low) WHERE weekly_low IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_daily_candles_weekly_volume ON daily_candles(weekly_volume) WHERE weekly_volume IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_daily_candles_monthly_high ON daily_candles(monthly_high) WHERE monthly_high IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_daily_candles_monthly_low ON daily_candles(monthly_low) WHERE monthly_low IS NOT NULL;  
+            CREATE INDEX IF NOT EXISTS idx_daily_candles_monthly_volume ON daily_candles(monthly_volume) WHERE monthly_volume IS NOT NULL;
+            """
+            
+            await conn.execute(migration_sql)
+            logger.info("✅ OHLCV columns migration completed successfully")
+            
+        except Exception as e:
+            logger.error(f"❌ OHLCV columns migration failed: {e}")
+            # Don't raise - allow system to continue
+
+    async def _calculate_ohlcv_for_symbol(self, conn, symbol: str):
+        """Calculate weekly and monthly OHLCV for a specific symbol using Python-native dynamic sliding window - replaces all stored procedures"""
+        try:
+            # Get all daily candles for this symbol with their weekly/monthly assignments
+            daily_candles = await conn.fetch("""
+                SELECT 
+                    candle_key_id, symbol, datetime, open, high, low, close, volume,
+                    weekly_candle_key_id, monthly_candle_key_id
+                FROM daily_candles 
+                WHERE symbol = $1
+                  AND (weekly_candle_key_id IS NOT NULL OR monthly_candle_key_id IS NOT NULL)
+                ORDER BY datetime
+            """, symbol)
+            
+            if not daily_candles:
+                logger.debug(f"No daily candles found for {symbol} with timeframe assignments")
+                return
+            
+            # Group by weekly periods and calculate OHLCV using dynamic sliding window
+            weekly_groups = {}
+            for candle in daily_candles:
+                if candle['weekly_candle_key_id']:
+                    key = candle['weekly_candle_key_id']
+                    if key not in weekly_groups:
+                        weekly_groups[key] = []
+                    weekly_groups[key].append(candle)
+            
+            # Group by monthly periods
+            monthly_groups = {}
+            for candle in daily_candles:
+                if candle['monthly_candle_key_id']:
+                    key = candle['monthly_candle_key_id']
+                    if key not in monthly_groups:
+                        monthly_groups[key] = []
+                    monthly_groups[key].append(candle)
+            
+            weekly_updates = 0
+            monthly_updates = 0
+            
+            # Calculate weekly OHLCV with dynamic sliding window
+            for weekly_key, group_candles in weekly_groups.items():
+                # Sort by datetime to ensure proper sliding window calculation
+                group_candles.sort(key=lambda x: x['datetime'])
+                
+                for i, current_candle in enumerate(group_candles):
+                    # Dynamic sliding window: use all candles from start of week up to current day
+                    window_candles = group_candles[:i+1]
+                    
+                    # Calculate OHLCV for current day's sliding window
+                    weekly_open = window_candles[0]['open']  # First day's open
+                    weekly_high = max(c['high'] for c in window_candles)  # Max high up to current day
+                    weekly_low = min(c['low'] for c in window_candles)   # Min low up to current day
+                    weekly_close = current_candle['close']  # Current day's close
+                    weekly_volume = sum(c['volume'] for c in window_candles)  # Cumulative volume
+                    
+                    # Update the current candle with weekly OHLCV
+                    await conn.execute("""
+                        UPDATE daily_candles 
+                        SET 
+                            weekly_open = $1,
+                            weekly_high = $2,
+                            weekly_low = $3,
+                            weekly_close = $4,
+                            weekly_volume = $5,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE candle_key_id = $6
+                    """, weekly_open, weekly_high, weekly_low, weekly_close, 
+                        weekly_volume, current_candle['candle_key_id'])
+                    weekly_updates += 1
+            
+            # Calculate monthly OHLCV with dynamic sliding window
+            for monthly_key, group_candles in monthly_groups.items():
+                # Sort by datetime to ensure proper sliding window calculation
+                group_candles.sort(key=lambda x: x['datetime'])
+                
+                for i, current_candle in enumerate(group_candles):
+                    # Dynamic sliding window: use all candles from start of month up to current day
+                    window_candles = group_candles[:i+1]
+                    
+                    # Calculate OHLCV for current day's sliding window
+                    monthly_open = window_candles[0]['open']  # First day's open
+                    monthly_high = max(c['high'] for c in window_candles)  # Max high up to current day
+                    monthly_low = min(c['low'] for c in window_candles)   # Min low up to current day
+                    monthly_close = current_candle['close']  # Current day's close
+                    monthly_volume = sum(c['volume'] for c in window_candles)  # Cumulative volume
+                    
+                    # Update the current candle with monthly OHLCV
+                    await conn.execute("""
+                        UPDATE daily_candles 
+                        SET 
+                            monthly_open = $1,
+                            monthly_high = $2,
+                            monthly_low = $3,
+                            monthly_close = $4,
+                            monthly_volume = $5,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE candle_key_id = $6
+                    """, monthly_open, monthly_high, monthly_low, monthly_close, 
+                        monthly_volume, current_candle['candle_key_id'])
+                    monthly_updates += 1
+            
+            if weekly_updates > 0 or monthly_updates > 0:
+                logger.debug(f"[SUCCESS] Python-native OHLCV: Updated {weekly_updates} weekly + {monthly_updates} monthly rows for {symbol}")
+                
+        except Exception as e:
+            # Log error but don't fail the entire data insertion
+            logger.warning(f"[WARNING] Python-native OHLCV calculation failed for {symbol}: {e}")
+            pass
 
     async def close(self):
         """Close the database connection pool"""
