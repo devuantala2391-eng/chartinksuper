@@ -84,6 +84,11 @@ class UltraFastDatabaseService:
                 # Create unified table structure
                 await self._create_unified_tables()
                 
+                # IMPORTANT: Do NOT apply migrations during normal initialization
+                # Migrations should ONLY be applied during hard-refresh
+                # This prevents unwanted table modifications when queries trigger indicator calculations
+                # await self._check_and_apply_migrations()  # DISABLED - only run during hard refresh
+                
                 self.initialized = True
                 logger.info(f"🚀 Ultra-fast database initialized with {self.max_connections} max connections")
                 
@@ -289,6 +294,7 @@ class UltraFastDatabaseService:
                     symbol VARCHAR(20) PRIMARY KEY,
                     latest_daily_key INTEGER DEFAULT -1,        -- Start at -1 so first key becomes 0
                     latest_weekly_key INTEGER DEFAULT -1,
+                    latest_monthly_key INTEGER DEFAULT -1,       -- Monthly key tracking
                     total_daily_candles INTEGER DEFAULT 0,
                     total_weekly_candles INTEGER DEFAULT 0,
                     total_monthly_candles INTEGER DEFAULT 0,
@@ -337,7 +343,8 @@ class UltraFastDatabaseService:
                         symbol VARCHAR(20) PRIMARY KEY,
                         latest_daily_key INTEGER DEFAULT -1,
                         latest_weekly_key INTEGER DEFAULT -1,
-                            total_daily_candles INTEGER DEFAULT 0,
+                        latest_monthly_key INTEGER DEFAULT -1,       -- Monthly key tracking
+                        total_daily_candles INTEGER DEFAULT 0,
                         total_weekly_candles INTEGER DEFAULT 0,
                         total_monthly_candles INTEGER DEFAULT 0,
                         first_timestamp BIGINT,
@@ -1783,6 +1790,27 @@ class UltraFastDatabaseService:
             # Log error but don't fail the entire data insertion
             logger.warning(f"[WARNING] Python-native OHLCV calculation failed for {symbol}: {e}")
             pass
+
+    async def _check_and_apply_migrations(self):
+        """Check and apply database migrations (stored procedures)"""
+        try:
+            from .database_migration_service import database_migration_service
+            
+            logger.info("🔍 Checking database migrations...")
+            migration_result = await database_migration_service.check_and_apply_migrations()
+            
+            if migration_result['success']:
+                if migration_result['applied']:
+                    logger.info(f"✅ Database migration applied: {migration_result['message']}")
+                else:
+                    logger.debug(f"✅ Database migrations up to date: {migration_result['message']}")
+            else:
+                logger.error(f"❌ Database migration failed: {migration_result['message']}")
+                # Don't raise exception here - let the app continue but log the issue
+            
+        except Exception as e:
+            logger.error(f"❌ Migration check failed: {e}")
+            # Don't fail database initialization due to migration issues
 
     async def close(self):
         """Close the database connection pool"""

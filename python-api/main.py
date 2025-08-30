@@ -4399,6 +4399,175 @@ async def _clean_high_speed_database():
         logger.error(f"Failed to clean high-speed PostgreSQL database: {e}")
         raise
 
+async def _create_indicator_management_tables(high_speed_db):
+    """Create additional tables required for indicator management during hard refresh."""
+    try:
+        logger.info("🔧 Creating indicator management tables...")
+        
+        async with high_speed_db.pool.acquire() as conn:
+            # Create indicator_registry table (used by dynamic_indicator_manager)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS indicator_registry (
+                    id SERIAL PRIMARY KEY,
+                    config_key VARCHAR(50) UNIQUE NOT NULL,
+                    config_data JSONB NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            logger.info("   ✅ Created indicator_registry table")
+            
+            # Create calculated_indicators table (used by indicator_metadata_service)  
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS calculated_indicators (
+                    id SERIAL PRIMARY KEY,
+                    indicator_key VARCHAR(100) UNIQUE NOT NULL,
+                    indicator_name VARCHAR(50) NOT NULL,
+                    timeframe VARCHAR(20) NOT NULL DEFAULT 'daily',
+                    parameters JSONB NOT NULL,
+                    calculation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    stocks_calculated INTEGER DEFAULT 0,
+                    total_candles_calculated INTEGER DEFAULT 0,
+                    status VARCHAR(20) DEFAULT 'active',
+                    description TEXT
+                )
+            """)
+            logger.info("   ✅ Created calculated_indicators table")
+            
+            # Create performance indexes
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_calculated_indicators_key 
+                ON calculated_indicators(indicator_key)
+            """)
+            
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_calculated_indicators_name_timeframe 
+                ON calculated_indicators(indicator_name, timeframe)
+            """)
+            
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_calculated_indicators_status 
+                ON calculated_indicators(status)
+            """)
+            logger.info("   ✅ Created performance indexes for indicator tables")
+            
+        logger.info("🚀 Indicator management tables created successfully")
+        
+    except Exception as e:
+        logger.error(f"Failed to create indicator management tables: {e}")
+        raise
+
+async def _initialize_symbol_latest_keys(high_speed_db):
+    """Initialize symbol_latest_keys table with correct values during hard refresh."""
+    try:
+        logger.info("🔑 Initializing symbol_latest_keys table...")
+        
+        async with high_speed_db.pool.acquire() as conn:
+            # Get all distinct symbols from daily_candles
+            symbols = await conn.fetch("SELECT DISTINCT symbol FROM daily_candles ORDER BY symbol")
+            
+            for symbol_row in symbols:
+                symbol = symbol_row['symbol']
+                
+                # Get actual counts and max sequence numbers for each timeframe
+                daily_count = await conn.fetchval("SELECT COUNT(*) FROM daily_candles WHERE symbol = $1", symbol)
+                daily_max_seq = await conn.fetchval("SELECT COALESCE(MAX(candle_sequence_number), -1) FROM daily_candles WHERE symbol = $1", symbol)
+                
+                weekly_count = await conn.fetchval("SELECT COUNT(*) FROM weekly_candles WHERE symbol = $1", symbol)
+                weekly_max_seq = await conn.fetchval("SELECT COALESCE(MAX(week_sequence_number), -1) FROM weekly_candles WHERE symbol = $1", symbol)
+                
+                monthly_count = await conn.fetchval("SELECT COUNT(*) FROM monthly_candles WHERE symbol = $1", symbol)
+                monthly_max_seq = await conn.fetchval("SELECT COALESCE(MAX(month_sequence_number), -1) FROM monthly_candles WHERE symbol = $1", symbol)
+                
+                # Get timestamp range
+                timestamp_range = await conn.fetchrow("""
+                    SELECT MIN(timestamp) as first_ts, MAX(timestamp) as latest_ts 
+                    FROM daily_candles WHERE symbol = $1
+                """, symbol)
+                
+                # Insert or update symbol_latest_keys with correct values
+                await conn.execute("""
+                    INSERT INTO symbol_latest_keys (
+                        symbol, latest_daily_key, latest_weekly_key, latest_monthly_key,
+                        total_daily_candles, total_weekly_candles, total_monthly_candles,
+                        first_timestamp, latest_timestamp, last_updated
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
+                    ON CONFLICT (symbol) DO UPDATE SET
+                        latest_daily_key = $2,
+                        latest_weekly_key = $3, 
+                        latest_monthly_key = $4,
+                        total_daily_candles = $5,
+                        total_weekly_candles = $6,
+                        total_monthly_candles = $7,
+                        first_timestamp = $8,
+                        latest_timestamp = $9,
+                        last_updated = CURRENT_TIMESTAMP
+                """, symbol, daily_max_seq, weekly_max_seq, monthly_max_seq, 
+                     daily_count, weekly_count, monthly_count,
+                     timestamp_range['first_ts'], timestamp_range['latest_ts'])
+                
+                logger.info(f"   ✅ {symbol}: Daily({daily_max_seq}/{daily_count}), Weekly({weekly_max_seq}/{weekly_count}), Monthly({monthly_max_seq}/{monthly_count})")
+        
+        logger.info("🚀 Symbol latest keys initialized successfully")
+        
+    except Exception as e:
+        logger.error(f"Failed to initialize symbol_latest_keys: {e}")
+        raise
+
+async def _update_symbol_latest_keys_after_generation(high_speed_db):
+    """Update symbol_latest_keys table with correct values after weekly/monthly generation."""
+    try:
+        logger.info("🔑 Updating symbol_latest_keys after weekly/monthly generation...")
+        
+        async with high_speed_db.pool.acquire() as conn:
+            # Get all distinct symbols from daily_candles
+            symbols = await conn.fetch("SELECT DISTINCT symbol FROM daily_candles ORDER BY symbol")
+            
+            for symbol_row in symbols:
+                symbol = symbol_row['symbol']
+                
+                # Get actual counts and max sequence numbers for each timeframe
+                daily_count = await conn.fetchval("SELECT COUNT(*) FROM daily_candles WHERE symbol = $1", symbol)
+                daily_max_seq = await conn.fetchval("SELECT COALESCE(MAX(candle_sequence_number), -1) FROM daily_candles WHERE symbol = $1", symbol)
+                
+                weekly_count = await conn.fetchval("SELECT COUNT(*) FROM weekly_candles WHERE symbol = $1", symbol)
+                weekly_max_seq = await conn.fetchval("SELECT COALESCE(MAX(week_sequence_number), -1) FROM weekly_candles WHERE symbol = $1", symbol)
+                
+                monthly_count = await conn.fetchval("SELECT COUNT(*) FROM monthly_candles WHERE symbol = $1", symbol)
+                monthly_max_seq = await conn.fetchval("SELECT COALESCE(MAX(month_sequence_number), -1) FROM monthly_candles WHERE symbol = $1", symbol)
+                
+                # Get timestamp range
+                timestamp_range = await conn.fetchrow("""
+                    SELECT MIN(timestamp) as first_ts, MAX(timestamp) as latest_ts 
+                    FROM daily_candles WHERE symbol = $1
+                """, symbol)
+                
+                # Update symbol_latest_keys with correct values
+                await conn.execute("""
+                    UPDATE symbol_latest_keys SET
+                        latest_daily_key = $2,
+                        latest_weekly_key = $3, 
+                        latest_monthly_key = $4,
+                        total_daily_candles = $5,
+                        total_weekly_candles = $6,
+                        total_monthly_candles = $7,
+                        first_timestamp = $8,
+                        latest_timestamp = $9,
+                        last_updated = CURRENT_TIMESTAMP
+                    WHERE symbol = $1
+                """, symbol, daily_max_seq, weekly_max_seq, monthly_max_seq, 
+                     daily_count, weekly_count, monthly_count,
+                     timestamp_range['first_ts'], timestamp_range['latest_ts'])
+                
+                logger.info(f"   ✅ Updated {symbol}: Daily({daily_max_seq}/{daily_count}), Weekly({weekly_max_seq}/{weekly_count}), Monthly({monthly_max_seq}/{monthly_count})")
+        
+        logger.info("🚀 Symbol latest keys updated successfully")
+        
+    except Exception as e:
+        logger.error(f"Failed to update symbol_latest_keys: {e}")
+        raise
+
 @app.post("/api/hard-refresh")
 async def hard_refresh_database():
     """
@@ -4427,6 +4596,24 @@ async def hard_refresh_database():
         await high_speed_db._create_optimized_tables()
         await high_speed_db._create_speed_indexes()
         logger.info("🚀 High-speed database tables recreated")
+        
+        # Create additional required tables for indicator management
+        await _create_indicator_management_tables(high_speed_db)
+        
+        
+        # Apply database migrations (stored procedures) ONLY during hard refresh
+        # This ensures all necessary tables and procedures are available
+        from services.database_migration_service import database_migration_service
+        logger.info("🔍 Checking and applying database migrations...")
+        migration_result = await database_migration_service.check_and_apply_migrations()
+        if migration_result['success']:
+            if migration_result['applied']:
+                logger.info(f"✅ Database migrations applied: {migration_result['message']}")
+            else:
+                logger.info(f"✅ Database migrations already up to date: {migration_result['message']}")
+        else:
+            logger.error(f"❌ Database migration failed: {migration_result['message']}")
+            # Continue with hard refresh even if migration fails (tables are already created)
         
         # Get candle count from environment
         candle_count = get_default_candle_count()
@@ -4485,19 +4672,50 @@ async def hard_refresh_database():
                     size=candle_count  # Use full candle count from env
                 )
                 
-                # After data fetch, populate high-speed database
-                logger.info("Data fetch complete. Populating high-speed database...")
+                # After data fetch, verify data is actually in database before proceeding
+                logger.info("Data fetch complete. Verifying daily candles were inserted...")
                 update_progress({
                     "isRunning": True,
-                    "phase": "populating_highspeed",
-                    "message": "Populating high-speed database from NSE data...",
+                    "phase": "verifying_data",
+                    "message": "Verifying daily candles were inserted into database...",
                     "processed": 0,
                     "total": total_symbols,
-                    "status": "populating"
+                    "status": "verifying"
                 })
                 
-                # NSE database removed - population happens via direct API calls in health manager
-                population_stats = {'daily_inserted': 0, 'weekly_inserted': 0, 'monthly_inserted': 0, 'total_symbols': 0, 'total_candles': 0, 'successful': 0, 'failed': 0, 'total_stocks': 0}
+                # Wait for database writes to complete and verify data exists
+                import asyncio
+                await asyncio.sleep(2)  # Give time for async writes to complete
+                
+                async with high_speed_db.pool.acquire() as conn:
+                    daily_count = await conn.fetchval("SELECT COUNT(*) FROM daily_candles")
+                    logger.info(f"✅ Verified {daily_count} daily candles were inserted into database")
+                    
+                    if daily_count == 0:
+                        logger.error("❌ CRITICAL: No daily candles found in database after fetch!")
+                        logger.error("❌ Weekly candle generation will fail. Attempting to re-initialize...")
+                        
+                        # Re-initialize database connections
+                        await db_service.initialize()
+                        await high_speed_db.initialize()
+                        
+                        # Check again
+                        daily_count = await conn.fetchval("SELECT COUNT(*) FROM daily_candles")
+                        logger.info(f"After re-init: {daily_count} daily candles in database")
+                        
+                        if daily_count == 0:
+                            raise Exception("CRITICAL: Still no daily candles after re-initialization. Hard refresh cannot continue.")
+                
+                population_stats = {
+                    'daily_inserted': daily_count, 
+                    'weekly_inserted': 0, 
+                    'monthly_inserted': 0, 
+                    'total_symbols': len([r for r in results.values() if 'success' in str(r).lower() or 'updated' in str(r).lower()]), 
+                    'total_candles': daily_count, 
+                    'successful': len([r for r in results.values() if 'success' in str(r).lower() or 'updated' in str(r).lower()]), 
+                    'failed': len([r for r in results.values() if 'error' in str(r).lower() or 'fail' in str(r).lower()]), 
+                    'total_stocks': len(symbols)
+                }
                 logger.info(f"High-speed database populated: {population_stats}")
                 
                 update_progress({
@@ -4539,6 +4757,14 @@ async def hard_refresh_database():
                     "status": "database_calculations"
                 })
                 
+                # Final verification before weekly candle generation
+                async with high_speed_db.pool.acquire() as conn:
+                    final_daily_count = await conn.fetchval("SELECT COUNT(*) FROM daily_candles")
+                    logger.info(f"🔍 Final verification: {final_daily_count} daily candles available for weekly generation")
+                    
+                    if final_daily_count == 0:
+                        raise Exception("CRITICAL: No daily candles available for weekly candle generation!")
+                
                 # Call PostgreSQL stored procedures for weekly candle generation only (no indicators)
                 calculation_start = time.time()
                 
@@ -4557,6 +4783,10 @@ async def hard_refresh_database():
                 
                 logger.info(f"📅 Monthly candle generation completed in {monthly_time:.2f}s")
                 logger.info(f"📅 Monthly generation results: {monthly_results.get('successful_symbols', 0)} successful, {monthly_results.get('failed_symbols', 0)} failed, {monthly_results.get('total_monthly_candles', 0)} total candles")
+                
+                # Update symbol_latest_keys table with correct weekly and monthly key values
+                logger.info("🔑 Updating symbol_latest_keys with correct weekly/monthly values...")
+                await _update_symbol_latest_keys_after_generation(high_speed_db)
                 
                 # Assign monthly_candle_key_id to all daily and weekly candles now that monthly candles exist
                 logger.info("🔗 Assigning monthly_candle_key_id to daily and weekly candles...")

@@ -19,11 +19,11 @@
     },
     "supertrend_10_3": {
       "name": "SuperTrend",
+      "timeframe": "daily",
       "params": {
         "period": 10.0,
         "multiplier": 3.0
-      },
-      "timeframe": "daily"
+      }
     },
     "monthly_pctchg": {
       "name": "PercentageChange",
@@ -37,12 +37,12 @@
     }
   },
   "active_indicators": [
-    "Volume",
-    "weekly_pctchg",
-    "daily_pctchg",
     "supertrend_10_3",
+    "daily_pctchg",
+    "weekly_pctchg",
+    "monthly_pctchg",
     "daily_pctchg_1",
-    "monthly_pctchg"
+    "Volume"
   ],
-  "last_updated": "2025-08-29T09:28:01.275975"
+  "last_updated": "2025-08-30T20:42:10.004464"
 }
