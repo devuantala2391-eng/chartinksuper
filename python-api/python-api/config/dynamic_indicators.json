@@ -34,15 +34,33 @@
       "name": "Volume",
       "timeframe": "monthly",
       "params": {}
+    },
+    "supertrend_10_2": {
+      "name": "SuperTrend",
+      "timeframe": "daily",
+      "params": {
+        "period": 10.0,
+        "multiplier": 2.0
+      }
+    },
+    "supertrend_10_3dot5": {
+      "name": "SuperTrend",
+      "timeframe": "daily",
+      "params": {
+        "period": 10.0,
+        "multiplier": 3.5
+      }
     }
   },
   "active_indicators": [
     "supertrend_10_3",
-    "daily_pctchg",
-    "weekly_pctchg",
     "monthly_pctchg",
+    "supertrend_10_2",
     "daily_pctchg_1",
-    "Volume"
+    "Volume",
+    "supertrend_10_3dot5",
+    "weekly_pctchg",
+    "daily_pctchg"
   ],
-  "last_updated": "2025-08-30T20:42:10.004464"
+  "last_updated": "2025-08-30T23:02:01.498744"
 }

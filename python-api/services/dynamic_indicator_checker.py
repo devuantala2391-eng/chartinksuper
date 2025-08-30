@@ -137,16 +137,24 @@ class DynamicIndicatorChecker:
             
             # Parse SuperTrend indicators
             if 'supertrend' in field_lower:
-                # Examples: supertrend_10_2, supertrend_30_1dot2, daily_supertrend_10_1.2
+                # Examples: supertrend_10_2, supertrend_30_1dot2, supertrend_10_2dot5_direction
+                # Remove timeframe prefixes and direction suffix
                 parts = field_lower.replace('daily_', '').replace('weekly_', '').replace('monthly_', '')
-                parts = parts.replace('supertrend_', '').replace('dot', '.')
+                parts = parts.replace('supertrend_', '').replace('_direction', '')
                 
-                # Split by underscore
-                params = parts.split('_')
-                if len(params) >= 2:
-                    period = int(params[0])
-                    multiplier = float(params[1].replace('dot', '.'))
+                # Split by underscore to get period and multiplier
+                param_parts = parts.split('_')
+                if len(param_parts) >= 2:
+                    period = int(param_parts[0])
                     
+                    # Handle decimal multiplier formatting (e.g., "2dot5" -> 2.5, "3" -> 3.0)
+                    multiplier_str = param_parts[1]
+                    if 'dot' in multiplier_str:
+                        multiplier = float(multiplier_str.replace('dot', '.'))
+                    else:
+                        multiplier = float(multiplier_str)
+                    
+                    # Determine timeframe
                     timeframe = 'daily'
                     if 'weekly' in field_lower:
                         timeframe = 'weekly'

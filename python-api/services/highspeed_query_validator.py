@@ -141,8 +141,20 @@ class HighSpeedQueryValidator:
         if 'supertrend_' in field_name:
             parts = field_name.split('_')
             if len(parts) >= 3:
-                # Replace dots with 'dot' in the multiplier
-                parts[-1] = parts[-1].replace('.', 'dot')
+                # Format multiplier parameter consistently
+                multiplier_part = parts[-1]
+                if '.' in multiplier_part:
+                    # Has decimal, replace with dot
+                    parts[-1] = multiplier_part.replace('.', 'dot')
+                else:
+                    # Whole number, keep as is
+                    try:
+                        # Verify it's a valid number
+                        float(multiplier_part)
+                        parts[-1] = multiplier_part
+                    except ValueError:
+                        # If not a valid number, still replace dots for safety
+                        parts[-1] = multiplier_part.replace('.', 'dot')
                 return '_'.join(parts)
         
         return field_name
