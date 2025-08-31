@@ -356,29 +356,23 @@
           </div>
         </div>
 
-        <!-- CSV Upload Progress -->
-        <div class="upload-progress" *ngIf="showUploadProgress">
-          <div class="progress-bar-container">
-            <div class="progress-bar" [style.width.%]="uploadProgress"></div>
-          </div>
-          <div class="progress-text">{{ uploadProgressText }}</div>
-        </div>
+        <!-- CSV Upload Simple Loader -->
+        <app-simple-loader
+          [show]="showUploadLoader"
+          [title]="uploadLoaderTitle"
+          [message]="uploadLoaderMessage"
+        ></app-simple-loader>
       </div>
     </div>
 
     <!-- Results Section -->
     <div class="results-section" *ngIf="results || loading">
-      <!-- Progress Bar -->
-      <app-progress-bar
-        [show]="showProgress"
-        [phase]="progressPhase"
-        [message]="progressMessage"
-        [processed]="progressProcessed"
-        [total]="progressTotal"
-        [matches]="progressMatches"
-        [canClose]="progressPhase === 'completed'"
-        (close)="closeProgress()"
-      ></app-progress-bar>
+      <!-- Simple Loader -->
+      <app-simple-loader
+        [show]="showLoader"
+        [title]="loaderTitle"
+        [message]="loaderMessage"
+      ></app-simple-loader>
 
       <!-- Results Display -->
       <div class="results-container" *ngIf="results && !loading">

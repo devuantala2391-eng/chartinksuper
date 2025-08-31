@@ -5023,80 +5023,10 @@ async def start_sequential_updates(
         logger.error(f"Failed to start sequential updates: {error}")
         raise HTTPException(status_code=500, detail=f"Failed to start sequential updates: {str(error)}")
 
-@app.get("/api/periodic-updates-status")
-async def get_periodic_updates_status():
-    """Get the current status of periodic updates."""
-    return {
-        "parallel_pipeline": {
-            "is_running": parallel_pipeline_updater.is_running,
-            "is_market_hours": parallel_pipeline_updater.is_market_hours(),
-            "force_run": parallel_pipeline_updater.force_run,
-            "update_interval": parallel_pipeline_updater.update_interval,
-            "last_update_time": getattr(parallel_pipeline_updater, 'last_update_time', None),
-            "next_update_time": getattr(parallel_pipeline_updater, 'next_update_time', None)
-        },
-        "sequential": {
-            "is_running": latest_candle_updater.is_running,
-            "is_market_hours": latest_candle_updater.is_market_hours(),
-            "force_run": latest_candle_updater.force_run,
-            "update_interval": latest_candle_updater.update_interval,
-            "last_update_time": getattr(latest_candle_updater, 'last_update_time', None),
-            "next_update_time": getattr(latest_candle_updater, 'next_update_time', None)
-        }
-    }
+# Periodic updates status endpoint removed - no longer needed
 
 # SSE endpoint for real-time scheduler updates
-@app.get("/api/scheduler-updates-stream")
-async def scheduler_updates_stream():
-    """Stream real-time scheduler updates via Server-Sent Events."""
-    async def generate():
-        while True:
-            try:
-                # Get current status
-                now = datetime.now()
-                is_running = latest_candle_updater.is_running
-                is_market_hours = latest_candle_updater.is_market_hours()
-                
-                # Calculate next update time if running
-                next_update_seconds = 0
-                if is_running and hasattr(latest_candle_updater, 'last_update_time'):
-                    last_update = latest_candle_updater.last_update_time
-                    if last_update:
-                        next_update = last_update + timedelta(minutes=latest_candle_updater.update_interval)
-                        next_update_seconds = max(0, (next_update - now).total_seconds())
-                
-                # Create status update
-                status_data = {
-                    "timestamp": now.isoformat(),
-                    "is_running": is_running,
-                    "is_market_hours": is_market_hours,
-                    "force_run": latest_candle_updater.force_run,
-                    "update_interval": latest_candle_updater.update_interval,
-                    "next_update_seconds": int(next_update_seconds),
-                    "last_update_time": latest_candle_updater.last_update_time.isoformat() if hasattr(latest_candle_updater, 'last_update_time') and latest_candle_updater.last_update_time else None,
-                    "update_stats": getattr(latest_candle_updater, 'last_update_stats', None)
-                }
-                
-                yield f"data: {json.dumps(status_data)}\n\n"
-                
-                # Wait 1 second before next update
-                await asyncio.sleep(1)
-                
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"SSE stream error: {e}")
-                await asyncio.sleep(5)
-    
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
-    )
+# Scheduler updates stream endpoint removed - using simple status checks now
 
 # Dynamic Indicator Management APIs
 @app.get("/api/indicators/active")
@@ -5415,7 +5345,7 @@ if __name__ == "__main__":
     uvicorn.run(
         app,  # Use app directly instead of "main:app" 
         host="127.0.0.1",
-        port=8001,
+        port=8002,
         log_level="info",  # Show some logs for better visibility
         access_log=False,  # Disable access logs (we have our own)
         reload=False       # Disable reload to avoid watchfiles logs

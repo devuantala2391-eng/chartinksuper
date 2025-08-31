@@ -28,8 +28,8 @@ export interface SchedulerState {
 export class SchedulerService {
   private apiUrl = environment.apiUrl;
   private destroy$ = new Subject<void>();
-  private sseConnection?: EventSource;
   private timerSubscription?: Subscription;
+  private statusCheckSubscription?: Subscription;
   
   // Observable state
   private stateSubject = new BehaviorSubject<SchedulerState>({
@@ -55,14 +55,10 @@ export class SchedulerService {
   }
   
   private initializeService() {
-    // Check initial status
-    this.checkStatus();
-    
     // Start timer for countdown
     this.startTimer();
     
-    // Setup SSE connection
-    this.setupSSEConnection();
+    // No more periodic status checks - simplified service
   }
   
   private startTimer() {
@@ -112,58 +108,7 @@ export class SchedulerService {
     });
   }
   
-  private setupSSEConnection() {
-    this.sseConnection = new EventSource(`${this.apiUrl}/scheduler-updates-stream`);
-    
-    this.sseConnection.onmessage = (event) => {
-      this.ngZone.run(() => {
-        try {
-          const data = JSON.parse(event.data);
-          const currentState = this.stateSubject.value;
-          
-          this.stateSubject.next({
-            ...currentState,
-            isRunning: data.is_running,
-            isMarketHours: data.is_market_hours,
-            forceRun: data.force_run ?? currentState.forceRun,
-            updateInterval: data.update_interval ?? currentState.updateInterval,
-            lastUpdateTime: data.last_update_time ? new Date(data.last_update_time) : currentState.lastUpdateTime,
-            updateStats: data.update_stats ?? currentState.updateStats,
-            timeToNextUpdate: data.next_update_seconds ?? currentState.timeToNextUpdate
-          });
-        } catch (error) {
-          console.error('SSE data parse error:', error);
-        }
-      });
-    };
-    
-    this.sseConnection.onerror = (error) => {
-      console.error('SSE connection error:', error);
-      
-      // Reconnect after 5 seconds
-      setTimeout(() => {
-        this.sseConnection?.close();
-        this.setupSSEConnection();
-      }, 5000);
-    };
-  }
-  
-  checkStatus() {
-    this.http.get<any>(`${this.apiUrl}/periodic-updates-status`).subscribe(
-      status => {
-        const currentState = this.stateSubject.value;
-        this.stateSubject.next({
-          ...currentState,
-          isRunning: status.is_running,
-          isMarketHours: status.is_market_hours,
-          forceRun: status.force_run ?? currentState.forceRun,
-          updateInterval: status.update_interval ?? currentState.updateInterval,
-          lastUpdateTime: status.last_update_time ? new Date(status.last_update_time) : null
-        });
-      },
-      error => console.error('Failed to check scheduler status:', error)
-    );
-  }
+  // Periodic status checking removed - service now operates independently
   
   startScheduler(interval: number = 2, forceRun: boolean = true): Promise<any> {
     const url = `${this.apiUrl}/start-periodic-updates?interval_minutes=${interval}&force_run=${forceRun}`;
@@ -223,7 +168,7 @@ export class SchedulerService {
   destroy() {
     this.destroy$.next();
     this.destroy$.complete();
-    this.sseConnection?.close();
     this.timerSubscription?.unsubscribe();
+    this.statusCheckSubscription?.unsubscribe();
   }
 }

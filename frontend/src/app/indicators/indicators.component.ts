@@ -2,7 +2,9 @@ import { Component, OnInit, OnDestroy, ChangeDetectorRef, NgZone } from '@angula
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { HttpClient, HttpClientModule } from '@angular/common/http';
+import { SimpleLoaderComponent } from '../simple-loader.component';
 import { environment } from '../../environments/environment';
+import Swal from 'sweetalert2';
 
 interface PrecalculatedIndicator {
   timeframe: string;
@@ -26,7 +28,7 @@ interface IndicatorResponse {
 @Component({
   selector: 'app-indicators',
   standalone: true,
-  imports: [CommonModule, FormsModule, HttpClientModule],
+  imports: [CommonModule, FormsModule, HttpClientModule, SimpleLoaderComponent],
   templateUrl: './indicators.component.html',
   styleUrl: './indicators.component.scss'
 })
@@ -41,13 +43,11 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
   error: string | null = null;
   status: string = 'idle';
   lastUpdated: string | null = null;
-  progressPercentage: number = 0;
-  progressMessage: string = '';
-  progressProcessed: number = 0;
-  progressTotal: number = 0;
+  // Simple loader properties
+  showLoader = false;
+  loaderTitle = 'Loading...';
+  loaderMessage = 'Please wait while we process your request.';
   private statusInterval: any;
-  private progressInterval: any;
-  private eventSource: EventSource | null = null;
 
   private apiUrl = environment.apiUrl;
 
@@ -79,24 +79,12 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
 
   ngOnDestroy() {
     this.clearIntervals();
-    this.closeEventSource();
   }
 
   private clearIntervals() {
     if (this.statusInterval) {
       clearInterval(this.statusInterval);
       this.statusInterval = null;
-    }
-    if (this.progressInterval) {
-      clearInterval(this.progressInterval);
-      this.progressInterval = null;
-    }
-  }
-
-  private closeEventSource() {
-    if (this.eventSource) {
-      this.eventSource.close();
-      this.eventSource = null;
     }
   }
 
@@ -239,10 +227,9 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
 
     this.loading = true;
     this.error = null;
-    this.status = 'processing';
-    this.progressPercentage = 0;
-    this.progressMessage = 'Starting hard refresh...';
-    this.clearIntervals();
+    this.showLoader = true;
+    this.loaderTitle = 'Hard Refresh';
+    this.loaderMessage = 'Refreshing all indicator data...';
 
     this.http.post<any>(`${this.apiUrl}/api/hard-refresh`, {}, {
       headers: {
@@ -250,16 +237,26 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
       }
     }).subscribe({
       next: (response) => {
-        this.progressMessage = response.message || 'Hard refresh started...';
-        // Start polling for progress updates
-        this.pollStatus();
+        this.loading = false;
+        this.showLoader = false;
+        this.status = 'idle';
+        
+        Swal.fire({
+          title: 'Hard Refresh Complete!',
+          text: response.message || 'Database has been refreshed successfully',
+          icon: 'success',
+          timer: 3000,
+          showConfirmButton: false
+        });
+        
+        // Reload indicators to get fresh data
+        this.loadIndicators();
       },
       error: (error) => {
         this.loading = false;
+        this.showLoader = false;
         this.status = 'error';
-        this.error = 'Failed to start hard refresh: ' + error.message;
-        this.clearIntervals();
-        this.closeEventSource();
+        this.error = 'Failed to complete hard refresh: ' + error.message;
       }
     });
   }
@@ -272,178 +269,65 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
 
     this.loading = true;
     this.error = null;
-    this.status = 'processing';
-    this.progressPercentage = 0;
-    this.progressMessage = 'Starting calculation...';
-    this.progressProcessed = 0;
-    this.progressTotal = 0;
-    this.clearIntervals(); // Clear any existing intervals
+    this.showLoader = true;
+    this.loaderTitle = 'Calculating Indicators';
+    this.loaderMessage = 'Processing indicator calculations...';
 
     const payload = {
       indicators: this.indicators
     };
 
-
     this.http.post<any>(`${this.apiUrl}/precalculate-indicators`, payload, {
       headers: {
         'ngrok-skip-browser-warning': '69420'
       }
-    })
-      .subscribe({
+    }).subscribe({
         next: (response) => {
+          this.loading = false;
+          this.showLoader = false;
+          this.status = 'idle';
+          
           if (response.success) {
-            this.status = response.status;
-            this.pollStatus();
+            Swal.fire({
+              title: 'Calculation Complete!',
+              text: 'All indicators have been calculated successfully',
+              icon: 'success',
+              timer: 3000,
+              showConfirmButton: false
+            });
+            
+            // Reload indicators to get fresh data
+            this.loadIndicators();
           } else {
-            this.error = 'Failed to start calculation: ' + response.message;
-            this.loading = false;
+            this.error = 'Failed to complete calculation: ' + response.message;
           }
         },
         error: (error) => {
-          let errorMessage = 'Failed to start calculation: ';
+          this.loading = false;
+          this.showLoader = false;
+          this.status = 'error';
+          
+          let errorMessage = 'Failed to complete calculation: ';
           if (error.status === 400) {
             errorMessage += error.error?.error || 'Invalid request. Please check your indicators configuration.';
           } else {
             errorMessage += error.message || 'Unknown error occurred';
           }
           this.error = errorMessage;
-          this.loading = false;
-          this.status = 'error';
-          alert(errorMessage); // Show alert to user
-        }
-      });
-  }
-
-  pollStatus() {
-    // Clear any existing intervals and SSE connections
-    this.clearIntervals();
-    this.closeEventSource();
-    
-    // Set up Server-Sent Events for real-time progress
-    this.eventSource = new EventSource(`${this.apiUrl}/progress-stream`);
-    
-    this.eventSource.onmessage = (event) => {
-      // Run inside Angular zone to ensure change detection works
-      this.ngZone.run(() => {
-        try {
-          const data = JSON.parse(event.data);
           
-          if (data.connected) {
-            //console.log('SSE connection established');
-            return;
-          }
-          
-          // Update progress whenever we receive data
-          if (data.phase === 'processing_indicators' || (data.isRunning && this.status === 'processing')) {
-            this.progressPercentage = data.percentage || 0;
-            this.progressMessage = data.message || 'Processing indicators...';
-            this.progressProcessed = data.processed || 0;
-            this.progressTotal = data.total || 0;
-            //console.log('Progress update:', { 
-            //  percentage: this.progressPercentage, 
-            //  processed: this.progressProcessed, 
-            //  total: this.progressTotal 
-            //});
-          }
-        
-        // Handle completion status through SSE
-        if (data.status === 'completed' && data.phase === 'completed') {
-          this.status = 'completed';
-          this.loading = false;
-          this.progressPercentage = 100;
-          this.progressMessage = 'Calculation completed successfully';
-          this.lastUpdated = new Date().toISOString();
-          this.clearIntervals();
-          this.closeEventSource();
-          // Reload indicators to get the updated list
-          this.loadIndicators();
-        }
-        
-        // Handle error status through SSE
-        if (data.status === 'error' && data.phase === 'error') {
-          this.status = 'error';
-          this.loading = false;
-          this.error = data.message || 'Calculation failed. Please try again.';
-          this.clearIntervals();
-          this.closeEventSource();
-        }
-      } catch (error) {
-        //console.error('Error parsing SSE data:', error);
-      }
-      });
-    };
-    
-    this.eventSource.onerror = (error) => {
-      //console.error('SSE connection error:', error);
-      // Fall back to polling if SSE fails
-      this.closeEventSource();
-      this.setupPollingFallback();
-    };
-    
-    // No need for status polling - we get everything through SSE
-    // Only use polling as a fallback if SSE fails
-  }
-
-  private setupPollingFallback() {
-    // Fallback to polling if SSE fails
-    //console.log('SSE failed, falling back to polling');
-    
-    // Poll for status updates
-    this.statusInterval = setInterval(() => {
-      this.http.get<IndicatorResponse>(`${this.apiUrl}/get-precalculated-indicators`, {
-        headers: {
-          'ngrok-skip-browser-warning': '69420'
-        }
-      })
-        .subscribe({
-          next: (response) => {
-            this.status = response.status;
-            this.lastUpdated = response.lastUpdated;
-            
-            if (response.status === 'completed') {
-              this.loading = false;
-              this.progressPercentage = 100;
-              this.progressMessage = 'Calculation completed successfully';
-              this.clearIntervals();
-              this.loadIndicators();
-            } else if (response.status === 'error') {
-              this.loading = false;
-              this.error = 'Calculation failed. Please try again.';
-              this.clearIntervals();
-            }
-          },
-          error: (error) => {
-            this.loading = false;
-            this.error = 'Failed to get status: ' + error.message;
-            this.clearIntervals();
-          }
-        });
-    }, 3000);
-    
-    // Poll for progress updates
-    this.progressInterval = setInterval(() => {
-      if (this.status === 'processing') {
-        this.http.get<any>(`${this.apiUrl}/progress-stream`, {
-          headers: {
-            'ngrok-skip-browser-warning': '69420'
-          }
-        })
-          .subscribe({
-            next: (progress) => {
-              if (progress.isRunning && progress.phase === 'processing_indicators') {
-                this.progressPercentage = Math.min(Math.floor((progress.processed / progress.total) * 100), 100);
-                this.progressMessage = progress.message || 'Processing indicators...';
-                this.progressProcessed = progress.processed || 0;
-                this.progressTotal = progress.total || 0;
-              }
-            },
-            error: (error) => {
-              //console.warn('Progress polling error:', error);
-            }
+          Swal.fire({
+            title: 'Calculation Failed',
+            text: errorMessage,
+            icon: 'error',
+            confirmButtonText: 'OK'
           });
-      }
-    }, 1000);
+        }
+      });
   }
+
+  // Progress polling methods removed - using simple loaders now
+
+  // Polling fallback methods removed - using simple loaders now
 
   getStatusColor(): string {
     switch (this.status) {

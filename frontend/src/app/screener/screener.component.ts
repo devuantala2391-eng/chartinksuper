@@ -2,9 +2,9 @@ import { Component, OnInit, OnDestroy, NgZone } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { HttpClient, HttpClientModule, HttpErrorResponse } from '@angular/common/http';
-import { ProgressBarComponent } from '../progress-bar.component';
+import { SimpleLoaderComponent } from '../simple-loader.component';
 import { TooltipComponent, TooltipData } from '../components/tooltip.component';
-import { Observable, retry, timer, catchError, throwError } from 'rxjs';
+import { Observable } from 'rxjs';
 import { Router, ActivatedRoute } from '@angular/router';
 import Swal from 'sweetalert2';
 import { environment } from '../../environments/environment';
@@ -94,7 +94,7 @@ interface QueryResult {
 @Component({
   selector: 'app-screener',
   standalone: true,
-  imports: [CommonModule, FormsModule, HttpClientModule, ProgressBarComponent, TooltipComponent],
+  imports: [CommonModule, FormsModule, HttpClientModule, SimpleLoaderComponent, TooltipComponent],
   templateUrl: './screener.component.html',
   styleUrl: './screener.component.scss'
 })
@@ -226,15 +226,10 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   // UI State for popup selectors
   activePopup: { type: string; conditionId: number; field?: string } | null = null;
   
-  // Progress tracking
-  showProgress = false;
-  progressPhase = 'initializing';
-  progressMessage = 'Starting...';
-  progressProcessed = 0;
-  progressTotal = 100;
-  progressMatches?: number;
-  private progressInterval?: any;
-  private queryProgressEventSource: EventSource | null = null;
+  // Simple loader
+  showLoader = false;
+  loaderTitle = 'Loading...';
+  loaderMessage = 'Please wait while we process your request.';
   private isQueryRunning = false;
   private currentRequestAbortController: AbortController | null = null;
   
@@ -247,10 +242,9 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   uploading = false;
   uploadStatus = '';
   uploadSuccess = false;
-  showUploadProgress = false;
-  uploadProgress = 0;
-  uploadProgressText = '';
-  private csvProgressEventSource: EventSource | null = null;
+  showUploadLoader = false;
+  uploadLoaderTitle = 'Uploading CSV';
+  uploadLoaderMessage = 'Please wait while we process your file.';
   
   private apiUrl = environment.apiUrl;
   private nextId = 2;
@@ -629,48 +623,37 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     this.error = null;
     this.results = null;
     this.groupedResults.clear();
-    this.showProgress = true;
-    this.progressPhase = 'initializing';
-    this.progressMessage = 'Starting latest day scan...';
-    this.progressProcessed = 0;
-    this.progressTotal = 100;
-    this.progressMatches = undefined;
+    this.showLoader = true;
+    this.loaderTitle = 'Scanning Stocks';
+    this.loaderMessage = 'Starting latest day scan...';
 
     const query = this.buildQuery();
     this.queryString = query;
-    
-    // Start SSE for progress updates
-    this.startProgressSSE();
 
-    // Send query to latest day endpoint with timeout and retry logic
-    this.makeHttpRequestWithRetry(() => 
-      this.http.post<QueryResult>(`${this.apiUrl}/query/latest`, { query })
-    ).subscribe({
+    // Send query to latest day endpoint without retry logic
+    this.http.post<QueryResult>(`${this.apiUrl}/query/latest`, { query }).subscribe({
       next: (response) => {
         this.loading = false;
+        this.showLoader = false;
         this.results = response;
         this.groupByDate(response.matches, true); // Latest day only
-        
-        // Show completion in progress bar
-        this.progressPhase = 'completed';
-        this.progressMessage = `Found ${response.totalMatches} matches for latest day!`;
-        this.progressProcessed = this.progressTotal;
-        this.stopProgressPolling();
         this.finishQueryRequest();
         
-        // Auto-hide progress after delay, but allow manual close
-        setTimeout(() => {
-          if (this.progressPhase === 'completed') {
-            this.showProgress = false;
-          }
-        }, 1000);
+        // Show success message
+        if (response.totalMatches > 0) {
+          Swal.fire({
+            title: 'Scan Complete!',
+            text: `Found ${response.totalMatches} matches for latest day`,
+            icon: 'success',
+            timer: 2000,
+            showConfirmButton: false
+          });
+        }
       },
       error: (error) => {
         this.loading = false;
-        this.showProgress = false;
-        this.error = this.getErrorMessage(error);
-        //console.error('Error:', error);
-        this.stopProgressPolling();
+        this.showLoader = false;
+        this.showErrorToast(error);
         this.finishQueryRequest();
       }
     });
@@ -691,48 +674,37 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     this.error = null;
     this.results = null;
     this.groupedResults.clear();
-    this.showProgress = true;
-    this.progressPhase = 'initializing';
-    this.progressMessage = 'Starting backtest...';
-    this.progressProcessed = 0;
-    this.progressTotal = 100;
-    this.progressMatches = undefined;
+    this.showLoader = true;
+    this.loaderTitle = 'Running Backtest';
+    this.loaderMessage = 'Starting backtest analysis...';
 
     const query = this.buildQuery();
     this.queryString = query;
-    
-    // Start SSE for progress updates
-    this.startProgressSSE();
 
-    // Send query to original endpoint for full backtest with retry logic
-    this.makeHttpRequestWithRetry(() => 
-      this.http.post<QueryResult>(`${this.apiUrl}/query`, { query })
-    ).subscribe({
+    // Send query to original endpoint for full backtest without retry logic
+    this.http.post<QueryResult>(`${this.apiUrl}/query`, { query }).subscribe({
       next: (response) => {
         this.loading = false;
+        this.showLoader = false;
         this.results = response;
         this.groupByDate(response.matches, false); // Full backtest - multiple dates
-        
-        // Show completion in progress bar
-        this.progressPhase = 'completed';
-        this.progressMessage = `Backtest completed! Found ${response.totalMatches} matches!`;
-        this.progressProcessed = this.progressTotal;
-        this.stopProgressPolling();
         this.finishQueryRequest();
         
-        // Auto-hide progress after delay, but allow manual close
-        setTimeout(() => {
-          if (this.progressPhase === 'completed') {
-            this.showProgress = false;
-          }
-        }, 1000);
+        // Show success message
+        if (response.totalMatches > 0) {
+          Swal.fire({
+            title: 'Backtest Complete!',
+            text: `Found ${response.totalMatches} matches across all dates`,
+            icon: 'success',
+            timer: 3000,
+            showConfirmButton: false
+          });
+        }
       },
       error: (error) => {
         this.loading = false;
-        this.showProgress = false;
-        this.error = this.getErrorMessage(error);
-        //console.error('Error:', error);
-        this.stopProgressPolling();
+        this.showLoader = false;
+        this.showErrorToast(error);
         this.finishQueryRequest();
       }
     });
@@ -751,137 +723,45 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     this.error = null;
     this.results = null;
     this.groupedResults.clear();
-    this.showProgress = true;
-    this.progressPhase = 'initializing';
-    this.progressMessage = 'Starting special query scan...';
-    this.progressProcessed = 0;
-    this.progressTotal = 100;
-    this.progressMatches = undefined;
+    this.showLoader = true;
+    this.loaderTitle = 'Running Special Query';
+    this.loaderMessage = 'Processing special query scan...';
     
     // Set the query string for display
     this.queryString = specialQuery;
     
-    // Start SSE for progress updates
-    this.startProgressSSE();
-    
-    // Send query to full backtest endpoint with retry logic
-    this.makeHttpRequestWithRetry(() => 
-      this.http.post<QueryResult>(`${this.apiUrl}/query`, { query: specialQuery })
-    ).subscribe({
+    // Send query to full backtest endpoint without retry logic
+    this.http.post<QueryResult>(`${this.apiUrl}/query`, { query: specialQuery }).subscribe({
       next: (response) => {
         this.loading = false;
+        this.showLoader = false;
         this.results = response;
         this.groupByDate(response.matches, false); // Special query - full backtest, multiple dates
-        
-        // Show completion in progress bar
-        this.progressPhase = 'completed';
-        this.progressMessage = `Found ${response.totalMatches} matches for special query!`;
-        this.progressProcessed = this.progressTotal;
-        this.stopProgressPolling();
         this.finishQueryRequest();
         
-        // Auto-hide progress after delay, but allow manual close
-        setTimeout(() => {
-          if (this.progressPhase === 'completed') {
-            this.showProgress = false;
-          }
-        }, 1000);
+        // Show success message
+        if (response.totalMatches > 0) {
+          Swal.fire({
+            title: 'Special Query Complete!',
+            text: `Found ${response.totalMatches} matches for your special query`,
+            icon: 'success',
+            timer: 3000,
+            showConfirmButton: false
+          });
+        }
       },
       error: (error) => {
         this.loading = false;
-        this.showProgress = false;
-        this.error = this.getErrorMessage(error);
-        //console.error('Error:', error);
-        this.stopProgressPolling();
+        this.showLoader = false;
+        this.showErrorToast(error);
         this.finishQueryRequest();
       }
     });
   }
   
-  private startProgressSSE() {
-    // Clear any existing SSE connection
-    this.stopProgressSSE();
-    
-    //console.log('Starting SSE connection for query progress...');
-    
-    // Create new SSE connection
-    this.queryProgressEventSource = new EventSource(`${this.apiUrl}/progress-stream`);
-    
-    this.queryProgressEventSource.onopen = () => {
-      //console.log('Query progress SSE connection opened');
-    };
-    
-    this.queryProgressEventSource.onmessage = (event) => {
-      try {
-        const progress = JSON.parse(event.data);
-        //console.log('Progress update received via SSE:', progress);
-        
-        // Skip heartbeat messages
-        if (progress.heartbeat) {
-          return;
-        }
-        
-        // Skip connection messages
-        if (progress.connected) {
-          return;
-        }
-        
-        // Run inside Angular zone to trigger change detection
-        this.ngZone.run(() => {
-          // Update progress UI
-          if (progress.isRunning) {
-            this.progressPhase = progress.phase;
-            this.progressMessage = progress.message || '';
-            this.progressProcessed = progress.processed || 0;
-            this.progressTotal = progress.total || 2446;
-            if (progress.matches !== undefined) {
-              this.progressMatches = progress.matches;
-            }
-          } else if (progress.phase === 'completed') {
-            // Handle completion
-            this.progressPhase = 'completed';
-            this.progressMessage = progress.message || 'Query completed!';
-            this.progressProcessed = progress.total || this.progressTotal;
-            if (progress.matches !== undefined) {
-              this.progressMatches = progress.matches;
-            }
-            
-            // Close SSE connection on completion
-            setTimeout(() => {
-              this.stopProgressSSE();
-            }, 1000);
-          }
-        });
-      } catch (error) {
-        //console.error('Error parsing SSE progress data:', error);
-      }
-    };
-    
-    this.queryProgressEventSource.onerror = (error) => {
-      //console.error('Query progress SSE error:', error);
-      
-      // Auto-reconnect after short delay if connection fails
-      setTimeout(() => {
-        if (this.queryProgressEventSource?.readyState === EventSource.CLOSED) {
-          //console.log('Attempting to reconnect SSE...');
-          this.startProgressSSE();
-        }
-      }, 2000);
-    };
-  }
+  // SSE progress methods removed - using simple loaders now
   
-  private stopProgressSSE() {
-    if (this.queryProgressEventSource) {
-      //console.log('Closing query progress SSE connection');
-      this.queryProgressEventSource.close();
-      this.queryProgressEventSource = null;
-    }
-  }
-  
-  // Legacy function - keep for backward compatibility but make it call SSE
-  private stopProgressPolling() {
-    this.stopProgressSSE();
-  }
+  // Progress polling methods removed - using simple loaders now
   
   private checkAndPreventDuplicateRequest(): boolean {
     if (this.isQueryRunning) {
@@ -907,10 +787,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   }
   
   // Manual test function for debugging SSE
-  testProgressSSE() {
-    //console.log('Testing progress SSE connection...');
-    this.startProgressSSE();
-  }
+  // Progress SSE test method removed
 
   groupByDate(matches: any[], isLatestDayOnly: boolean = false) {
     this.groupedResults.clear();
@@ -1276,15 +1153,9 @@ export class ScreenerComponent implements OnInit, OnDestroy {
 
     this.loading = true;
     this.error = null;
-    this.showProgress = true;
-    this.progressPhase = 'initializing';
-    this.progressMessage = 'Starting hard refresh...';
-    this.progressProcessed = 0;
-    this.progressTotal = 0;
-    this.progressMatches = 0;
-
-    // Start SSE connection for progress updates
-    this.startProgressSSE();
+    this.showLoader = true;
+    this.loaderTitle = 'Hard Refresh';
+    this.loaderMessage = 'Starting hard refresh of all data...';
 
     this.http.post<any>(`${this.apiUrl}/hard-refresh`, {}, {
       headers: {
@@ -1292,13 +1163,21 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       }
     }).subscribe({
       next: (response) => {
-        this.progressMessage = response.message || 'Hard refresh started...';
-        // Progress will be tracked through SSE
+        this.loading = false;
+        this.showLoader = false;
+        
+        Swal.fire({
+          title: 'Hard Refresh Complete!',
+          text: response.message || 'Database has been refreshed successfully',
+          icon: 'success',
+          timer: 3000,
+          showConfirmButton: false
+        });
       },
       error: (error) => {
         this.loading = false;
-        this.showProgress = false;
-        this.error = 'Failed to start hard refresh: ' + error.message;
+        this.showLoader = false;
+        this.showErrorToast(error);
       }
     });
   }
@@ -2023,160 +1902,64 @@ export class ScreenerComponent implements OnInit, OnDestroy {
     return this.multiComponentIndicators[field];
   }
 
-  // HTTP request retry logic with exponential backoff
-  private makeHttpRequestWithRetry<T>(requestFn: () => Observable<T>, maxRetries: number = 3): Observable<T> {
-    return requestFn().pipe(
-      retry({
-        count: maxRetries,
-        delay: (error, retryCount) => {
-          // Only retry on network errors and server errors
-          if (this.isRetryableError(error)) {
-            const delay = Math.min(1000 * Math.pow(2, retryCount - 1), 10000);
-            //console.log(`Retrying request (${retryCount}/${maxRetries}) after ${delay}ms for error:`, error.message);
-            return timer(delay);
-          }
-          return throwError(() => error);
-        }
-      }),
-      catchError((error) => {
-        //console.error('Request failed after all retries:', error);
-        return throwError(() => error);
-      })
-    );
-  }
 
-  // Check if error is retryable
-  private isRetryableError(error: any): boolean {
-    if (error instanceof HttpErrorResponse) {
-      // Retry on network errors and 5xx server errors
-      return error.status === 0 || error.status >= 500;
-    }
-    // Retry on connection errors
-    return error.code === 'ECONNRESET' || 
-           error.code === 'ETIMEDOUT' || 
-           error.code === 'ECONNABORTED' ||
-           error.message?.includes('timeout') ||
-           error.message?.includes('connection');
-  }
-
-  // Get user-friendly error message
-  private getErrorMessage(error: any): string {
+  // Show error message in top-right corner toast
+  private showErrorToast(error: any): void {
+    let errorMessage = 'An unexpected error occurred';
+    
     if (error instanceof HttpErrorResponse) {
       if (error.status === 0) {
-        Swal.fire({
-          icon: 'error',
-          title: 'Connection Failed',
-          text: 'Please check your internet connection and try again.',
-          confirmButtonColor: '#dc3545'
-        });
-        return 'Connection failed. Please check your internet connection and try again.';
-      }
-      
-      // Handle 400 errors specifically for missing indicators
-      if (error.status === 400) {
-        const errorMessage = error.error?.error || error.error?.message || '';
+        errorMessage = 'Connection failed. Please check your internet connection and try again.';
+      } else if (error.status === 400) {
+        const apiErrorMessage = error.error?.error || error.error?.message || '';
         
-        // Check if it's a field validation error (new validation system)
-        if (errorMessage === 'Field validation failed' || 
+        // Check if it's a field validation error
+        if (apiErrorMessage === 'Field validation failed' || 
             error.error?.details?.includes('Missing fields in precalculated data')) {
           const missingFields = error.error?.missing_fields || [];
-          const availableFields = error.error?.available_fields || [];
-          
           if (missingFields.length > 0) {
-            // Show SweetAlert for missing fields
-            Swal.fire({
-              icon: 'error',
-              title: 'Missing Fields',
-              html: `
-                <div style="text-align: left;">
-                  <p><strong>The following fields are not available in precalculated data:</strong></p>
-                  <ul style="background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 4px; padding: 15px 30px; margin: 10px 0;">
-                    ${missingFields.map((field: string) => `<li style="color: #856404; font-family: monospace;">${field}</li>`).join('')}
-                  </ul>
-                  <details style="margin-top: 15px;">
-                    <summary style="cursor: pointer; color: #6c757d;">Show available fields</summary>
-                    <div style="max-height: 200px; overflow-y: auto; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px; padding: 10px; margin-top: 5px;">
-                      ${availableFields.map((field: string) => `<span style="display: inline-block; background: #e9ecef; padding: 2px 6px; margin: 2px; border-radius: 3px; font-size: 12px; font-family: monospace;">${field}</span>`).join('')}
-                    </div>
-                  </details>
-                  <p style="color: #6c757d; font-style: italic; margin-top: 15px;">${error.error?.hint || 'Please use available fields in your query.'}</p>
-                </div>
-              `,
-              confirmButtonColor: '#dc3545',
-              confirmButtonText: 'OK',
-              width: '600px'
-            });
-            return `Missing fields: ${missingFields.join(', ')}. These fields are not available in precalculated data.`;
+            errorMessage = `Missing fields: ${missingFields.join(', ')}. These fields are not available in precalculated data.`;
           }
         }
-        
-        // Check if it's a missing indicator error (legacy system)
-        if (errorMessage.includes('Missing required indicators') || 
-            errorMessage.includes('not available in precalculated storage')) {
+        // Check if it's a missing indicator error
+        else if (apiErrorMessage.includes('Missing required indicators') || 
+                 apiErrorMessage.includes('not available in precalculated storage')) {
           const missingIndicators = error.error?.missing || [];
           if (missingIndicators.length > 0) {
-            // Show SweetAlert for missing indicators
-            Swal.fire({
-              icon: 'error',
-              title: 'Missing Indicators',
-              html: `
-                <div style="text-align: left;">
-                  <p>The following indicators are not precalculated:</p>
-                  <ul style="background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 4px; padding: 15px 30px; margin: 10px 0;">
-                    ${missingIndicators.map((ind: string) => `<li style="color: #856404; font-family: monospace;">${ind}</li>`).join('')}
-                  </ul>
-                  <p style="color: #6c757d; font-style: italic; margin-top: 15px;">Please contact the administrator to add these indicators.</p>
-                </div>
-              `,
-              confirmButtonColor: '#dc3545',
-              confirmButtonText: 'OK',
-              width: '500px'
-            });
-            return `Missing indicators: ${missingIndicators.join(', ')}. These indicators need to be precalculated before running this query.`;
+            errorMessage = `Missing indicators: ${missingIndicators.join(', ')}. These indicators need to be precalculated first.`;
+          } else {
+            errorMessage = apiErrorMessage;
           }
-          // Show SweetAlert for generic missing indicator error
-          Swal.fire({
-            icon: 'error',
-            title: 'Query Error',
-            text: errorMessage,
-            confirmButtonColor: '#dc3545'
-          });
-          return errorMessage;
+        } else {
+          errorMessage = apiErrorMessage;
         }
-        
-        // Show SweetAlert for other 400 errors
-        Swal.fire({
-          icon: 'error',
-          title: 'Query Error',
-          text: errorMessage,
-          confirmButtonColor: '#dc3545'
-        });
-        return errorMessage;
+      } else if (error.status >= 500) {
+        errorMessage = 'Server error occurred. Please try again later.';
+      } else {
+        errorMessage = error.error?.error || error.message || 'An unexpected error occurred';
       }
-      
-      if (error.status >= 500) {
-        return 'Server error occurred. The request will be retried automatically.';
-      }
-      
-      return error.error?.error || error.message || 'An unexpected error occurred';
+    } else {
+      errorMessage = error.error?.error || error.message || 'An unexpected error occurred';
     }
-    
-    if (error.code === 'ECONNRESET' || error.message?.includes('ECONNRESET')) {
-      return 'Connection was reset. Retrying automatically...';
-    }
-    
-    if (error.code === 'ETIMEDOUT' || error.message?.includes('timeout')) {
-      return 'Request timed out. Retrying with longer timeout...';
-    }
-    
-    return error.error?.error || error.message || 'An unexpected error occurred';
+
+    // Show small toast notification in top-right corner
+    Swal.fire({
+      title: 'Query Failed',
+      text: errorMessage,
+      icon: 'error',
+      toast: true,
+      position: 'top-end',
+      showConfirmButton: false,
+      timer: 5000,
+      timerProgressBar: true
+    });
+
+    // Also set the error property for display in the template
+    this.error = errorMessage;
   }
 
-  // Progress bar close method
-  closeProgress() {
-    this.showProgress = false;
-    this.stopProgressPolling();
-  }
+
+  // Progress close method removed - using simple loaders now
 
   // Tooltip methods
   showTooltip(match: any, event: MouseEvent) {
@@ -2350,35 +2133,30 @@ export class ScreenerComponent implements OnInit, OnDestroy {
 
     this.uploading = true;
     this.uploadStatus = '';
-    this.showUploadProgress = true;
-    this.uploadProgress = 10;
-    this.uploadProgressText = 'Uploading CSV file...';
+    this.showUploadLoader = true;
+    this.uploadLoaderTitle = 'Processing CSV';
+    this.uploadLoaderMessage = 'Uploading and processing CSV file...';
 
     try {
       // Start the unified CSV upload process
       const formData = new FormData();
       formData.append('csvFile', this.selectedFile);
 
-      // Upload CSV and start the entire process (returns immediately with progress URL)
+      // Upload CSV and complete the entire process
       const uploadResponse = await this.http.post<any>(`${this.apiUrl}/upload-csv`, formData).toPromise();
       
       if (!uploadResponse.success) {
         throw new Error(uploadResponse.error || 'Failed to process CSV');
       }
 
-      //console.log('CSV upload initiated:', uploadResponse);
-
       // Store symbol info for success message
       const symbolPreview = uploadResponse.sampleSymbols ? uploadResponse.sampleSymbols.join(', ') : 'No symbols found';
       const symbolCount = uploadResponse.symbolCount || 0;
 
-      // Monitor the entire process via SSE
-      await this.monitorCSVUploadProgressSSE();
-
       // Success - process completed
-      this.uploadProgress = 100;
       this.uploadSuccess = true;
       this.uploadStatus = `Successfully updated database with ${symbolCount} symbols (e.g., ${symbolPreview})`;
+      this.showUploadLoader = false;
 
       // Reset file input
       this.selectedFile = null;
@@ -2398,10 +2176,9 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       });
 
     } catch (error: any) {
-      //console.error('CSV upload error:', error);
       this.uploadSuccess = false;
       this.uploadStatus = 'Upload failed: ' + (error.error?.error || error.message || 'Unknown error');
-      this.uploadProgressText = 'Upload failed';
+      this.showUploadLoader = false;
       
       // Show error message
       await Swal.fire({
@@ -2412,109 +2189,10 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       });
     } finally {
       this.uploading = false;
-      setTimeout(() => {
-        this.showUploadProgress = false;
-        this.uploadProgress = 0;
-      }, 3000);
     }
   }
 
-  private async monitorCSVUploadProgressSSE(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      // Close any existing SSE connection
-      if (this.csvProgressEventSource) {
-        this.csvProgressEventSource.close();
-        this.csvProgressEventSource = null;
-      }
-
-      //console.log('Connecting to CSV upload SSE endpoint...');
-      
-      // Create new SSE connection to the CSV upload progress stream
-      this.csvProgressEventSource = new EventSource(`${this.apiUrl}/csv-upload-progress-stream`);
-      
-      let connectionTimeout = setTimeout(() => {
-        //console.error('SSE connection timeout');
-        if (this.csvProgressEventSource) {
-          this.csvProgressEventSource.close();
-          this.csvProgressEventSource = null;
-        }
-        reject(new Error('Failed to connect to progress stream'));
-      }, 10000); // 10 second connection timeout
-
-      this.csvProgressEventSource.onopen = () => {
-        //console.log('SSE connection opened for CSV upload progress');
-        clearTimeout(connectionTimeout);
-      };
-
-      this.csvProgressEventSource.onmessage = (event) => {
-        try {
-          const progress = JSON.parse(event.data);
-          
-          // Update progress bar
-          if (progress.percentage !== undefined) {
-            this.uploadProgress = progress.percentage;
-          }
-          if (progress.message) {
-            this.uploadProgressText = progress.message;
-          }
-          
-          //console.log('SSE Progress update:', {
-          //  phase: progress.phase,
-          //  percentage: progress.percentage,
-          //  message: progress.message
-          //});
-          
-          // Handle completion states
-          if (progress.phase === 'completed') {
-            //console.log('Upload completed successfully');
-            if (this.csvProgressEventSource) {
-              this.csvProgressEventSource.close();
-              this.csvProgressEventSource = null;
-            }
-            resolve();
-          } else if (progress.phase === 'completed_with_warnings') {
-            //console.log('Upload completed with warnings');
-            if (this.csvProgressEventSource) {
-              this.csvProgressEventSource.close();
-              this.csvProgressEventSource = null;
-            }
-            resolve();
-          } else if (progress.phase === 'error') {
-            //console.error('Upload error:', progress.message);
-            if (this.csvProgressEventSource) {
-              this.csvProgressEventSource.close();
-              this.csvProgressEventSource = null;
-            }
-            reject(new Error(progress.message || 'Upload failed'));
-          } else if (progress.phase === 'cancelled') {
-            //console.log('Upload cancelled');
-            if (this.csvProgressEventSource) {
-              this.csvProgressEventSource.close();
-              this.csvProgressEventSource = null;
-            }
-            reject(new Error('Process was cancelled'));
-          }
-        } catch (error) {
-          //console.error('Error parsing SSE message:', error);
-        }
-      };
-
-      this.csvProgressEventSource.onerror = (error) => {
-        //console.error('SSE connection error:', error);
-        clearTimeout(connectionTimeout);
-        
-        // Clean up the connection
-        if (this.csvProgressEventSource) {
-          this.csvProgressEventSource.close();
-          this.csvProgressEventSource = null;
-        }
-        
-        // Don't reject on connection errors, as the browser will automatically reconnect
-        // Only reject if we haven't received any progress updates
-        //console.warn('SSE connection lost, but process may still be running');
-      };
-    });
-  }
+  // CSV upload progress monitoring removed - using simple loaders now
 
   // Download CSV functionality - client-side generation
   downloadCSV() {
@@ -2787,15 +2465,10 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy() {
-    // Clean up EventSource connections
-    if (this.csvProgressEventSource) {
-      this.csvProgressEventSource.close();
-      this.csvProgressEventSource = null;
-    }
-    
-    if (this.queryProgressEventSource) {
-      this.queryProgressEventSource.close();
-      this.queryProgressEventSource = null;
+    // Clean up any ongoing requests
+    if (this.currentRequestAbortController) {
+      this.currentRequestAbortController.abort();
+      this.currentRequestAbortController = null;
     }
     
     // Clean up any running queries
