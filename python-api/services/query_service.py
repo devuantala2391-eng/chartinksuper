@@ -89,20 +89,23 @@ def get_day_of_week_name(timestamp_str: str) -> str:
 def resolve_field_name(field_name: str) -> str:
     """Resolve field name variations to actual field names in the data."""
     import re
+    from services.utils import format_multiplier_for_key, format_period_for_key
     
     # Handle format with spaces: "daily supertrend (10,1.2)" -> "supertrend_10_1dot2"
     # First normalize spaces to underscores
     field_name = field_name.replace(' ', '_')
     
-    # Handle parentheses format: daily_supertrend_(30,1.2) -> supertrend_30_1dot2
+    # Handle parentheses format: daily_supertrend_(30,1.2) -> daily_supertrend_30_1dot2
+    # KEEP timeframe prefix for proper identification
     paren_match = re.match(r'^(daily|weekly|monthly)_supertrend_\((\d+),(\d+(?:\.\d+)?)\)$', field_name)
     if paren_match:
         timeframe = paren_match.group(1)
         period = paren_match.group(2)
         multiplier = paren_match.group(3)
-        # Convert to new naming convention: remove redundant timeframe, use "dot" for decimals
-        multiplier_clean = multiplier.replace('.', 'dot') if '.' in multiplier else multiplier
-        return f"supertrend_{period}_{multiplier_clean}"
+        # Use utility functions for proper formatting
+        period_str = format_period_for_key(float(period))
+        multiplier_str = format_multiplier_for_key(float(multiplier))
+        return f"{timeframe}_supertrend_{period_str}_{multiplier_str}"
     
     # Handle dynamic decimal parameters for indicators
     # Check for Bollinger Bands with decimal parameters (e.g., daily_bb_upper_10_1.22)
@@ -116,24 +119,21 @@ def resolve_field_name(field_name: str) -> str:
         return f"{timeframe}_bb_{period}_{std_dev}_{band_type}"
     
     # Check for SuperTrend with decimal parameters
-    # Convert to new naming convention: supertrend_30_1dot2 (no redundant timeframe, use "dot" for decimals)
+    # KEEP timeframe prefix: daily_supertrend_30_1dot2, weekly_supertrend_30_1dot2
     st_match = re.match(r'^(daily|weekly|monthly)_supertrend_(\d+)_(\d+(?:[_\.]\d+)?)$', field_name)
     if st_match:
         timeframe = st_match.group(1)
         period = st_match.group(2)
         multiplier = st_match.group(3)
-        # Convert to new naming convention: remove redundant timeframe, use "dot" for decimals
+        # Use utility functions for proper formatting
         # Handle both underscore and dot formats for the multiplier
         if '_' in multiplier and '.' not in multiplier:
-            # Convert underscore format (1_2) to dot format (1dot2)
-            multiplier_clean = multiplier.replace('_', 'dot')
-        elif '.' in multiplier:
-            # Convert dot format (1.2) to dot format (1dot2)
-            multiplier_clean = multiplier.replace('.', 'dot')
-        else:
-            # Integer format (2)
-            multiplier_clean = multiplier
-        return f"supertrend_{period}_{multiplier_clean}"
+            # Convert underscore format (1_2) to float
+            multiplier = multiplier.replace('_', '.')
+        # Now format properly
+        period_str = format_period_for_key(float(period))
+        multiplier_str = format_multiplier_for_key(float(multiplier))
+        return f"{timeframe}_supertrend_{period_str}_{multiplier_str}"
     
     # Check for other indicators with decimal parameters
     ind_match = re.match(r'^(daily|weekly|monthly)_(rsi|sma|ema|pctchg)_(\d+(?:\.\d+)?)$', field_name)

@@ -9,6 +9,7 @@ import logging
 from typing import Dict, List, Set, Any, Optional
 from services.dynamic_indicator_manager import dynamic_indicator_manager
 from services.ultra_fast_database_service import ultra_fast_db as high_speed_db
+from services.utils import format_multiplier_for_key, format_period_for_key
 import re
 
 logger = logging.getLogger(__name__)
@@ -105,8 +106,7 @@ class HighSpeedQueryValidator:
     def _normalize_field_name(self, field_name: str) -> str:
         """Normalize field name to match database storage format"""
         # Handle SuperTrend with decimal parameters
-        # e.g., "daily supertrend (10,1.2)" -> "supertrend_10_1dot2"
-        # e.g., weekly supertrend with parameters
+        # Keep ALL timeframe prefixes: daily_, weekly_, monthly_
         
         # Handle percentage change indicators - NEW FORMAT: daily_pctchg, weekly_pctchg, monthly_pctchg
         # Convert legacy format daily_pctchg_1 -> daily_pctchg (remove the _1 parameter)
@@ -116,46 +116,47 @@ class HighSpeedQueryValidator:
                 field_name = field_name[:-2]  # Remove the '_1' suffix
             return field_name
         
-        # Handle weekly/monthly SuperTrend - keep timeframe prefix
-        if field_name.startswith(('weekly_', 'monthly_')):
+        # Handle ALL timeframed SuperTrend - keep timeframe prefix
+        if field_name.startswith(('daily_', 'weekly_', 'monthly_')):
             if 'supertrend_' in field_name:
                 parts = field_name.split('_')
-                if len(parts) >= 4:  # weekly supertrend with period and multiplier
-                    # Replace dots with 'dot' in the multiplier if present
-                    parts[-1] = parts[-1].replace('.', 'dot')
-                    return '_'.join(parts)
+                if len(parts) >= 4:  # timeframed supertrend with period and multiplier
+                    # Use utility function to format multiplier properly
+                    timeframe = parts[0]
+                    period = parts[2]
+                    multiplier = parts[3].replace('dot', '.')
+                    period_str = format_period_for_key(float(period))
+                    multiplier_str = format_multiplier_for_key(float(multiplier))
+                    return f"{timeframe}_supertrend_{period_str}_{multiplier_str}"
+            # Keep all other timeframed indicators as-is
             return field_name
         
-        # Remove "daily_" prefix for daily indicators
-        field_name = re.sub(r'^daily_', '', field_name)
+        # DO NOT remove timeframe prefixes - they are part of the indicator key
         
-        # Handle parentheses format: supertrend_(10,1.2) -> supertrend_10_1dot2
+        # Handle parentheses format - but this should rarely happen as resolve_field_name handles it
+        # supertrend_(10,1.2) -> daily_supertrend_10_1dot2 (default to daily if no prefix)
         paren_match = re.match(r'^supertrend_\((\d+),(\d+(?:\.\d+)?)\)$', field_name)
         if paren_match:
             period = paren_match.group(1)
             multiplier = paren_match.group(2)
-            multiplier_clean = multiplier.replace('.', 'dot')
-            return f"supertrend_{period}_{multiplier_clean}"
+            # Use utility functions for proper formatting
+            period_str = format_period_for_key(float(period))
+            multiplier_str = format_multiplier_for_key(float(multiplier))
+            # Default to daily if no timeframe specified
+            return f"daily_supertrend_{period_str}_{multiplier_str}"
         
-        # Handle already formatted: supertrend_10_1.2 -> supertrend_10_1dot2
-        if 'supertrend_' in field_name:
+        # Handle already formatted WITHOUT timeframe prefix (legacy)
+        # supertrend_10_1.2 -> daily_supertrend_10_1dot2 (add daily prefix)
+        if field_name.startswith('supertrend_'):
             parts = field_name.split('_')
             if len(parts) >= 3:
-                # Format multiplier parameter consistently
-                multiplier_part = parts[-1]
-                if '.' in multiplier_part:
-                    # Has decimal, replace with dot
-                    parts[-1] = multiplier_part.replace('.', 'dot')
-                else:
-                    # Whole number, keep as is
-                    try:
-                        # Verify it's a valid number
-                        float(multiplier_part)
-                        parts[-1] = multiplier_part
-                    except ValueError:
-                        # If not a valid number, still replace dots for safety
-                        parts[-1] = multiplier_part.replace('.', 'dot')
-                return '_'.join(parts)
+                # Use utility functions for proper formatting
+                period = parts[1]
+                multiplier = parts[2].replace('dot', '.')
+                period_str = format_period_for_key(float(period))
+                multiplier_str = format_multiplier_for_key(float(multiplier))
+                # Add daily prefix for unprefixed supertrend
+                return f'daily_supertrend_{period_str}_{multiplier_str}'
         
         return field_name
     
@@ -168,16 +169,44 @@ class HighSpeedQueryValidator:
             # Check dynamic fields in JSONB
             if high_speed_db.pool:
                 async with high_speed_db.pool.acquire() as conn:
-                    # Get unique indicator keys from JSONB
-                    result = await conn.fetch("""
+                    # Get unique indicator keys from daily_candles JSONB
+                    daily_result = await conn.fetch("""
                         SELECT DISTINCT jsonb_object_keys(indicators) as indicator_key
                         FROM daily_candles
                         WHERE indicators IS NOT NULL AND indicators != '{}'
                         LIMIT 1000
                     """)
                     
-                    for row in result:
+                    for row in daily_result:
                         existing_fields.add(row['indicator_key'])
+                    
+                    # Also check weekly_candles table for weekly indicators
+                    try:
+                        weekly_result = await conn.fetch("""
+                            SELECT DISTINCT jsonb_object_keys(indicators) as indicator_key
+                            FROM weekly_candles
+                            WHERE indicators IS NOT NULL AND indicators != '{}'
+                            LIMIT 1000
+                        """)
+                        
+                        for row in weekly_result:
+                            existing_fields.add(row['indicator_key'])
+                    except Exception as weekly_error:
+                        logger.debug(f"Weekly candles table not accessible: {weekly_error}")
+                    
+                    # Also check monthly_candles table for monthly indicators
+                    try:
+                        monthly_result = await conn.fetch("""
+                            SELECT DISTINCT jsonb_object_keys(indicators) as indicator_key
+                            FROM monthly_candles
+                            WHERE indicators IS NOT NULL AND indicators != '{}'
+                            LIMIT 1000
+                        """)
+                        
+                        for row in monthly_result:
+                            existing_fields.add(row['indicator_key'])
+                    except Exception as monthly_error:
+                        logger.debug(f"Monthly candles table not accessible: {monthly_error}")
             
             logger.info(f"Found {len(existing_fields)} existing fields in database")
             return existing_fields
@@ -223,31 +252,30 @@ class HighSpeedQueryValidator:
         # Handle percentage change indicators: daily_pctchg, weekly_pctchg, etc.
         if 'pctchg' in field_name:
             parts = field_name.split('_')
-            if len(parts) == 2:  # e.g., daily_pctchg, weekly_pctchg
+            if len(parts) >= 2:  # e.g., daily_pctchg, weekly_pctchg
                 timeframe = parts[0]  # daily, weekly, monthly
-                return {
-                    "name": "PercentageChange",
-                    "timeframe": timeframe,
-                    "params": {}  # No parameters needed - always compare to 1 period ago
-                }
-            elif len(parts) >= 3:  # Legacy format: daily_pctchg_1 - convert to new format
-                try:
-                    timeframe = parts[0]  # daily, weekly, monthly
-                    # Ignore the lookback parameter, always use 1
+                # Validate timeframe
+                if timeframe in ['daily', 'weekly', 'monthly']:
                     return {
-                        "name": "PercentageChange", 
+                        "name": "PercentageChange",
                         "timeframe": timeframe,
-                        "params": {}  # No parameters needed
+                        "params": {}  # No parameters needed - always compare to 1 period ago
                     }
-                except (ValueError, IndexError):
-                    logger.error(f"Invalid percentage change parameters in {field_name}")
+                else:
+                    # Default to daily if invalid timeframe
+                    return {
+                        "name": "PercentageChange",
+                        "timeframe": "daily",
+                        "params": {}
+                    }
         
-        # Handle weekly/monthly SuperTrend with parameters
-        elif field_name.startswith(('weekly_supertrend_', 'monthly_supertrend_')):
+        # Handle ALL timeframed SuperTrend with parameters
+        # Including: daily_supertrend_10_3, weekly_supertrend_10_3, monthly_supertrend_10_3
+        elif field_name.startswith(('daily_supertrend_', 'weekly_supertrend_', 'monthly_supertrend_')):
             parts = field_name.split('_')
-            if len(parts) >= 4:  # weekly supertrend with parameters
+            if len(parts) >= 4:  # timeframed supertrend with parameters
                 try:
-                    timeframe = parts[0]  # weekly or monthly
+                    timeframe = parts[0]  # daily, weekly or monthly
                     period = float(parts[2])
                     multiplier_str = parts[3].replace('dot', '.')
                     multiplier = float(multiplier_str)
@@ -261,9 +289,10 @@ class HighSpeedQueryValidator:
                         }
                     }
                 except ValueError:
-                    logger.error(f"Invalid weekly/monthly SuperTrend parameters in {field_name}")
+                    logger.error(f"Invalid {timeframe} SuperTrend parameters in {field_name}")
         
-        # Handle daily SuperTrend: supertrend_10_1dot2
+        # Handle unprefixed SuperTrend (legacy): supertrend_10_1dot2
+        # This should rarely happen now, but keep for backward compatibility
         elif field_name.startswith('supertrend_'):
             parts = field_name.split('_')
             if len(parts) >= 3:
@@ -272,6 +301,7 @@ class HighSpeedQueryValidator:
                     multiplier_str = parts[2].replace('dot', '.')
                     multiplier = float(multiplier_str)
                     
+                    # Default to daily for unprefixed supertrend
                     return {
                         "name": "SuperTrend",
                         "timeframe": "daily",
@@ -283,40 +313,64 @@ class HighSpeedQueryValidator:
                 except ValueError:
                     logger.error(f"Invalid SuperTrend parameters in {field_name}")
         
-        # Handle RSI with period
-        elif field_name.startswith('rsi_'):
+        # Handle RSI with optional timeframe prefix
+        elif 'rsi_' in field_name:
             parts = field_name.split('_')
-            if len(parts) >= 2:
+            timeframe = "daily"  # default
+            period_idx = 1
+            
+            # Check if first part is a timeframe
+            if len(parts) >= 3 and parts[0] in ['daily', 'weekly', 'monthly']:
+                timeframe = parts[0]
+                period_idx = 2
+            
+            if len(parts) > period_idx:
                 try:
-                    period = float(parts[1])
+                    period = float(parts[period_idx])
                     return {
                         "name": "RSI",
-                        "timeframe": "daily",
+                        "timeframe": timeframe,
                         "params": {"period": period}
                     }
                 except ValueError:
                     pass
         
-        # Handle SMA with period
-        elif field_name.startswith('sma_'):
+        # Handle SMA with optional timeframe prefix
+        elif 'sma_' in field_name:
             parts = field_name.split('_')
-            if len(parts) >= 2:
+            timeframe = "daily"  # default
+            period_idx = 1
+            
+            # Check if first part is a timeframe
+            if len(parts) >= 3 and parts[0] in ['daily', 'weekly', 'monthly']:
+                timeframe = parts[0]
+                period_idx = 2
+            
+            if len(parts) > period_idx:
                 try:
-                    period = float(parts[1])
+                    period = float(parts[period_idx])
                     return {
                         "name": "SMA",
-                        "timeframe": "daily",
+                        "timeframe": timeframe,
                         "params": {"period": period}
                     }
                 except ValueError:
                     pass
         
-        # Handle EMA with period
-        elif field_name.startswith('ema_'):
+        # Handle EMA with optional timeframe prefix
+        elif 'ema_' in field_name:
             parts = field_name.split('_')
-            if len(parts) >= 2:
+            timeframe = "daily"  # default
+            period_idx = 1
+            
+            # Check if first part is a timeframe
+            if len(parts) >= 3 and parts[0] in ['daily', 'weekly', 'monthly']:
+                timeframe = parts[0]
+                period_idx = 2
+            
+            if len(parts) > period_idx:
                 try:
-                    period = float(parts[1])
+                    period = float(parts[period_idx])
                     return {
                         "name": "EMA",
                         "timeframe": "daily",

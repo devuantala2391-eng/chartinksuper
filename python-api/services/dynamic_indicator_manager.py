@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 import os
 from dotenv import load_dotenv
+from services.utils import format_multiplier_for_key, format_period_for_key
 
 load_dotenv()
 
@@ -95,9 +96,12 @@ class DatabaseDynamicIndicatorManager:
         if name == 'supertrend':
             period = params.get('period', 10)
             multiplier = params.get('multiplier', 2.0)
-            multiplier_str = str(multiplier).replace('.', 'dot')
-            return f"supertrend_{period}_{multiplier_str}"
-        elif name == 'percentagechange':
+            # Use utility function to format multiplier properly
+            period_str = format_period_for_key(period)
+            multiplier_str = format_multiplier_for_key(multiplier)
+            # ALWAYS include timeframe prefix for SuperTrend
+            return f"{timeframe}_supertrend_{period_str}_{multiplier_str}"
+        elif name == 'percentagechange' or name == 'pctchg':
             if timeframe == 'daily':
                 lookback = params.get('lookback')
                 return f"daily_pctchg_{lookback}" if lookback else "daily_pctchg"
@@ -105,9 +109,12 @@ class DatabaseDynamicIndicatorManager:
                 return f"{timeframe}_pctchg"
         elif name.lower() in ['rsi', 'sma', 'ema']:
             period = params.get('period', 14)
-            return f"{name.lower()}_{period}"
+            period_str = format_period_for_key(period)
+            # Include timeframe prefix for all indicators
+            return f"{timeframe}_{name.lower()}_{period_str}"
         else:
-            return f"{name.lower()}_{timeframe}"
+            # Always include timeframe prefix
+            return f"{timeframe}_{name.lower()}"
             
     async def add_custom_indicator(self, name: str, params: Dict, timeframe: str = 'daily') -> bool:
         """Add custom indicator to database"""
@@ -164,19 +171,43 @@ class DatabaseDynamicIndicatorManager:
     async def auto_calculate_missing_indicator(self, error_detail: str) -> bool:
         """Auto-calculate missing indicator based on error"""
         # Parse error detail to extract indicator info
-        # This is a simplified version - you may need to adjust based on your error format
         try:
-            if 'supertrend' in error_detail.lower():
-                # Extract supertrend parameters
-                parts = error_detail.split()
-                if len(parts) >= 3:
-                    period = int(parts[1])
-                    multiplier = float(parts[2])
+            error_lower = error_detail.lower()
+            
+            # Detect timeframe from the error message
+            timeframe = 'daily'  # default
+            if 'weekly_' in error_lower:
+                timeframe = 'weekly'
+            elif 'monthly_' in error_lower:
+                timeframe = 'monthly'
+            elif 'daily_' in error_lower:
+                timeframe = 'daily'
+            
+            if 'supertrend' in error_lower:
+                # Extract supertrend parameters from error like "weekly_supertrend_10_3"
+                import re
+                pattern = r'(?:daily_|weekly_|monthly_)?supertrend_(\d+)_(\d+(?:dot\d+)?)'  
+                match = re.search(pattern, error_lower)
+                if match:
+                    period = int(match.group(1))
+                    multiplier_str = match.group(2)
+                    # Convert 'dot' back to decimal point
+                    multiplier = float(multiplier_str.replace('dot', '.'))
+                    
+                    print(f"Auto-calculating {timeframe} SuperTrend({period}, {multiplier}) from error: {error_detail}")
                     return await self.calculate_and_store_indicator(
-                        'SuperTrend', {'period': period, 'multiplier': multiplier}, 'daily'
+                        indicator_def={'name': 'SuperTrend', 'params': {'period': period, 'multiplier': multiplier}, 'timeframe': timeframe}
                     )
+            elif 'pctchg' in error_lower or 'percentage' in error_lower:
+                # Auto-calculate percentage change for the detected timeframe
+                print(f"Auto-calculating {timeframe} percentage change from error: {error_detail}")
+                return await self.calculate_and_store_indicator(
+                    indicator_def={'name': 'percentagechange', 'params': {}, 'timeframe': timeframe}
+                )
+            
             return False
-        except:
+        except Exception as e:
+            print(f"Error parsing indicator from error detail '{error_detail}': {e}")
             return False
             
     async def calculate_and_store_indicator(self, indicator_def: Dict = None, store_in_highspeed: bool = True, name: str = None, params: Dict = None, timeframe: str = None) -> bool:
@@ -206,16 +237,33 @@ class DatabaseDynamicIndicatorManager:
                     else:
                         period = int(period)
                     
-                    # Call supertrend stored procedure for all symbols
-                    result = await conn.fetchrow("""
-                        SELECT * FROM calculate_supertrend_for_all_symbols($1, $2, FALSE)
-                    """, period, multiplier)
+                    # Use the NEW timeframe-aware stored procedures
+                    if timeframe == 'daily':
+                        # Call daily SuperTrend procedure
+                        result = await conn.fetchrow("""
+                            SELECT * FROM calculate_timeframe_supertrend('daily', $1, $2, NULL)
+                        """, period, multiplier)
+                    elif timeframe == 'weekly':
+                        # Call weekly SuperTrend procedure
+                        result = await conn.fetchrow("""
+                            SELECT * FROM calculate_weekly_monthly_supertrend('weekly', $1, $2, NULL)
+                        """, period, multiplier)
+                    elif timeframe == 'monthly':
+                        # Call monthly SuperTrend procedure
+                        result = await conn.fetchrow("""
+                            SELECT * FROM calculate_weekly_monthly_supertrend('monthly', $1, $2, NULL)
+                        """, period, multiplier)
+                    else:
+                        # Default to daily if unknown timeframe
+                        result = await conn.fetchrow("""
+                            SELECT * FROM calculate_timeframe_supertrend('daily', $1, $2, NULL)
+                        """, period, multiplier)
                     
                     if result:
-                        print(f"SuperTrend calculation result: {dict(result)}")
-                        # Check if status is SUCCESS or if we have successful symbols
-                        success = (result.get('status') == 'SUCCESS' or 
-                                 result.get('successful_symbols', 0) > 0)
+                        print(f"{timeframe.capitalize()} SuperTrend calculation result: {dict(result)}")
+                        # Check if status is SUCCESS
+                        # Note: updated_rows may be 0 if indicator already exists, which is still a success
+                        success = result.get('status') == 'SUCCESS'
                         
                         if success:
                             # Add to active indicators if not already there
@@ -234,11 +282,37 @@ class DatabaseDynamicIndicatorManager:
                         
                         return success
                     
+                elif name and (name.lower() == 'percentagechange' or name.lower() == 'pctchg'):
+                    # Calculate percentage change using new stored procedure
+                    result = await conn.fetchrow("""
+                        SELECT * FROM calculate_timeframe_percentage_change($1, NULL)
+                    """, timeframe)
+                    
+                    if result:
+                        print(f"{timeframe.capitalize()} Percentage Change calculation result: {dict(result)}")
+                        # Check if status is SUCCESS
+                        # Note: updated_rows may be 0 if indicator already exists, which is still a success
+                        success = result.get('status') == 'SUCCESS'
+                        
+                        if success:
+                            # Add to active indicators if not already there
+                            indicator_key = self.generate_indicator_key({
+                                'name': 'percentagechange',
+                                'timeframe': timeframe,
+                                'params': params
+                            })
+                            
+                            if indicator_key not in self._active_indicators:
+                                self._active_indicators.append(indicator_key)
+                                await self.add_custom_indicator('percentagechange', params, timeframe)
+                        
+                        return success
+                    
                 # Add other indicator calculations here
                 return False
                 
             except Exception as e:
-                print(f"Error calculating {name}: {e}")
+                print(f"Error calculating {name} for {timeframe}: {e}")
                 return False
                 
     async def handle_query_validation_error(self, error_detail: str) -> tuple[bool, str]:
