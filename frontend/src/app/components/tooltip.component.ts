@@ -47,7 +47,7 @@ export class TooltipComponent implements OnInit {
   }
 
   private formatParameterName(key: string): string {
-    // Convert keys like 'rsi_14' to 'RSI(14)'
+    // Convert keys like 'indicator_param' to 'INDICATOR(param)'
     const parts = key.split('_');
     if (parts.length >= 2) {
       const indicator = parts[0].toUpperCase();

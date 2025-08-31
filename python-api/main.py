@@ -143,6 +143,17 @@ app = FastAPI(
     description="FastAPI backend for stock screening and analysis",
     version="1.0.0"
 )
+# Initialize database-based indicator manager
+@app.on_event("startup")
+async def startup_event():
+    from services.dynamic_indicator_manager import dynamic_indicator_manager
+    await dynamic_indicator_manager.initialize()
+    
+@app.on_event("shutdown") 
+async def shutdown_event():
+    from services.dynamic_indicator_manager import dynamic_indicator_manager
+    await dynamic_indicator_manager.close()
+
 
 # Configure CORS
 app.add_middleware(

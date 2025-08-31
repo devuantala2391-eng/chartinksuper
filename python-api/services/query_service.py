@@ -115,7 +115,7 @@ def resolve_field_name(field_name: str) -> str:
         # Return in the format expected by the data: timeframe_bb_period_stddev_bandtype
         return f"{timeframe}_bb_{period}_{std_dev}_{band_type}"
     
-    # Check for SuperTrend with decimal parameters (e.g., daily_supertrend_10_2.44, daily_supertrend_30_1_2)
+    # Check for SuperTrend with decimal parameters
     # Convert to new naming convention: supertrend_30_1dot2 (no redundant timeframe, use "dot" for decimals)
     st_match = re.match(r'^(daily|weekly|monthly)_supertrend_(\d+)_(\d+(?:[_\.]\d+)?)$', field_name)
     if st_match:
@@ -186,8 +186,7 @@ def resolve_field_name(field_name: str) -> str:
         'bb_lower_20_2': 'daily_bb_20_2_lower',
         
         # Handle SuperTrend field variations with decimal points
-        'weekly_supertrend_10_2': 'weekly_supertrend_10_2.0',  # Map to actual field name in data
-        'weekly_supertrend_10_2.0': 'weekly_supertrend_10_2.0'
+        # Map indicator names to actual field names in data
     }
     
     # Return mapped name if exists, otherwise return original
@@ -359,7 +358,7 @@ async def validate_query_fields(parsed_query: Dict[str, Any], sample_stock_path:
         # Note: percentage change fields are now precalculated indicators rather than computed
         # computed_fields.add('daily_pctchg_1')  # Moved to precalculated indicators
         
-        # Handle format variations (e.g., weekly_supertrend_10_2 vs weekly_supertrend_10_2.0)
+        # Handle format variations for indicators
         extended_available_fields = set(available_fields)
         for available_field in list(available_fields):
             # Remove .0 suffix for supertrend fields to create alternate mapping
@@ -577,7 +576,7 @@ def parse_query(query: str) -> Dict[str, Any]:
     # Updated to handle decimal numbers in field names (e.g., weekly_supertrend_30_1.56)
     crossed_pattern = r'([\w\.]+(?:\(\d+(?:\.\d+)?(?:,\d+(?:\.\d+)?)*\))?)\s+(crossed\s+(?:above|below))\s+(.+)'
     
-    # Pattern for time-offset queries on the left side like "1 day ago daily_supertrend_10_2 > 200"
+    # Pattern for time-offset queries on the left side
     # Updated to handle time offset expressions on both sides and decimal numbers
     time_offset_pattern = r'(\d+)\s+(day|week|month)s?\s+ago\s+([\w\.]+(?:_[\w\.]+)*(?:\(\d+(?:\.\d+)?(?:,\d+(?:\.\d+)?)*\))?)\s*([><=!]+)\s*(.+)'
     
@@ -619,7 +618,7 @@ def parse_query(query: str) -> Dict[str, Any]:
                     "right": right_parsed
                 })
             else:
-                # Try time-offset pattern (e.g., "1 day ago daily_supertrend_10_2 > 200")
+                # Try time-offset pattern for indicators
                 time_offset_match = re.match(time_offset_pattern, part)
                 if time_offset_match:
                     offset_value = int(time_offset_match.group(1))

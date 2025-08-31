@@ -164,11 +164,11 @@ Each stock file contains candles with calculated indicators:
       "volume": "1500000",
       "date": "1738630800000",
       "day": "Tuesday",
-      "rsi_14": "65.34",
-      "sma_20": "1270.25",
-      "bb_upper_20_2": "1300.50",
-      "bb_lower_20_2": "1240.00",
-      "supertrend_10_3": "1250.00"
+      "indicator_1": "65.34",
+      "indicator_2": "1270.25",
+      "indicator_3": "1300.50",
+      "indicator_4": "1240.00",
+      "indicator_5": "1250.00"
     }
   ]
 }

@@ -8,7 +8,7 @@ import asyncpg
 import logging
 from typing import Dict, List, Set, Any, Optional
 from services.dynamic_indicator_manager import dynamic_indicator_manager
-from services.high_speed_database_service import high_speed_db
+from services.ultra_fast_database_service import ultra_fast_db as high_speed_db
 import re
 
 logger = logging.getLogger(__name__)
@@ -106,7 +106,7 @@ class HighSpeedQueryValidator:
         """Normalize field name to match database storage format"""
         # Handle SuperTrend with decimal parameters
         # e.g., "daily supertrend (10,1.2)" -> "supertrend_10_1dot2"
-        # e.g., "weekly_supertrend_10_2" -> "weekly_supertrend_10_2"
+        # e.g., weekly supertrend with parameters
         
         # Handle percentage change indicators - NEW FORMAT: daily_pctchg, weekly_pctchg, monthly_pctchg
         # Convert legacy format daily_pctchg_1 -> daily_pctchg (remove the _1 parameter)
@@ -120,7 +120,7 @@ class HighSpeedQueryValidator:
         if field_name.startswith(('weekly_', 'monthly_')):
             if 'supertrend_' in field_name:
                 parts = field_name.split('_')
-                if len(parts) >= 4:  # weekly_supertrend_10_2
+                if len(parts) >= 4:  # weekly supertrend with period and multiplier
                     # Replace dots with 'dot' in the multiplier if present
                     parts[-1] = parts[-1].replace('.', 'dot')
                     return '_'.join(parts)
@@ -242,10 +242,10 @@ class HighSpeedQueryValidator:
                 except (ValueError, IndexError):
                     logger.error(f"Invalid percentage change parameters in {field_name}")
         
-        # Handle weekly/monthly SuperTrend: weekly_supertrend_10_2
+        # Handle weekly/monthly SuperTrend with parameters
         elif field_name.startswith(('weekly_supertrend_', 'monthly_supertrend_')):
             parts = field_name.split('_')
-            if len(parts) >= 4:  # weekly_supertrend_10_2
+            if len(parts) >= 4:  # weekly supertrend with parameters
                 try:
                     timeframe = parts[0]  # weekly or monthly
                     period = float(parts[2])
@@ -283,7 +283,7 @@ class HighSpeedQueryValidator:
                 except ValueError:
                     logger.error(f"Invalid SuperTrend parameters in {field_name}")
         
-        # Handle RSI: rsi_14
+        # Handle RSI with period
         elif field_name.startswith('rsi_'):
             parts = field_name.split('_')
             if len(parts) >= 2:
@@ -297,7 +297,7 @@ class HighSpeedQueryValidator:
                 except ValueError:
                     pass
         
-        # Handle SMA: sma_20
+        # Handle SMA with period
         elif field_name.startswith('sma_'):
             parts = field_name.split('_')
             if len(parts) >= 2:
@@ -311,7 +311,7 @@ class HighSpeedQueryValidator:
                 except ValueError:
                     pass
         
-        # Handle EMA: ema_12
+        # Handle EMA with period
         elif field_name.startswith('ema_'):
             parts = field_name.split('_')
             if len(parts) >= 2:

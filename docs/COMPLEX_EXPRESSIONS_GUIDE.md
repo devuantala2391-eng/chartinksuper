@@ -36,7 +36,7 @@ Every condition now starts with an expression type selector that offers three op
    - Term 3: Monthly → RSI(14) [click "Add Term"]
 4. Set comparison: > 50
 
-**Generated Query:** `avg(daily_rsi_14, weekly_rsi_14, monthly_rsi_14) > 50`
+**Generated Query:** `avg(daily_rsi_X, weekly_rsi_X, monthly_rsi_X) > 50`
 
 ### Visual UI Elements
 
@@ -54,17 +54,17 @@ Every condition now starts with an expression type selector that offers three op
 The right side also supports complex expressions:
 1. Select "Field" radio button
 2. Similar expression builder appears
-3. Can create expressions like: `avg(weekly_sma_20, monthly_sma_20) + 100`
+3. Can create expressions like: `avg(weekly_sma_X, monthly_sma_X) + 100`
 
 ### Supported Queries
 
 Now you can create queries like:
 - `(daily_close + daily_open) > 5000`
-- `(daily_rsi_14 + daily_rsi_10) / 2 > 60`
+- `(daily_rsi_X + daily_rsi_Y) / 2 > 60`
 - `daily_volume > (weekly_volume * 1.5)`
-- `avg(daily_rsi_14, weekly_rsi_14, monthly_rsi_14) > 50`
-- `daily_rsi_14 > avg(daily_rsi_10, weekly_rsi_14, monthly_rsi_20) + 10`
-- `(daily_sma_20 - weekly_sma_20) > 100`
+- `avg(daily_rsi_X, weekly_rsi_X, monthly_rsi_X) > 50`
+- `daily_rsi_X > avg(daily_rsi_Y, weekly_rsi_X, monthly_rsi_Z) + 10`
+- `(daily_sma_X - weekly_sma_X) > 100`
 
 ### Note
 The backend fully processes all these complex expressions with proper:

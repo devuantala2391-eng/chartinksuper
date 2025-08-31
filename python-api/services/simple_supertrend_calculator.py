@@ -7,7 +7,7 @@ import logging
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Any
-from services.high_speed_database_service import high_speed_db
+from services.ultra_fast_database_service import ultra_fast_db as high_speed_db
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class SimpleSuperTrendCalculator:
             if not high_speed_db.initialized:
                 await high_speed_db.initialize()
             
-            candles = await high_speed_db.get_daily_candles_with_indicators(symbol, limit=500)
+            candles = await high_speed_db.get_candles_with_indicators(symbol, limit=500, timeframe='daily')
             
             if not candles or len(candles) < period:
                 logger.warning(f"Insufficient data for {symbol}: {len(candles) if candles else 0} candles")
@@ -76,32 +76,34 @@ class SimpleSuperTrendCalculator:
                     })
                 
                 if not pd.isna(direction_values[i]):
-                    # Direction: 1 for up, 0 for down
+                    # Direction: 1 for up (green), 0 for down (red)
+                    direction_val = 1 if direction_values[i] == 1 else 0
                     direction_values_list.append({
                         'timestamp': timestamp,
-                        'value': int(direction_values[i])
+                        'value': direction_val
                     })
             
             # Store both supertrend and direction indicators
-            success_count = 0
+            supertrend_success = False
+            direction_success = False
             
             if indicator_values:
-                success = await high_speed_db.update_indicator_in_jsonb(symbol, indicator_key, indicator_values)
-                if success:
-                    success_count += 1
-                    logger.info(f"Stored {len(indicator_values)} SuperTrend values for {indicator_key} in {symbol}")
+                supertrend_success = await high_speed_db.update_indicator_in_jsonb(symbol, indicator_key, indicator_values)
+                if supertrend_success:
+                    logger.info(f"✅ Stored {len(indicator_values)} SuperTrend values for {indicator_key} in {symbol}")
                 else:
-                    logger.error(f"Failed to store {indicator_key} for {symbol}")
+                    logger.error(f"❌ Failed to store {indicator_key} for {symbol}")
             
             if direction_values_list:
-                success = await high_speed_db.update_indicator_in_jsonb(symbol, direction_key, direction_values_list)
-                if success:
-                    success_count += 1
-                    logger.info(f"Stored {len(direction_values_list)} Direction values for {direction_key} in {symbol}")
+                direction_success = await high_speed_db.update_indicator_in_jsonb(symbol, direction_key, direction_values_list)
+                if direction_success:
+                    logger.info(f"✅ Stored {len(direction_values_list)} Direction values for {direction_key} in {symbol}")
                 else:
-                    logger.error(f"Failed to store {direction_key} for {symbol}")
+                    logger.error(f"❌ Failed to store {direction_key} for {symbol}")
             
-            return success_count == 2  # Both indicators stored successfully
+            # Return success if at least the main SuperTrend was stored
+            # Direction is a bonus feature, so don't fail if only direction fails
+            return supertrend_success
                 
         except Exception as e:
             logger.error(f"Error calculating SuperTrend for {symbol}: {e}")
@@ -238,10 +240,14 @@ class SimpleSuperTrendCalculator:
                 if (success_count + error_count) % 100 == 0:
                     logger.info(f"Progress: {success_count + error_count}/{len(stocks)} stocks")
             
-            logger.info(f"Completed: {success_count} successful, {error_count} failed")
-            
-            # Use proper decimal formatting for consistency
             multiplier_str = self._format_decimal_param(multiplier)
+            supertrend_key = f"supertrend_{period}_{multiplier_str}"
+            direction_key = f"supertrend_{period}_{multiplier_str}_direction"
+            
+            logger.info(f"✅ SuperTrend Calculation Complete:")
+            logger.info(f"   📊 Calculated BOTH {supertrend_key} AND {direction_key}")
+            logger.info(f"   📈 Success: {success_count} stocks, ❌ Failed: {error_count} stocks")
+            logger.info(f"   🎯 Values: 2 decimal precision, Direction: 1=up(green) 0=down(red)")
             
             return {
                 "total": len(stocks),

@@ -45,7 +45,7 @@ Successfully migrated the indicator storage system from physical database column
 - ✅ Proper field name generation for storage
 
 #### 4. `services/highspeed_query_validator.py`
-- ✅ Removed static indicator fields (rsi_14, sma_20, etc.)
+- ✅ Removed static indicator fields (hardcoded indicator columns)
 - ✅ Enhanced PercentageChange and weekly SuperTrend detection
 - ✅ Proper field normalization for JSONB storage
 
@@ -72,12 +72,13 @@ Successfully migrated the indicator storage system from physical database column
 
 ## Database Structure
 
-### Before Migration:
+### Before Migration (WRONG APPROACH - COMPLETELY REMOVED):
 ```sql
--- Physical columns (REMOVED)
-ALTER TABLE daily_candles ADD COLUMN rsi_14 DECIMAL(10,4);
-ALTER TABLE daily_candles ADD COLUMN sma_20 DECIMAL(20,6);
--- ... many more physical columns
+-- WRONG: Physical columns approach (COMPLETELY REMOVED FROM PROJECT)
+-- DO NOT USE THIS STRUCTURE - IT HAS BEEN ELIMINATED
+-- ALTER TABLE daily_candles ADD COLUMN indicator_x DECIMAL(10,4);  -- WRONG
+-- ALTER TABLE daily_candles ADD COLUMN indicator_y DECIMAL(20,6);  -- WRONG
+-- Physical columns approach is WRONG and has been removed
 ```
 
 ### After Migration:
@@ -85,8 +86,8 @@ ALTER TABLE daily_candles ADD COLUMN sma_20 DECIMAL(20,6);
 -- JSONB-only storage
 daily_candles.indicators = {
   "daily_pctchg_1": 2.45,
-  "weekly_supertrend_10_2": 1250.75,
-  "rsi_14": 65.23
+  "indicator_a": 1250.75,
+  "indicator_b": 65.23
 }
 
 -- Metadata tracking
@@ -122,12 +123,12 @@ calculated_indicators table with:
 Your original query now works perfectly:
 ```json
 {
-  "query": "daily_volume > 50000 and daily_pctchg_1 < 9 and daily_pctchg_1 > 0 and daily_close > 30 and weekly_volume > 1 week ago weekly_volume and weekly_close crossed above weekly_supertrend_10_2 and 1 day ago daily_volume > 10000"
+  "query": "daily_volume > 50000 and daily_pctchg_1 < 9 and daily_pctchg_1 > 0 and daily_close > 30 and weekly_volume > 1 week ago weekly_volume and weekly_close crossed above weekly_indicator and 1 day ago daily_volume > 10000"
 }
 ```
 
 ### System Behavior:
-1. **Detects**: `daily_pctchg_1` and `weekly_supertrend_10_2` needed
+1. **Detects**: `daily_pctchg_1` and `weekly_indicator` needed
 2. **Checks**: If these indicators exist in JSONB storage
 3. **Calculates**: Missing indicators for all stocks automatically
 4. **Stores**: Results in `indicators` JSONB column permanently

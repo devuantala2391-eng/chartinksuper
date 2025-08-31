@@ -5,7 +5,7 @@ Checks if dynamic indicators are actually calculated and stored in the database
 
 import logging
 from typing import List, Set, Dict, Any
-from services.high_speed_database_service import high_speed_db
+from services.ultra_fast_database_service import ultra_fast_db as high_speed_db
 from services.dynamic_indicator_manager import dynamic_indicator_manager
 
 logger = logging.getLogger(__name__)
@@ -53,38 +53,18 @@ class DynamicIndicatorChecker:
                         indicator_config = self._parse_indicator_field(field)
                         
                         if indicator_config:
-                            # Use simple calculator for SuperTrend
-                            if indicator_config['name'] == 'SuperTrend':
-                                from services.simple_supertrend_calculator import simple_supertrend_calculator
-                                
-                                period = indicator_config['params']['period']
-                                multiplier = indicator_config['params']['multiplier']
-                                
-                                # Calculate for limited stocks first (for speed)
-                                result = await simple_supertrend_calculator.calculate_for_all_stocks(
-                                    period=period,
-                                    multiplier=multiplier,
-                                    limit=100  # Start with 100 stocks for testing
-                                )
-                                
-                                if result['success'] > 0:
-                                    calculated_indicators.append(field)
-                                    logger.info(f"Successfully calculated {field} for {result['success']} stocks")
-                                else:
-                                    logger.error(f"Failed to calculate {field}")
+                            # Use dynamic indicator manager for all indicators
+                            success = await dynamic_indicator_manager.add_custom_indicator(
+                                name=indicator_config['name'],
+                                params=indicator_config['params'],
+                                timeframe=indicator_config.get('timeframe', 'daily')
+                            )
+                            
+                            if success:
+                                calculated_indicators.append(field)
+                                logger.info(f"Successfully calculated {field}")
                             else:
-                                # Use dynamic indicator manager for other indicators
-                                success = await dynamic_indicator_manager.add_custom_indicator(
-                                    name=indicator_config['name'],
-                                    params=indicator_config['params'],
-                                    timeframe=indicator_config.get('timeframe', 'daily')
-                                )
-                                
-                                if success:
-                                    calculated_indicators.append(field)
-                                    logger.info(f"Successfully calculated {field}")
-                                else:
-                                    logger.error(f"Failed to calculate {field}")
+                                logger.error(f"Failed to calculate {field}")
                     else:
                         logger.info(f"Indicator {field} already exists in database")
             
@@ -137,7 +117,7 @@ class DynamicIndicatorChecker:
             
             # Parse SuperTrend indicators
             if 'supertrend' in field_lower:
-                # Examples: supertrend_10_2, supertrend_30_1dot2, supertrend_10_2dot5_direction
+                # Examples: supertrend indicators with various parameters
                 # Remove timeframe prefixes and direction suffix
                 parts = field_lower.replace('daily_', '').replace('weekly_', '').replace('monthly_', '')
                 parts = parts.replace('supertrend_', '').replace('_direction', '')
@@ -169,7 +149,7 @@ class DynamicIndicatorChecker:
             
             # Parse RSI indicators
             elif 'rsi' in field_lower:
-                # Example: rsi_14, daily_rsi_21
+                # Example: rsi indicators with various periods
                 parts = field_lower.replace('daily_', '').replace('weekly_', '').replace('monthly_', '')
                 parts = parts.replace('rsi_', '')
                 
@@ -190,7 +170,7 @@ class DynamicIndicatorChecker:
             
             # Parse SMA indicators
             elif 'sma' in field_lower:
-                # Example: sma_20, daily_sma_50
+                # Example: sma indicators with various periods
                 parts = field_lower.replace('daily_', '').replace('weekly_', '').replace('monthly_', '')
                 parts = parts.replace('sma_', '')
                 

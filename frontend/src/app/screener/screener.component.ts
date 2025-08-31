@@ -1515,7 +1515,7 @@ export class ScreenerComponent implements OnInit, OnDestroy {
   }
 
   loadTestQuery() {
-    const testQuery = "daily_volume > 50000 and daily_pctchg < 9 and daily_pctchg > 0 and daily_close > 30 and weekly_volume > 1 week ago weekly_volume and daily_high < 1 day ago daily_volume * 2 and weekly_close crossed above weekly_supertrend_10_2";
+    const testQuery = "daily_volume > 50000 and daily_pctchg < 9 and daily_pctchg > 0 and daily_close > 30 and weekly_volume > 1 week ago weekly_volume and daily_high < 1 day ago daily_volume * 2 and weekly_close crossed above weekly_indicator";
     
     this.pasteQueryText = testQuery;
     this.pasteQueryStatus = 'Test query loaded';

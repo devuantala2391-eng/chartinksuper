@@ -400,16 +400,7 @@ class UltraFastDatabaseService:
                     close DECIMAL(20,6) NOT NULL,
                     volume BIGINT NOT NULL,
                     trading_days INTEGER DEFAULT 20,
-                    rsi_14 DECIMAL(10,4),
-                    rsi_21 DECIMAL(10,4),
-                    sma_10 DECIMAL(10,4),
-                    sma_20 DECIMAL(10,4),
-                    ema_12 DECIMAL(10,4),
-                    ema_26 DECIMAL(10,4),
-                    supertrend_10_2 DECIMAL(10,4),
-                    supertrend_signal_10_2 INTEGER,
-                    supertrend_10_3 DECIMAL(10,4),
-                    supertrend_signal_10_3 INTEGER,
+                    indicators JSONB DEFAULT '{}',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (symbol, month_start_timestamp)
@@ -1006,7 +997,7 @@ class UltraFastDatabaseService:
                                  timeframe: str = 'daily') -> List[Dict]:
         """
         Query stocks by indicator conditions using JSONB indexes.
-        Example: [{'name': 'rsi_14', 'operator': '>', 'value': 70}]
+        Example: [{'name': 'indicator_name', 'operator': '>', 'value': 70}]
         """
         try:
             async with self.pool.acquire() as conn:
@@ -1158,6 +1149,10 @@ class UltraFastDatabaseService:
                             # Convert value to float if it's a Decimal or other numeric type
                             if hasattr(value, '__float__'):
                                 value = float(value)
+                            
+                            # Round to 2 decimal places for precision control
+                            if isinstance(value, (int, float)):
+                                value = round(float(value), 2)
                             
                             # Update JSONB with numeric value
                             result = await conn.execute("""

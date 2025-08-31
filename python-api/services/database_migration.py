@@ -208,21 +208,9 @@ class DatabaseMigrator:
                         # Collect all indicators into JSONB
                         indicators = {}
                         
-                        # Static indicators
-                        static_indicators = [
-                            'rsi_14', 'sma_20', 'sma_50', 'ema_12', 'ema_26', 
-                            'supertrend_10_2', 'supertrend_10_3', 
-                            'supertrend_signal_10_2', 'supertrend_signal_10_3'
-                        ]
-                        
-                        for indicator in static_indicators:
-                            if candle[indicator] is not None:
-                                indicators[indicator] = float(candle[indicator])
-                        
-                        # Add existing JSONB indicators
+                        # Use existing JSONB indicators
                         if candle['indicators']:
-                            existing_indicators = candle['indicators'] if isinstance(candle['indicators'], dict) else json.loads(candle['indicators'])
-                            indicators.update(existing_indicators)
+                            indicators = candle['indicators'] if isinstance(candle['indicators'], dict) else json.loads(candle['indicators'])
                         
                         # Prepare row for new structure
                         migrated_data.append((

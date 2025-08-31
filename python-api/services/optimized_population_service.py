@@ -8,7 +8,7 @@ import logging
 from typing import Dict, List
 from datetime import datetime
 import json
-from services.static_indicator_calculator import static_indicator_calculator
+# Static indicators now calculated via stored procedures only
 
 logger = logging.getLogger(__name__)
 
@@ -129,14 +129,14 @@ class OptimizedPopulationService:
                 candle_dict['symbol'] = symbol
                 candle_dicts.append(candle_dict)
             
-            # Calculate static indicators
-            calculated_candles = static_indicator_calculator.calculate_static_indicators(candle_dicts, 'daily_candles')
+            # Static indicators now calculated via stored procedures only
+            # No Python-based indicator calculations
             
-            # Insert into high-speed database
-            success = await self.high_speed_db.insert_daily_candles_with_indicators(symbol, calculated_candles)
+            # Insert into high-speed database (indicators will be calculated by stored procedures)
+            success = await self.high_speed_db.insert_daily_candles_with_indicators(symbol, candle_dicts)
             
             if success:
-                return {'symbol': symbol, 'candles': len(calculated_candles), 'success': True}
+                return {'symbol': symbol, 'candles': len(candle_dicts), 'success': True}
             else:
                 return {'symbol': symbol, 'error': 'Insert failed'}
                 

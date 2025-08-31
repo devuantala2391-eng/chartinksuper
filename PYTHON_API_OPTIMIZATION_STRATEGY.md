@@ -359,9 +359,9 @@ def calculate_all_indicators_vectorized(open_arr, high_arr, low_arr, close_arr, 
     n = len(close_arr)
     
     # Pre-allocate all arrays
-    rsi_14 = np.empty(n)
-    sma_20 = np.empty(n)
-    ema_20 = np.empty(n)
+    rsi_indicator = np.empty(n)
+    sma_indicator = np.empty(n)
+    ema_indicator = np.empty(n)
     bb_upper = np.empty(n)
     bb_lower = np.empty(n)
     macd_line = np.empty(n)
@@ -370,10 +370,10 @@ def calculate_all_indicators_vectorized(open_arr, high_arr, low_arr, close_arr, 
     # Parallel calculation using prange
     for i in prange(n):
         if i >= 20:
-            sma_20[i] = np.mean(close_arr[i-19:i+1])
+            sma_indicator[i] = np.mean(close_arr[i-19:i+1])
             std = np.std(close_arr[i-19:i+1])
-            bb_upper[i] = sma_20[i] + 2 * std
-            bb_lower[i] = sma_20[i] - 2 * std
+            bb_upper[i] = sma_indicator[i] + 2 * std
+            bb_lower[i] = sma_indicator[i] - 2 * std
         
         if i >= 14:
             # RSI calculation
@@ -382,12 +382,12 @@ def calculate_all_indicators_vectorized(open_arr, high_arr, low_arr, close_arr, 
             avg_gain = np.mean(gains)
             avg_loss = np.mean(losses)
             rs = avg_gain / (avg_loss + 1e-10)
-            rsi_14[i] = 100 - (100 / (1 + rs))
+            rsi_indicator[i] = 100 - (100 / (1 + rs))
     
     return {
-        'rsi_14': rsi_14,
-        'sma_20': sma_20,
-        'ema_20': ema_20,
+        'rsi_indicator': rsi_indicator,
+        'sma_indicator': sma_indicator,
+        'ema_indicator': ema_indicator,
         'bb_upper': bb_upper,
         'bb_lower': bb_lower,
         'macd_line': macd_line,
@@ -411,14 +411,14 @@ def process_all_stocks_vectorized(stock_data_dict):
     combined_df['rsi'] = combined_df.groupby('symbol')['close'].transform(
         lambda x: calculate_rsi_pandas(x)
     )
-    combined_df['sma_20'] = combined_df.groupby('symbol')['close'].transform(
+    combined_df['sma_indicator'] = combined_df.groupby('symbol')['close'].transform(
         lambda x: x.rolling(20).mean()
     )
     
     # Apply query conditions using boolean indexing
     matches = combined_df[
         (combined_df['rsi'] > 70) & 
-        (combined_df['close'] > combined_df['sma_20'])
+        (combined_df['close'] > combined_df['sma_indicator'])
     ]
     
     return matches.groupby('symbol').last().to_dict('records')

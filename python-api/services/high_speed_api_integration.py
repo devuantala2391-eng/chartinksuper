@@ -12,7 +12,7 @@ from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.responses import JSONResponse
 import time
 
-from .high_speed_database_service import high_speed_db
+from .ultra_fast_database_service import ultra_fast_db as high_speed_db
 from .high_speed_calculation_engine import high_speed_calculator
 # from .indicator_column_manager import IndicatorColumnManager, IndicatorType, TimeFrame  # DISABLED - using JSONB only
 
@@ -461,9 +461,7 @@ class HighSpeedAPIService:
             async with self.db.pool.acquire() as conn:
                 rows = await conn.fetch("""
                     SELECT week_start_timestamp, week_start_date, open, high, low, close, volume, trading_days,
-                           rsi_14, rsi_21, sma_10, sma_20, ema_12, ema_26,
-                           supertrend_10_2, supertrend_signal_10_2, supertrend_10_3, supertrend_signal_10_3,
-                           bb_upper_20_2, bb_middle_20_2, bb_lower_20_2
+                           indicators
                     FROM weekly_candles 
                     WHERE symbol = $1 
                     ORDER BY week_start_timestamp DESC 
@@ -482,9 +480,7 @@ class HighSpeedAPIService:
             async with self.db.pool.acquire() as conn:
                 rows = await conn.fetch("""
                     SELECT month_start_timestamp, month_start_date, open, high, low, close, volume, trading_days,
-                           rsi_14, sma_10, sma_20,
-                           supertrend_10_2, supertrend_signal_10_2,
-                           bb_upper_20_2, bb_middle_20_2, bb_lower_20_2
+                           indicators
                     FROM monthly_candles 
                     WHERE symbol = $1 
                     ORDER BY month_start_timestamp DESC 

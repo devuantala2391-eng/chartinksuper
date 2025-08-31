@@ -63,28 +63,6 @@ class DatabaseMigrator:
                     'created_at': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
                     'updated_at': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'
                 },
-                'old_structure': {
-                    'symbol': 'VARCHAR(20) NOT NULL',
-                    'timestamp': 'BIGINT NOT NULL',
-                    'datetime': 'TIMESTAMP NOT NULL',
-                    'open': 'DECIMAL(20,6) NOT NULL',
-                    'high': 'DECIMAL(20,6) NOT NULL',
-                    'low': 'DECIMAL(20,6) NOT NULL',
-                    'close': 'DECIMAL(20,6) NOT NULL',
-                    'volume': 'BIGINT NOT NULL',
-                    'rsi_14': 'DECIMAL(10,4)',
-                    'sma_20': 'DECIMAL(10,4)',
-                    'sma_50': 'DECIMAL(10,4)',
-                    'ema_12': 'DECIMAL(10,4)',
-                    'ema_26': 'DECIMAL(10,4)',
-                    'supertrend_10_2': 'DECIMAL(10,4)',
-                    'supertrend_10_3': 'DECIMAL(10,4)',
-                    'supertrend_signal_10_2': 'INTEGER',
-                    'supertrend_signal_10_3': 'INTEGER',
-                    'indicators': 'JSONB DEFAULT \'{}\'',
-                    'created_at': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
-                    'updated_at': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'
-                }
             },
             'weekly_candles': {
                 'composite_key': {
