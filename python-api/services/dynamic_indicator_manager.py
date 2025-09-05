@@ -204,6 +204,28 @@ class DatabaseDynamicIndicatorManager:
                 return await self.calculate_and_store_indicator(
                     indicator_def={'name': 'percentagechange', 'params': {}, 'timeframe': timeframe}
                 )
+            elif 'sma_' in error_lower:
+                # Extract SMA period from error like "sma_20" or "weekly_sma_50"
+                import re
+                pattern = r'(?:daily_|weekly_|monthly_)?sma_(\d+)'
+                match = re.search(pattern, error_lower)
+                if match:
+                    period = int(match.group(1))
+                    print(f"Auto-calculating {timeframe} SMA({period}) from error: {error_detail}")
+                    return await self.calculate_and_store_indicator(
+                        indicator_def={'name': 'sma', 'params': {'period': period}, 'timeframe': timeframe}
+                    )
+            elif 'ema_' in error_lower:
+                # Extract EMA period from error like "ema_20" or "weekly_ema_50"
+                import re
+                pattern = r'(?:daily_|weekly_|monthly_)?ema_(\d+)'
+                match = re.search(pattern, error_lower)
+                if match:
+                    period = int(match.group(1))
+                    print(f"Auto-calculating {timeframe} EMA({period}) from error: {error_detail}")
+                    return await self.calculate_and_store_indicator(
+                        indicator_def={'name': 'ema', 'params': {'period': period}, 'timeframe': timeframe}
+                    )
             
             return False
         except Exception as e:
@@ -305,6 +327,80 @@ class DatabaseDynamicIndicatorManager:
                             if indicator_key not in self._active_indicators:
                                 self._active_indicators.append(indicator_key)
                                 await self.add_custom_indicator('percentagechange', params, timeframe)
+                        
+                        return success
+                
+                elif name and name.lower() == 'sma':
+                    # Calculate SMA using new stored procedure
+                    period = params.get('period')
+                    if not period:
+                        print(f"Error: SMA period not provided in params: {params}")
+                        return False
+                    
+                    # Convert to proper type if needed
+                    if isinstance(period, float) and period.is_integer():
+                        period = int(period)
+                    else:
+                        period = int(period)
+                    
+                    # Call the dynamic SMA/EMA calculation function
+                    indicator_name = f"{timeframe}_{name.lower()}_{period}" if timeframe != 'daily' else f"{name.lower()}_{period}"
+                    result = await conn.fetchrow("""
+                        SELECT * FROM calculate_dynamic_sma_ema($1)
+                    """, indicator_name)
+                    
+                    if result:
+                        print(f"{timeframe.capitalize()} SMA({period}) calculation result: {dict(result)}")
+                        success = result.get('success', False)
+                        
+                        if success:
+                            # Add to active indicators if not already there
+                            indicator_key = self.generate_indicator_key({
+                                'name': 'sma',
+                                'timeframe': timeframe,
+                                'params': {'period': period}
+                            })
+                            
+                            if indicator_key not in self._active_indicators:
+                                self._active_indicators.append(indicator_key)
+                                await self.add_custom_indicator('sma', {'period': period}, timeframe)
+                        
+                        return success
+                
+                elif name and name.lower() == 'ema':
+                    # Calculate EMA using new stored procedure
+                    period = params.get('period')
+                    if not period:
+                        print(f"Error: EMA period not provided in params: {params}")
+                        return False
+                    
+                    # Convert to proper type if needed
+                    if isinstance(period, float) and period.is_integer():
+                        period = int(period)
+                    else:
+                        period = int(period)
+                    
+                    # Call the dynamic SMA/EMA calculation function
+                    indicator_name = f"{timeframe}_{name.lower()}_{period}" if timeframe != 'daily' else f"{name.lower()}_{period}"
+                    result = await conn.fetchrow("""
+                        SELECT * FROM calculate_dynamic_sma_ema($1)
+                    """, indicator_name)
+                    
+                    if result:
+                        print(f"{timeframe.capitalize()} EMA({period}) calculation result: {dict(result)}")
+                        success = result.get('success', False)
+                        
+                        if success:
+                            # Add to active indicators if not already there
+                            indicator_key = self.generate_indicator_key({
+                                'name': 'ema',
+                                'timeframe': timeframe,
+                                'params': {'period': period}
+                            })
+                            
+                            if indicator_key not in self._active_indicators:
+                                self._active_indicators.append(indicator_key)
+                                await self.add_custom_indicator('ema', {'period': period}, timeframe)
                         
                         return success
                     

@@ -108,6 +108,25 @@ class HighSpeedQueryValidator:
         # Handle SuperTrend with decimal parameters
         # Keep ALL timeframe prefixes: daily_, weekly_, monthly_
         
+        # Handle SMA function notation: sma(20) -> sma_20
+        if field_name.startswith('sma(') and field_name.endswith(')'):
+            period = field_name[4:-1]  # Extract period between sma( and )
+            return f"sma_{period}"
+        
+        # Handle EMA function notation: ema(10) -> ema_10
+        if field_name.startswith('ema(') and field_name.endswith(')'):
+            period = field_name[4:-1]  # Extract period between ema( and )
+            return f"ema_{period}"
+        
+        # Handle timeframed SMA: weekly_sma(20) -> weekly_sma_20
+        for timeframe in ['daily_', 'weekly_', 'monthly_']:
+            if field_name.startswith(f'{timeframe}sma(') and field_name.endswith(')'):
+                period = field_name[len(f'{timeframe}sma('):-1]
+                return f"{timeframe}sma_{period}"
+            if field_name.startswith(f'{timeframe}ema(') and field_name.endswith(')'):
+                period = field_name[len(f'{timeframe}ema('):-1]
+                return f"{timeframe}ema_{period}"
+        
         # Handle percentage change indicators - NEW FORMAT: daily_pctchg, weekly_pctchg, monthly_pctchg
         # Convert legacy format daily_pctchg_1 -> daily_pctchg (remove the _1 parameter)
         if 'pctchg' in field_name:
@@ -373,7 +392,7 @@ class HighSpeedQueryValidator:
                     period = float(parts[period_idx])
                     return {
                         "name": "EMA",
-                        "timeframe": "daily",
+                        "timeframe": timeframe,
                         "params": {"period": period}
                     }
                 except ValueError:
