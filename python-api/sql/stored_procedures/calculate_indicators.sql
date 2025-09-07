@@ -262,49 +262,89 @@ BEGIN
         v_processed_symbols := v_processed_symbols + 1;
         
         -- Calculate individual EMA for each daily candle within weekly periods
-        WITH RECURSIVE daily_candles_ordered AS (
+        -- This mirrors the SMA calculation logic exactly
+        WITH daily_candles_with_week AS (
             SELECT 
                 dc.candle_key_id,
                 dc.candle_sequence_number,
-                dc.weekly_close,
-                wc.week_sequence_number,
-                ROW_NUMBER() OVER (ORDER BY dc.candle_sequence_number) as row_num
+                dc.weekly_close as current_day_close,  -- Each day's individual close
+                wc.week_sequence_number
             FROM daily_candles dc
             JOIN weekly_candles wc ON wc.weekly_candle_key_id = dc.weekly_candle_key_id
             WHERE dc.symbol = symbol_rec.symbol
             AND dc.weekly_close IS NOT NULL
             AND wc.week_sequence_number IS NOT NULL
+            ORDER BY dc.candle_sequence_number
         ),
-        initial_sma AS (
+        -- Get previous weeks' closes and calculate EMA for them
+        weekly_ema_base AS (
             SELECT 
-                AVG(dco.weekly_close) as initial_value,
-                MIN(dco.candle_key_id) as first_candle_id,
-                MIN(dco.row_num) + p_period - 1 as sma_end_row
-            FROM daily_candles_ordered dco
-            WHERE dco.row_num <= p_period
+                week_sequence_number,
+                close as week_close,
+                ROW_NUMBER() OVER (ORDER BY week_sequence_number) as rn
+            FROM weekly_candles
+            WHERE symbol = symbol_rec.symbol
+            AND close IS NOT NULL
+            ORDER BY week_sequence_number
         ),
+        -- Calculate initial SMA from first p_period weeks
+        initial_sma AS (
+            SELECT AVG(week_close) as sma_value
+            FROM weekly_ema_base
+            WHERE rn <= p_period
+        ),
+        -- Calculate EMA for each complete week (will be used as base)
+        weekly_ema_values AS (
+            WITH RECURSIVE ema_calc AS (
+                -- Start with SMA at week p_period
+                SELECT 
+                    week_sequence_number,
+                    rn,
+                    week_close,
+                    ROUND((SELECT sma_value FROM initial_sma)::numeric, 2) as ema_value
+                FROM weekly_ema_base
+                WHERE rn = p_period
+                
+                UNION ALL
+                
+                -- Calculate EMA for subsequent weeks
+                SELECT 
+                    web.week_sequence_number,
+                    web.rn,
+                    web.week_close,
+                    ROUND((web.week_close * v_alpha + ec.ema_value * (1 - v_alpha))::numeric, 2) as ema_value
+                FROM weekly_ema_base web
+                INNER JOIN ema_calc ec ON web.rn = ec.rn + 1
+            )
+            SELECT * FROM ema_calc
+        ),
+        -- For each daily candle, calculate its EMA
         daily_ema AS (
             SELECT 
-                dco.candle_key_id,
-                dco.row_num,
-                dco.weekly_close,
+                dcw.candle_key_id,
+                dcw.current_day_close,
+                dcw.week_sequence_number,
+                -- Get the EMA of the previous complete week
                 CASE 
-                    WHEN dco.row_num <= isma.sma_end_row THEN ROUND(isma.initial_value::numeric, 2)
-                    ELSE NULL
+                    WHEN dcw.week_sequence_number <= p_period THEN
+                        -- Not enough history, use SMA approach
+                        CASE 
+                            WHEN dcw.week_sequence_number = p_period THEN
+                                -- Use SMA of previous weeks + current day
+                                ROUND((
+                                    (SELECT SUM(week_close) FROM weekly_ema_base WHERE rn < p_period) + dcw.current_day_close
+                                ) / p_period::numeric, 2)
+                            ELSE NULL
+                        END
+                    ELSE
+                        -- Calculate EMA: current day's close with previous week's EMA
+                        -- Get the EMA value from the last complete week
+                        ROUND((
+                            dcw.current_day_close * v_alpha + 
+                            (SELECT ema_value FROM weekly_ema_values WHERE week_sequence_number = dcw.week_sequence_number - 1) * (1 - v_alpha)
+                        )::numeric, 2)
                 END as ema_value
-            FROM daily_candles_ordered dco
-            CROSS JOIN initial_sma isma
-            WHERE dco.row_num = isma.sma_end_row
-            
-            UNION ALL
-            
-            SELECT 
-                dco.candle_key_id,
-                dco.row_num,
-                dco.weekly_close,
-                ROUND((dco.weekly_close * v_alpha + de.ema_value * (1 - v_alpha))::numeric, 2) as ema_value
-            FROM daily_candles_ordered dco
-            INNER JOIN daily_ema de ON dco.row_num = de.row_num + 1
+            FROM daily_candles_with_week dcw
         )
         UPDATE daily_candles AS target
         SET indicators = COALESCE(target.indicators, '{}'::jsonb) || 
@@ -481,49 +521,89 @@ BEGIN
         v_processed_symbols := v_processed_symbols + 1;
         
         -- Calculate individual EMA for each daily candle within monthly periods
-        WITH RECURSIVE daily_candles_ordered AS (
+        -- This mirrors the SMA calculation logic exactly
+        WITH daily_candles_with_month AS (
             SELECT 
                 dc.candle_key_id,
                 dc.candle_sequence_number,
-                dc.monthly_close,
-                mc.month_sequence_number,
-                ROW_NUMBER() OVER (ORDER BY dc.candle_sequence_number) as row_num
+                dc.monthly_close as current_day_close,  -- Each day's individual close
+                mc.month_sequence_number
             FROM daily_candles dc
             JOIN monthly_candles mc ON mc.monthly_candle_key_id = dc.monthly_candle_key_id
             WHERE dc.symbol = symbol_rec.symbol
             AND dc.monthly_close IS NOT NULL
             AND mc.month_sequence_number IS NOT NULL
+            ORDER BY dc.candle_sequence_number
         ),
-        initial_sma AS (
+        -- Get previous months' closes and calculate EMA for them
+        monthly_ema_base AS (
             SELECT 
-                AVG(dco.monthly_close) as initial_value,
-                MIN(dco.candle_key_id) as first_candle_id,
-                MIN(dco.row_num) + p_period - 1 as sma_end_row
-            FROM daily_candles_ordered dco
-            WHERE dco.row_num <= p_period
+                month_sequence_number,
+                close as month_close,
+                ROW_NUMBER() OVER (ORDER BY month_sequence_number) as rn
+            FROM monthly_candles
+            WHERE symbol = symbol_rec.symbol
+            AND close IS NOT NULL
+            ORDER BY month_sequence_number
         ),
+        -- Calculate initial SMA from first p_period months
+        initial_sma AS (
+            SELECT AVG(month_close) as sma_value
+            FROM monthly_ema_base
+            WHERE rn <= p_period
+        ),
+        -- Calculate EMA for each complete month (will be used as base)
+        monthly_ema_values AS (
+            WITH RECURSIVE ema_calc AS (
+                -- Start with SMA at month p_period
+                SELECT 
+                    month_sequence_number,
+                    rn,
+                    month_close,
+                    ROUND((SELECT sma_value FROM initial_sma)::numeric, 2) as ema_value
+                FROM monthly_ema_base
+                WHERE rn = p_period
+                
+                UNION ALL
+                
+                -- Calculate EMA for subsequent months
+                SELECT 
+                    meb.month_sequence_number,
+                    meb.rn,
+                    meb.month_close,
+                    ROUND((meb.month_close * v_alpha + ec.ema_value * (1 - v_alpha))::numeric, 2) as ema_value
+                FROM monthly_ema_base meb
+                INNER JOIN ema_calc ec ON meb.rn = ec.rn + 1
+            )
+            SELECT * FROM ema_calc
+        ),
+        -- For each daily candle, calculate its EMA
         daily_ema AS (
             SELECT 
-                dco.candle_key_id,
-                dco.row_num,
-                dco.monthly_close,
+                dcm.candle_key_id,
+                dcm.current_day_close,
+                dcm.month_sequence_number,
+                -- Get the EMA of the previous complete month
                 CASE 
-                    WHEN dco.row_num <= isma.sma_end_row THEN ROUND(isma.initial_value::numeric, 2)
-                    ELSE NULL
+                    WHEN dcm.month_sequence_number <= p_period THEN
+                        -- Not enough history, use SMA approach
+                        CASE 
+                            WHEN dcm.month_sequence_number = p_period THEN
+                                -- Use SMA of previous months + current day
+                                ROUND((
+                                    (SELECT SUM(month_close) FROM monthly_ema_base WHERE rn < p_period) + dcm.current_day_close
+                                ) / p_period::numeric, 2)
+                            ELSE NULL
+                        END
+                    ELSE
+                        -- Calculate EMA: current day's close with previous month's EMA
+                        -- Get the EMA value from the last complete month
+                        ROUND((
+                            dcm.current_day_close * v_alpha + 
+                            (SELECT ema_value FROM monthly_ema_values WHERE month_sequence_number = dcm.month_sequence_number - 1) * (1 - v_alpha)
+                        )::numeric, 2)
                 END as ema_value
-            FROM daily_candles_ordered dco
-            CROSS JOIN initial_sma isma
-            WHERE dco.row_num = isma.sma_end_row
-            
-            UNION ALL
-            
-            SELECT 
-                dco.candle_key_id,
-                dco.row_num,
-                dco.monthly_close,
-                ROUND((dco.monthly_close * v_alpha + de.ema_value * (1 - v_alpha))::numeric, 2) as ema_value
-            FROM daily_candles_ordered dco
-            INNER JOIN daily_ema de ON dco.row_num = de.row_num + 1
+            FROM daily_candles_with_month dcm
         )
         UPDATE daily_candles AS target
         SET indicators = COALESCE(target.indicators, '{}'::jsonb) || 

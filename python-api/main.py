@@ -5345,7 +5345,7 @@ if __name__ == "__main__":
     uvicorn.run(
         app,  # Use app directly instead of "main:app" 
         host="127.0.0.1",
-        port=8002,
+        port=8001,
         log_level="info",  # Show some logs for better visibility
         access_log=False,  # Disable access logs (we have our own)
         reload=False       # Disable reload to avoid watchfiles logs
