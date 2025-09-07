@@ -57,47 +57,10 @@ BEGIN
     FOR symbol_rec IN symbol_cursor LOOP
         -- Calculate percentage change for current symbol with timeframe-specific logic
         IF p_timeframe = 'monthly' THEN
-            -- Monthly percentage change: compare with close price ~30 trading days ago
-            EXECUTE format($sql$
-                WITH ranked_candles AS (
-                    SELECT 
-                        candle_key_id,
-                        symbol,
-                        candle_sequence_number,
-                        timestamp,
-                        close,
-                        indicators,
-                        ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY candle_sequence_number) as rn,
-                        LAG(close, 30) OVER (PARTITION BY symbol ORDER BY candle_sequence_number) as prev_month_close
-                    FROM %I
-                    WHERE symbol = $1
-                ),
-                calculated AS (
-                    SELECT 
-                        candle_key_id,
-                        symbol,
-                        CASE 
-                            WHEN prev_month_close IS NOT NULL AND prev_month_close != 0 THEN
-                                ROUND(((close - prev_month_close) / prev_month_close * 100)::numeric, 4)
-                            ELSE 
-                                NULL
-                        END as pct_change,
-                        indicators
-                    FROM ranked_candles
-                )
-                UPDATE %I AS target_table
-                SET indicators = COALESCE(target_table.indicators, '{}'::jsonb) || jsonb_build_object($2, calculated.pct_change),
-                    updated_at = CURRENT_TIMESTAMP
-                FROM calculated
-                WHERE target_table.candle_key_id = calculated.candle_key_id
-                  AND (
-                      -- Only update if indicator doesn't exist or is null
-                      NOT (target_table.indicators ? $2) OR 
-                      (target_table.indicators->$2) IS NULL OR
-                      (target_table.indicators->$2) = 'null'::jsonb
-                  )
-            $sql$, v_table_name, v_table_name)
-            USING symbol_rec.symbol, v_indicator_key;
+            -- Monthly percentage change: DELEGATE to the dedicated monthly percentage function
+            -- This ensures single source of truth for monthly percentage calculation
+            PERFORM calculate_monthly_percentage_change_for_symbol(symbol_rec.symbol);
+            v_batch_count := 1; -- Count as 1 symbol processed
         ELSE
             -- Daily/Weekly percentage change: compare with previous period
             EXECUTE format($sql$

@@ -305,10 +305,22 @@ class DatabaseDynamicIndicatorManager:
                         return success
                     
                 elif name and (name.lower() == 'percentagechange' or name.lower() == 'pctchg'):
-                    # Calculate percentage change using new stored procedure
-                    result = await conn.fetchrow("""
-                        SELECT * FROM calculate_timeframe_percentage_change($1, NULL)
-                    """, timeframe)
+                    # Calculate percentage change using correct stored procedure based on timeframe
+                    if timeframe == 'monthly':
+                        # Use monthly-specific function - it already returns aggregated data
+                        result = await conn.fetchrow("""
+                            SELECT * FROM calculate_monthly_percentage_change(NULL, 1000)
+                        """)
+                    elif timeframe == 'weekly':
+                        # Use weekly-specific function - use the main function that processes all symbols
+                        result = await conn.fetchrow("""
+                            SELECT * FROM calculate_weekly_percentage_change(NULL, 1000)
+                        """)
+                    else:
+                        # Use general function for daily
+                        result = await conn.fetchrow("""
+                            SELECT * FROM calculate_percentage_change($1, NULL, 1000)
+                        """, timeframe)
                     
                     if result:
                         print(f"{timeframe.capitalize()} Percentage Change calculation result: {dict(result)}")

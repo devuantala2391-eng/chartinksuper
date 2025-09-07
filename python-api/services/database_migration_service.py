@@ -25,13 +25,18 @@ class DatabaseMigrationService:
             'password': os.getenv('POSTGRES_PASSWORD', '123'),
         }
         
-        # Required stored procedures for weekly candle generation
+        # Required stored procedures for weekly candle generation and percentage calculations
         self.required_procedures = [
             'generate_weekly_candles_for_symbol',
             'process_symbol_weekly_only',
             'process_all_symbols_weekly_only',
             'calculate_all_indicators_for_symbol',
-            'process_symbol_comprehensive'
+            'process_symbol_comprehensive',
+            'calculate_monthly_percentage_change',  # Added for monthly percentage
+            'calculate_monthly_percentage_change_for_symbol',  # Added for monthly percentage
+            'calculate_percentage_change',  # Added for general percentage
+            'calculate_weekly_percentage_change',  # Added for weekly percentage
+            'calculate_weekly_percentage_change_for_symbol'  # Added for weekly percentage
         ]
     
     async def check_and_apply_migrations(self) -> Dict[str, any]:
@@ -114,33 +119,52 @@ class DatabaseMigrationService:
         return [proc['routine_name'] for proc in procedures]
     
     async def _apply_comprehensive_calculations_migration(self, conn) -> Dict[str, any]:
-        """Apply the comprehensive calculations SQL file"""
+        """Apply the comprehensive calculations SQL file and percentage calculations"""
         try:
-            # Find the SQL file
-            sql_file_path = Path(__file__).parent.parent / "sql" / "stored_procedures" / "comprehensive_calculations.sql"
+            # List of SQL files to apply in order
+            sql_files = [
+                "comprehensive_calculations.sql",
+                "calculate_monthly_percentage_change.sql",  # CORRECT monthly percentage implementation
+                "calculate_percentage_change.sql",  # General percentage (now delegates monthly to correct implementation)
+                "calculate_weekly_percentage_change.sql"  # Weekly percentage functions
+            ]
             
-            if not sql_file_path.exists():
-                logger.error(f"SQL file not found: {sql_file_path}")
+            applied_files = []
+            total_sql_size = 0
+            
+            for sql_filename in sql_files:
+                # Find the SQL file
+                sql_file_path = Path(__file__).parent.parent / "sql" / "stored_procedures" / sql_filename
+                
+                if not sql_file_path.exists():
+                    logger.warning(f"SQL file not found, skipping: {sql_file_path}")
+                    continue
+                
+                # Read and execute the SQL
+                with open(sql_file_path, 'r', encoding='utf-8') as f:
+                    sql_content = f.read()
+                
+                logger.info(f"Applying {sql_filename} migration ({len(sql_content)} chars)")
+                
+                # Execute the SQL (this creates all the functions)
+                await conn.execute(sql_content)
+                
+                applied_files.append(sql_filename)
+                total_sql_size += len(sql_content)
+                logger.info(f"✅ {sql_filename} migration applied successfully")
+            
+            if not applied_files:
                 return {
                     'success': False,
-                    'error': f'SQL file not found: {sql_file_path}'
+                    'error': 'No SQL files found to apply'
                 }
             
-            # Read and execute the SQL
-            with open(sql_file_path, 'r', encoding='utf-8') as f:
-                sql_content = f.read()
-            
-            logger.info(f"Applying comprehensive calculations migration ({len(sql_content)} chars)")
-            
-            # Execute the SQL (this creates all the functions)
-            await conn.execute(sql_content)
-            
-            logger.info("✅ Comprehensive calculations migration applied successfully")
+            logger.info(f"✅ All migrations applied successfully: {', '.join(applied_files)}")
             
             return {
                 'success': True,
-                'sql_file': str(sql_file_path),
-                'sql_size': len(sql_content)
+                'sql_files': applied_files,
+                'total_sql_size': total_sql_size
             }
             
         except Exception as e:

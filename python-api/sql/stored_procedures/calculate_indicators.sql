@@ -546,23 +546,23 @@ BEGIN
             AND close IS NOT NULL
             ORDER BY month_sequence_number
         ),
-        -- Calculate initial SMA from first p_period months
-        initial_sma AS (
-            SELECT AVG(month_close) as sma_value
+        -- TradingView-style: Use first price initialization instead of SMA
+        initial_first_price AS (
+            SELECT month_close as first_price
             FROM monthly_ema_base
-            WHERE rn <= p_period
+            WHERE rn = 1
         ),
-        -- Calculate EMA for each complete month (will be used as base)
+        -- Calculate EMA for each complete month (TradingView style)
         monthly_ema_values AS (
             WITH RECURSIVE ema_calc AS (
-                -- Start with SMA at month p_period
+                -- Start with first price (TradingView initialization)
                 SELECT 
                     month_sequence_number,
                     rn,
                     month_close,
-                    ROUND((SELECT sma_value FROM initial_sma)::numeric, 2) as ema_value
+                    ROUND((SELECT first_price FROM initial_first_price)::numeric, 2) as ema_value
                 FROM monthly_ema_base
-                WHERE rn = p_period
+                WHERE rn = 1
                 
                 UNION ALL
                 
@@ -583,21 +583,14 @@ BEGIN
                 dcm.candle_key_id,
                 dcm.current_day_close,
                 dcm.month_sequence_number,
-                -- Get the EMA of the previous complete month
+                -- TradingView-style EMA calculation using first-price initialization
                 CASE 
-                    WHEN dcm.month_sequence_number <= p_period THEN
-                        -- Not enough history, use SMA approach
-                        CASE 
-                            WHEN dcm.month_sequence_number = p_period THEN
-                                -- Use SMA of previous months + current day
-                                ROUND((
-                                    (SELECT SUM(month_close) FROM monthly_ema_base WHERE rn < p_period) + dcm.current_day_close
-                                ) / p_period::numeric, 2)
-                            ELSE NULL
-                        END
+                    WHEN dcm.month_sequence_number = 0 THEN
+                        -- First month: use first price as initial EMA (TradingView style)
+                        ROUND((SELECT first_price FROM initial_first_price)::numeric, 2)
                     ELSE
                         -- Calculate EMA: current day's close with previous month's EMA
-                        -- Get the EMA value from the last complete month
+                        -- Get the EMA value from the previous month
                         ROUND((
                             dcm.current_day_close * v_alpha + 
                             (SELECT ema_value FROM monthly_ema_values WHERE month_sequence_number = dcm.month_sequence_number - 1) * (1 - v_alpha)

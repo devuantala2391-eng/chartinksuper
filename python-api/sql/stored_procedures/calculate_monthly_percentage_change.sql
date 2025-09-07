@@ -42,7 +42,7 @@ BEGIN
             ON mc_prev.symbol = dc.symbol 
             AND mc_prev.month_sequence_number = (mc_current.month_sequence_number - 1)
         WHERE dc.symbol = p_symbol
-          AND mc_current.month_sequence_number > 1  -- Skip first month since no previous month
+          AND mc_current.month_sequence_number > 0  -- Skip first month (seq 0) since no previous month
     )
     UPDATE daily_candles AS target_table
     SET indicators = COALESCE(target_table.indicators, '{}'::jsonb) || jsonb_build_object('monthly_pctchg', mpd.monthly_pct_change),
@@ -128,7 +128,7 @@ BEGIN
                 ON mc_prev.symbol = dc.symbol 
                 AND mc_prev.month_sequence_number = (mc_current.month_sequence_number - 1)
             WHERE dc.symbol = symbol_rec.symbol
-              AND mc_current.month_sequence_number > 1  -- Skip first month since no previous month
+              AND mc_current.month_sequence_number > 0  -- Skip first month (seq 0) since no previous month
         )
         UPDATE daily_candles AS target_table
         SET indicators = COALESCE(target_table.indicators, '{}'::jsonb) || jsonb_build_object('monthly_pctchg', mpd.monthly_pct_change),
