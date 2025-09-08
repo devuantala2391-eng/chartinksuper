@@ -36,8 +36,8 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
   indicators: PrecalculatedIndicator[] = [];
   newIndicator: PrecalculatedIndicator = {
     timeframe: 'daily',
-    name: 'sma',
-    params: { period: 20 }
+    name: 'supertrend',
+    params: { period: 10, multiplier: 3 }
   };
   loading = false;
   error: string | null = null;
@@ -75,6 +75,8 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
 
   ngOnInit() {
     this.loadIndicators();
+    // Ensure initial parameters are set correctly
+    this.onIndicatorTypeChange();
   }
 
   ngOnDestroy() {
@@ -152,8 +154,8 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
     // Reset form
     this.newIndicator = {
       timeframe: 'daily',
-      name: 'sma',
-      params: { period: 20 }
+      name: 'supertrend',
+      params: { period: 10, multiplier: 3 }
     };
   }
 
@@ -349,7 +351,9 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
   }
 
   onIndicatorTypeChange() {
-    // Reset params when indicator type changes
+    // Reset params when indicator type changes - completely clear and rebuild
+    this.newIndicator.params = {};
+    
     switch (this.newIndicator.name) {
       case 'supertrend':
         this.newIndicator.params = { period: 10, multiplier: 3 };
@@ -367,13 +371,47 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
         this.newIndicator.params = { period: 14 };
         break;
       case 'pctchg':
-        this.newIndicator.params = {};
+        this.newIndicator.params = {}; // No parameters needed
         break;
       case 'volume':
-        this.newIndicator.params = {};
+        this.newIndicator.params = {}; // No parameters needed
         break;
       default:
         this.newIndicator.params = { period: 14 };
+    }
+    
+    // Force change detection to update the UI
+    this.cdr.detectChanges();
+  }
+
+  // Helper methods for template logic
+  shouldShowPeriod(): boolean {
+    return !['volume', 'pctchg'].includes(this.newIndicator.name);
+  }
+
+  shouldShowStdDev(): boolean {
+    return this.newIndicator.name === 'bb';
+  }
+
+  shouldShowMultiplier(): boolean {
+    return this.newIndicator.name === 'supertrend';
+  }
+
+  getRequiredParameterCount(): number {
+    switch (this.newIndicator.name) {
+      case 'supertrend':
+        return 2; // period + multiplier
+      case 'bb':
+        return 2; // period + stdDev
+      case 'sma':
+      case 'ema':
+      case 'rsi':
+        return 1; // period only
+      case 'pctchg':
+      case 'volume':
+        return 0; // no parameters
+      default:
+        return 1;
     }
   }
 }

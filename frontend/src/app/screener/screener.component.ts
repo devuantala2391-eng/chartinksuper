@@ -977,16 +977,14 @@ export class ScreenerComponent implements OnInit, OnDestroy {
       condition.indicatorType = 'parameterized';
       condition.indicatorName = condition.field;
       
-      // Only set default parameters if they don't exist or are empty
-      if (!condition.indicatorParams || condition.indicatorParams.length === 0) {
-        condition.indicatorParams = [...(this.indicatorDefaults[condition.field] || ['14'])];
-      }
+      // ALWAYS reset parameters to match the new indicator's requirements
+      // This ensures correct parameter count when switching between indicators
+      condition.indicatorParams = [...(this.indicatorDefaults[condition.field] || ['14'])];
       
       // Set default component for multi-component indicators
       if (this.multiComponentIndicators[condition.field]) {
-        if (!condition.indicatorComponent) {
-          condition.indicatorComponent = this.multiComponentIndicators[condition.field][0]; // Default to first component
-        }
+        // Always reset component to default when field changes
+        condition.indicatorComponent = this.multiComponentIndicators[condition.field][0]; // Default to first component
       } else {
         condition.indicatorComponent = undefined;
       }

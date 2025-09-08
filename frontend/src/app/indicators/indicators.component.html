@@ -50,7 +50,8 @@
             </select>
           </div>
           
-          <div class="form-group" *ngIf="!['volume', 'pctchg'].includes(newIndicator.name)">
+          <!-- Period Parameter (for most indicators) -->
+          <div class="form-group" *ngIf="shouldShowPeriod()">
             <label for="period">Period:</label>
             <input 
               id="period"
@@ -60,10 +61,12 @@
               class="form-control"
               min="0.1"
               step="0.1"
-              placeholder="Enter any decimal value (e.g., 14, 20.5)">
+              placeholder="Enter any decimal value (e.g., 14, 20.5)"
+              [attr.required]="shouldShowPeriod()">
           </div>
           
-          <div class="form-group" *ngIf="newIndicator.name === 'bb'">
+          <!-- Standard Deviation Parameter (Bollinger Bands only) -->
+          <div class="form-group" *ngIf="shouldShowStdDev()">
             <label for="stdDev">Standard Deviation:</label>
             <input 
               id="stdDev"
@@ -73,10 +76,12 @@
               class="form-control"
               min="0.1"
               step="0.1"
-              placeholder="Enter any decimal value (e.g., 2, 2.5)">
+              placeholder="Enter any decimal value (e.g., 2, 2.5)"
+              [attr.required]="shouldShowStdDev()">
           </div>
           
-          <div class="form-group" *ngIf="newIndicator.name === 'supertrend'">
+          <!-- Multiplier Parameter (SuperTrend only) -->
+          <div class="form-group" *ngIf="shouldShowMultiplier()">
             <label for="multiplier">Multiplier:</label>
             <input 
               id="multiplier"
@@ -86,7 +91,15 @@
               class="form-control"
               min="0.1"
               step="0.1"
-              placeholder="Enter any decimal value (e.g., 3, 2.5)">
+              placeholder="Enter any decimal value (e.g., 3, 2.5)"
+              [attr.required]="shouldShowMultiplier()">
+          </div>
+          
+          <!-- Parameter Info Display -->
+          <div class="parameter-info" *ngIf="getRequiredParameterCount() === 0">
+            <small class="text-muted">
+              <i>{{ newIndicator.name === 'volume' ? 'Volume indicator requires no parameters' : 'Percentage change indicator requires no parameters' }}</i>
+            </small>
           </div>
         </div>
         
