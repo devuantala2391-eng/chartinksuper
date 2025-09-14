@@ -57,6 +57,7 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
     { value: 'sma', label: 'Simple Moving Average (SMA)' },
     { value: 'ema', label: 'Exponential Moving Average (EMA)' },
     { value: 'rsi', label: 'Relative Strength Index (RSI)' },
+    { value: 'atr', label: 'Average True Range (ATR)' },
     { value: 'pctchg', label: '% Change' },
     { value: 'volume', label: 'Volume' }
   ];
@@ -368,6 +369,9 @@ export class IndicatorsComponent implements OnInit, OnDestroy {
         this.newIndicator.params = { period: 12 };
         break;
       case 'rsi':
+        this.newIndicator.params = { period: 14 };
+        break;
+      case 'atr':
         this.newIndicator.params = { period: 14 };
         break;
       case 'pctchg':

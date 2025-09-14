@@ -136,7 +136,7 @@ def resolve_field_name(field_name: str) -> str:
         return f"{timeframe}_supertrend_{period_str}_{multiplier_str}"
     
     # Check for other indicators with decimal parameters
-    ind_match = re.match(r'^(daily|weekly|monthly)_(rsi|sma|ema|pctchg)_(\d+(?:\.\d+)?)$', field_name)
+    ind_match = re.match(r'^(daily|weekly|monthly)_(rsi|sma|ema|atr|pctchg)_(\d+(?:\.\d+)?)$', field_name)
     if ind_match:
         timeframe = ind_match.group(1)
         indicator = ind_match.group(2)

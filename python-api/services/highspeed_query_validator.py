@@ -398,6 +398,28 @@ class HighSpeedQueryValidator:
                 except ValueError:
                     pass
         
+        # Handle ATR with optional timeframe prefix
+        elif 'atr_' in field_name:
+            parts = field_name.split('_')
+            timeframe = "daily"  # default
+            period_idx = 1
+            
+            # Check if first part is a timeframe
+            if len(parts) >= 3 and parts[0] in ['daily', 'weekly', 'monthly']:
+                timeframe = parts[0]
+                period_idx = 2
+            
+            if len(parts) > period_idx:
+                try:
+                    period = int(parts[period_idx])  # ATR period is typically integer
+                    return {
+                        "name": "atr",
+                        "timeframe": timeframe,
+                        "params": {"period": period}
+                    }
+                except ValueError:
+                    pass
+        
         # Handle Volume indicators: weekly_volume, monthly_volume
         elif field_name in ['weekly_volume', 'monthly_volume']:
             parts = field_name.split('_')

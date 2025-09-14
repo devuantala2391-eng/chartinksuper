@@ -85,7 +85,7 @@ BEGIN
         END IF;
     END IF;
     
-    -- Calculate SuperTrend with proper iterative logic
+    -- Calculate SuperTrend with proper algorithm
     WITH ordered_candles AS (
         SELECT 
             candle_key_id,
@@ -121,43 +121,94 @@ BEGIN
     ),
     bands_calc AS (
         SELECT 
-            *,
+            candle_key_id,
+            candle_sequence_number,
+            high,
+            low,
+            close,
+            atr,
+            -- Calculate HL Average (typical price)
+            (high + low) / 2 as hl_avg,
             -- Calculate basic bands
-            ((high + low) / 2) + (p_multiplier * atr) as upper_band,
-            ((high + low) / 2) - (p_multiplier * atr) as lower_band
+            ((high + low) / 2) + (p_multiplier * atr) as basic_upper_band,
+            ((high + low) / 2) - (p_multiplier * atr) as basic_lower_band
         FROM atr_values
+    ),
+    -- Apply SuperTrend rules with proper band persistence
+    supertrend_calc AS (
+        SELECT 
+            candle_key_id,
+            candle_sequence_number,
+            close,
+            basic_upper_band,
+            basic_lower_band,
+            -- Calculate final bands with persistence rules
+            CASE 
+                WHEN candle_sequence_number < p_period THEN NULL
+                ELSE
+                    -- Lower band: should not decrease in uptrend
+                    GREATEST(
+                        basic_lower_band,
+                        COALESCE(LAG(basic_lower_band) OVER (ORDER BY candle_sequence_number), basic_lower_band)
+                    )
+            END as final_lower_band,
+            CASE 
+                WHEN candle_sequence_number < p_period THEN NULL
+                ELSE
+                    -- Upper band: should not increase in downtrend
+                    LEAST(
+                        basic_upper_band,
+                        COALESCE(LAG(basic_upper_band) OVER (ORDER BY candle_sequence_number), basic_upper_band)
+                    )
+            END as final_upper_band
+        FROM bands_calc
+    ),
+    -- Determine trend direction based on close price relative to bands
+    trend_determination AS (
+        SELECT 
+            candle_key_id,
+            candle_sequence_number,
+            close,
+            final_upper_band,
+            final_lower_band,
+            -- Determine trend: if close > upper band = uptrend, if close < lower band = downtrend
+            -- Otherwise maintain previous trend
+            CASE 
+                WHEN candle_sequence_number < p_period THEN NULL
+                WHEN close > final_upper_band THEN 1  -- Uptrend
+                WHEN close < final_lower_band THEN 0  -- Downtrend
+                ELSE 
+                    -- Maintain previous trend
+                    LAG(
+                        CASE 
+                            WHEN close > final_upper_band THEN 1
+                            WHEN close < final_lower_band THEN 0
+                            ELSE NULL
+                        END, 1, 
+                        -- Default to uptrend if close is above midpoint
+                        CASE WHEN close >= (final_upper_band + final_lower_band) / 2 THEN 1 ELSE 0 END
+                    ) OVER (ORDER BY candle_sequence_number)
+            END as trend_direction
+        FROM supertrend_calc
     ),
     refined_supertrend AS (
         SELECT 
             candle_key_id,
             candle_sequence_number,
             close,
-            upper_band,
-            lower_band,
-            -- Simplified SuperTrend calculation with proper trend detection
+            final_upper_band as upper_band,
+            final_lower_band as lower_band,
+            -- SuperTrend value based on trend direction
             CASE 
                 WHEN candle_sequence_number < p_period THEN NULL
                 ELSE 
-                    -- Simple but correct logic: use lower band for uptrend, upper band for downtrend
-                    -- Trend determination: if close is closer to lower band, assume uptrend
                     CASE 
-                        WHEN ABS(close - lower_band) <= ABS(close - upper_band) THEN 
-                            ROUND(lower_band::numeric, 2)  -- Uptrend
-                        ELSE 
-                            ROUND(upper_band::numeric, 2)  -- Downtrend  
+                        WHEN trend_direction = 1 THEN ROUND(final_lower_band::numeric, 2)  -- Uptrend: use lower band
+                        ELSE ROUND(final_upper_band::numeric, 2)  -- Downtrend: use upper band
                     END
             END as supertrend_final,
-            -- Direction based on which band the SuperTrend uses
-            CASE 
-                WHEN candle_sequence_number < p_period THEN NULL
-                ELSE 
-                    -- Direction: 1 if using lower band (uptrend), 0 if using upper band (downtrend)
-                    CASE 
-                        WHEN ABS(close - lower_band) <= ABS(close - upper_band) THEN 1  -- Uptrend
-                        ELSE 0  -- Downtrend
-                    END
-            END as direction_final
-        FROM bands_calc
+            trend_direction as direction_final
+        FROM trend_determination
     )
     -- Update the indicators JSONB column (simplified working version)
     UPDATE daily_candles dc

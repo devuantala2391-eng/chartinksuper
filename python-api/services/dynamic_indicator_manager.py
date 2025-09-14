@@ -226,6 +226,17 @@ class DatabaseDynamicIndicatorManager:
                     return await self.calculate_and_store_indicator(
                         indicator_def={'name': 'ema', 'params': {'period': period}, 'timeframe': timeframe}
                     )
+            elif 'atr_' in error_lower:
+                # Extract ATR period from error like "atr_14" or "weekly_atr_14"
+                import re
+                pattern = r'(?:daily_|weekly_|monthly_)?atr_(\d+)'
+                match = re.search(pattern, error_lower)
+                if match:
+                    period = int(match.group(1))
+                    print(f"Auto-calculating {timeframe} ATR({period}) from error: {error_detail}")
+                    return await self.calculate_and_store_indicator(
+                        indicator_def={'name': 'atr', 'params': {'period': period}, 'timeframe': timeframe}
+                    )
             
             return False
         except Exception as e:
@@ -413,6 +424,52 @@ class DatabaseDynamicIndicatorManager:
                             if indicator_key not in self._active_indicators:
                                 self._active_indicators.append(indicator_key)
                                 await self.add_custom_indicator('ema', {'period': period}, timeframe)
+                        
+                        return success
+                
+                elif name and name.lower() == 'atr':
+                    # Calculate ATR using new stored procedure
+                    period = params.get('period', 14)
+                    if not period:
+                        print(f"Error: ATR period not provided in params: {params}")
+                        return False
+                    
+                    # Convert to proper type if needed
+                    if isinstance(period, float) and period.is_integer():
+                        period = int(period)
+                    else:
+                        period = int(period)
+                    
+                    # Call the appropriate ATR function based on timeframe
+                    if timeframe == 'weekly':
+                        result = await conn.fetchrow("""
+                            SELECT * FROM calculate_weekly_atr($1, NULL)
+                        """, period)
+                    elif timeframe == 'monthly':
+                        result = await conn.fetchrow("""
+                            SELECT * FROM calculate_monthly_atr($1, NULL)
+                        """, period)
+                    else:
+                        # Default to daily
+                        result = await conn.fetchrow("""
+                            SELECT * FROM calculate_atr($1, NULL, NULL)
+                        """, period)
+                    
+                    if result:
+                        print(f"{timeframe.capitalize()} ATR({period}) calculation result: {dict(result)}")
+                        success = result.get('status') == 'SUCCESS'
+                        
+                        if success:
+                            # Add to active indicators if not already there
+                            indicator_key = self.generate_indicator_key({
+                                'name': 'atr',
+                                'timeframe': timeframe,
+                                'params': {'period': period}
+                            })
+                            
+                            if indicator_key not in self._active_indicators:
+                                self._active_indicators.append(indicator_key)
+                                await self.add_custom_indicator('atr', {'period': period}, timeframe)
                         
                         return success
                     

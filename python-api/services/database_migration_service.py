@@ -36,7 +36,10 @@ class DatabaseMigrationService:
             'calculate_monthly_percentage_change_for_symbol',  # Added for monthly percentage
             'calculate_percentage_change',  # Added for general percentage
             'calculate_weekly_percentage_change',  # Added for weekly percentage
-            'calculate_weekly_percentage_change_for_symbol'  # Added for weekly percentage
+            'calculate_weekly_percentage_change_for_symbol',  # Added for weekly percentage
+            'calculate_atr',  # Added for ATR calculation
+            'calculate_weekly_atr',  # Added for weekly ATR
+            'calculate_monthly_atr'  # Added for monthly ATR
         ]
     
     async def check_and_apply_migrations(self) -> Dict[str, any]:
@@ -126,7 +129,8 @@ class DatabaseMigrationService:
                 "comprehensive_calculations.sql",
                 "calculate_monthly_percentage_change.sql",  # CORRECT monthly percentage implementation
                 "calculate_percentage_change.sql",  # General percentage (now delegates monthly to correct implementation)
-                "calculate_weekly_percentage_change.sql"  # Weekly percentage functions
+                "calculate_weekly_percentage_change.sql",  # Weekly percentage functions
+                "calculate_atr.sql"  # ATR calculation with Wilder's smoothing and TradingView matching
             ]
             
             applied_files = []

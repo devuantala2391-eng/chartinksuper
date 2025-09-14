@@ -1,7 +1,8 @@
 -- =====================================================
--- SIMPLIFIED WEEKLY AND MONTHLY SUPERTREND CALCULATION
+-- SLIDING WINDOW WEEKLY AND MONTHLY SUPERTREND CALCULATION
 -- =====================================================
--- Uses partial week/month approach with simplified ATR calculation
+-- Uses sliding window approach like SMA/EMA where each daily candle
+-- gets its own SuperTrend value based on the window at that point
 -- =====================================================
 
 CREATE OR REPLACE FUNCTION calculate_weekly_monthly_supertrend(
@@ -29,7 +30,6 @@ DECLARE
     v_multiplier_str TEXT;
     v_batch_count INTEGER;
     symbol_rec RECORD;
-    v_sql TEXT;
 BEGIN
     -- Format multiplier for key generation using utility function
     v_multiplier_str := format_multiplier_for_key(p_multiplier);
@@ -38,7 +38,7 @@ BEGIN
     v_indicator_key := p_timeframe || '_supertrend_' || p_period || '_' || v_multiplier_str;
     v_direction_key := v_indicator_key || '_direction';
     
-    RAISE NOTICE 'Calculating % SuperTrend(%,%), storing as % and % in daily_candles', 
+    RAISE NOTICE 'Calculating % SuperTrend(%,%) with sliding window, storing as % and %', 
         p_timeframe, p_period, p_multiplier, v_indicator_key, v_direction_key;
     
     -- Process each symbol
@@ -47,166 +47,259 @@ BEGIN
         WHERE (p_symbol_filter IS NULL OR symbol = p_symbol_filter)
         ORDER BY symbol
     LOOP
+        v_processed_symbols := v_processed_symbols + 1;
+        
         IF p_timeframe = 'weekly' THEN
-            -- Weekly SuperTrend using weekly OHLC columns in daily_candles
-            -- Combined with historical weekly data
-            WITH weekly_enriched AS (
-                SELECT DISTINCT ON (dc.weekly_candle_key_id)
+            -- Weekly SuperTrend with sliding window approach (like SMA/EMA)
+            WITH daily_candles_with_week AS (
+                SELECT 
                     dc.candle_key_id,
                     dc.symbol,
-                    dc.weekly_candle_key_id,
-                    wc.week_sequence_number,
-                    dc.weekly_high as high,
-                    dc.weekly_low as low,
-                    dc.weekly_close as close,
-                    dc.candle_sequence_number
+                    dc.candle_sequence_number,
+                    dc.weekly_high as current_high,
+                    dc.weekly_low as current_low,
+                    dc.weekly_close as current_close,
+                    wc.week_sequence_number
                 FROM daily_candles dc
-                LEFT JOIN weekly_candles wc ON wc.weekly_candle_key_id = dc.weekly_candle_key_id
+                JOIN weekly_candles wc ON wc.weekly_candle_key_id = dc.weekly_candle_key_id
                 WHERE dc.symbol = symbol_rec.symbol
                 AND dc.weekly_high IS NOT NULL
+                AND dc.weekly_low IS NOT NULL
+                AND dc.weekly_close IS NOT NULL
                 AND wc.week_sequence_number IS NOT NULL
-                ORDER BY dc.weekly_candle_key_id, dc.candle_sequence_number DESC
+                ORDER BY dc.candle_sequence_number
             ),
-            weekly_with_tr AS (
+            -- Get historical weekly true ranges for ATR calculation
+            historical_weekly_tr AS (
                 SELECT 
-                    we.*,
-                    -- Simple TR calculation
+                    week_sequence_number,
                     GREATEST(
-                        we.high - we.low,
-                        ABS(we.high - LAG(we.close, 1) OVER (ORDER BY we.week_sequence_number)),
-                        ABS(we.low - LAG(we.close, 1) OVER (ORDER BY we.week_sequence_number))
+                        high - low,
+                        ABS(high - LAG(close, 1) OVER (ORDER BY week_sequence_number)),
+                        ABS(low - LAG(close, 1) OVER (ORDER BY week_sequence_number))
                     ) as true_range
-                FROM weekly_enriched we
+                FROM weekly_candles
+                WHERE symbol = symbol_rec.symbol
+                AND high IS NOT NULL
+                AND low IS NOT NULL
+                AND close IS NOT NULL
+                ORDER BY week_sequence_number
             ),
-            weekly_with_atr AS (
+            -- For each daily candle, calculate its own ATR using sliding window
+            daily_with_atr AS (
                 SELECT 
-                    *,
-                    AVG(true_range) OVER (
-                        ORDER BY week_sequence_number 
-                        ROWS BETWEEN (p_period - 1) PRECEDING AND CURRENT ROW
-                    ) as atr
-                FROM weekly_with_tr
-                WHERE week_sequence_number >= (p_period - 1)
+                    dcw.candle_key_id,
+                    dcw.current_high,
+                    dcw.current_low,
+                    dcw.current_close,
+                    dcw.week_sequence_number,
+                    -- Calculate current day's true range
+                    GREATEST(
+                        dcw.current_high - dcw.current_low,
+                        ABS(dcw.current_high - LAG(dcw.current_close, 1) OVER (PARTITION BY dcw.symbol ORDER BY dcw.candle_sequence_number)),
+                        ABS(dcw.current_low - LAG(dcw.current_close, 1) OVER (PARTITION BY dcw.symbol ORDER BY dcw.candle_sequence_number))
+                    ) as current_tr,
+                    -- Get average of previous (p_period - 1) weeks' true ranges
+                    (
+                        SELECT AVG(true_range)
+                        FROM (
+                            SELECT true_range
+                            FROM historical_weekly_tr hwt
+                            WHERE hwt.week_sequence_number < dcw.week_sequence_number
+                            AND hwt.week_sequence_number >= dcw.week_sequence_number - (p_period - 1)
+                            ORDER BY hwt.week_sequence_number DESC
+                            LIMIT (p_period - 1)
+                        ) prev_trs
+                    ) as prev_weeks_avg_tr
+                FROM daily_candles_with_week dcw
             ),
-            weekly_supertrend_calc AS (
+            -- Calculate ATR and SuperTrend for each daily candle
+            daily_supertrend AS (
                 SELECT 
                     candle_key_id,
-                    symbol,
-                    close,
-                    ((high + low) / 2) + (p_multiplier * atr) as upper_band,
-                    ((high + low) / 2) - (p_multiplier * atr) as lower_band
-                FROM weekly_with_atr
-                WHERE atr IS NOT NULL
-            ),
-            weekly_final AS (
-                SELECT 
-                    wsc.candle_key_id,
+                    current_high,
+                    current_low,
+                    current_close,
+                    week_sequence_number,
+                    -- Sliding window ATR: combine previous weeks with current day's TR
                     CASE 
-                        WHEN ABS(wsc.close - wsc.lower_band) <= ABS(wsc.close - wsc.upper_band) THEN 
-                            ROUND(wsc.lower_band::numeric, 2)
-                        ELSE 
-                            ROUND(wsc.upper_band::numeric, 2)
+                        WHEN prev_weeks_avg_tr IS NOT NULL AND current_tr IS NOT NULL THEN
+                            ((prev_weeks_avg_tr * (p_period - 1)) + current_tr) / p_period
+                        WHEN prev_weeks_avg_tr IS NULL AND p_period = 1 THEN
+                            current_tr
+                        ELSE NULL
+                    END as atr
+                FROM daily_with_atr
+            ),
+            -- Calculate final SuperTrend values
+            supertrend_final AS (
+                SELECT 
+                    ds.candle_key_id,
+                    CASE 
+                        WHEN ds.atr IS NOT NULL THEN
+                            CASE 
+                                -- If close is nearer to lower band, use lower band
+                                WHEN ABS(ds.current_close - (((ds.current_high + ds.current_low) / 2) - (p_multiplier * ds.atr))) 
+                                     <= ABS(ds.current_close - (((ds.current_high + ds.current_low) / 2) + (p_multiplier * ds.atr))) THEN 
+                                    ROUND((((ds.current_high + ds.current_low) / 2) - (p_multiplier * ds.atr))::numeric, 2)
+                                -- Otherwise use upper band
+                                ELSE 
+                                    ROUND((((ds.current_high + ds.current_low) / 2) + (p_multiplier * ds.atr))::numeric, 2)
+                            END
+                        ELSE NULL
                     END as supertrend_value,
                     CASE 
-                        WHEN ABS(wsc.close - wsc.lower_band) <= ABS(wsc.close - wsc.upper_band) THEN 1
-                        ELSE 0
+                        WHEN ds.atr IS NOT NULL THEN
+                            CASE 
+                                -- Direction: 1 = bullish (using lower band), 0 = bearish (using upper band)
+                                WHEN ABS(ds.current_close - (((ds.current_high + ds.current_low) / 2) - (p_multiplier * ds.atr))) 
+                                     <= ABS(ds.current_close - (((ds.current_high + ds.current_low) / 2) + (p_multiplier * ds.atr))) THEN 1
+                                ELSE 0
+                            END
+                        ELSE NULL
                     END as direction
-                FROM weekly_supertrend_calc wsc
+                FROM daily_supertrend ds
+                WHERE ds.week_sequence_number >= (p_period - 1)  -- Need enough history
             )
-            -- Update all daily candles in the same week with the weekly SuperTrend value
+            -- Update each daily candle with its own SuperTrend value
             UPDATE daily_candles AS target
             SET indicators = COALESCE(target.indicators, '{}'::jsonb) || 
                 jsonb_build_object(
-                    v_indicator_key, wf.supertrend_value,
-                    v_direction_key, wf.direction
+                    v_indicator_key, sf.supertrend_value,
+                    v_direction_key, sf.direction
                 ),
                 updated_at = CURRENT_TIMESTAMP
-            FROM weekly_final wf
-            INNER JOIN daily_candles dc2 ON dc2.candle_key_id = wf.candle_key_id
-            WHERE target.symbol = symbol_rec.symbol
-            AND target.weekly_candle_key_id = dc2.weekly_candle_key_id
+            FROM supertrend_final sf
+            WHERE target.candle_key_id = sf.candle_key_id
+            AND sf.supertrend_value IS NOT NULL
             AND (
                 NOT (target.indicators ? v_indicator_key) OR 
                 (target.indicators->v_indicator_key) IS NULL
             );
             
         ELSIF p_timeframe = 'monthly' THEN
-            -- Monthly SuperTrend using monthly OHLC columns in daily_candles
-            WITH monthly_enriched AS (
-                SELECT DISTINCT ON (dc.monthly_candle_key_id)
+            -- Monthly SuperTrend with sliding window approach (like SMA/EMA)
+            WITH daily_candles_with_month AS (
+                SELECT 
                     dc.candle_key_id,
                     dc.symbol,
-                    dc.monthly_candle_key_id,
-                    mc.month_sequence_number,
-                    dc.monthly_high as high,
-                    dc.monthly_low as low,
-                    dc.monthly_close as close,
-                    dc.candle_sequence_number
+                    dc.candle_sequence_number,
+                    dc.monthly_high as current_high,
+                    dc.monthly_low as current_low,
+                    dc.monthly_close as current_close,
+                    mc.month_sequence_number
                 FROM daily_candles dc
-                LEFT JOIN monthly_candles mc ON mc.monthly_candle_key_id = dc.monthly_candle_key_id
+                JOIN monthly_candles mc ON mc.monthly_candle_key_id = dc.monthly_candle_key_id
                 WHERE dc.symbol = symbol_rec.symbol
                 AND dc.monthly_high IS NOT NULL
+                AND dc.monthly_low IS NOT NULL
+                AND dc.monthly_close IS NOT NULL
                 AND mc.month_sequence_number IS NOT NULL
-                ORDER BY dc.monthly_candle_key_id, dc.candle_sequence_number DESC
+                ORDER BY dc.candle_sequence_number
             ),
-            monthly_with_tr AS (
+            -- Get historical monthly true ranges for ATR calculation
+            historical_monthly_tr AS (
                 SELECT 
-                    me.*,
-                    -- Simple TR calculation
+                    month_sequence_number,
                     GREATEST(
-                        me.high - me.low,
-                        ABS(me.high - LAG(me.close, 1) OVER (ORDER BY me.month_sequence_number)),
-                        ABS(me.low - LAG(me.close, 1) OVER (ORDER BY me.month_sequence_number))
+                        high - low,
+                        ABS(high - LAG(close, 1) OVER (ORDER BY month_sequence_number)),
+                        ABS(low - LAG(close, 1) OVER (ORDER BY month_sequence_number))
                     ) as true_range
-                FROM monthly_enriched me
+                FROM monthly_candles
+                WHERE symbol = symbol_rec.symbol
+                AND high IS NOT NULL
+                AND low IS NOT NULL
+                AND close IS NOT NULL
+                ORDER BY month_sequence_number
             ),
-            monthly_with_atr AS (
+            -- For each daily candle, calculate its own ATR using sliding window
+            daily_with_atr AS (
                 SELECT 
-                    *,
-                    AVG(true_range) OVER (
-                        ORDER BY month_sequence_number 
-                        ROWS BETWEEN (p_period - 1) PRECEDING AND CURRENT ROW
-                    ) as atr
-                FROM monthly_with_tr
-                WHERE month_sequence_number >= (p_period - 1)
+                    dcm.candle_key_id,
+                    dcm.current_high,
+                    dcm.current_low,
+                    dcm.current_close,
+                    dcm.month_sequence_number,
+                    -- Calculate current day's true range
+                    GREATEST(
+                        dcm.current_high - dcm.current_low,
+                        ABS(dcm.current_high - LAG(dcm.current_close, 1) OVER (PARTITION BY dcm.symbol ORDER BY dcm.candle_sequence_number)),
+                        ABS(dcm.current_low - LAG(dcm.current_close, 1) OVER (PARTITION BY dcm.symbol ORDER BY dcm.candle_sequence_number))
+                    ) as current_tr,
+                    -- Get average of previous (p_period - 1) months' true ranges
+                    (
+                        SELECT AVG(true_range)
+                        FROM (
+                            SELECT true_range
+                            FROM historical_monthly_tr hmt
+                            WHERE hmt.month_sequence_number < dcm.month_sequence_number
+                            AND hmt.month_sequence_number >= dcm.month_sequence_number - (p_period - 1)
+                            ORDER BY hmt.month_sequence_number DESC
+                            LIMIT (p_period - 1)
+                        ) prev_trs
+                    ) as prev_months_avg_tr
+                FROM daily_candles_with_month dcm
             ),
-            monthly_supertrend_calc AS (
+            -- Calculate ATR and SuperTrend for each daily candle
+            daily_supertrend AS (
                 SELECT 
                     candle_key_id,
-                    symbol,
-                    close,
-                    ((high + low) / 2) + (p_multiplier * atr) as upper_band,
-                    ((high + low) / 2) - (p_multiplier * atr) as lower_band
-                FROM monthly_with_atr
-                WHERE atr IS NOT NULL
-            ),
-            monthly_final AS (
-                SELECT 
-                    msc.candle_key_id,
+                    current_high,
+                    current_low,
+                    current_close,
+                    month_sequence_number,
+                    -- Sliding window ATR: combine previous months with current day's TR
                     CASE 
-                        WHEN ABS(msc.close - msc.lower_band) <= ABS(msc.close - msc.upper_band) THEN 
-                            ROUND(msc.lower_band::numeric, 2)
-                        ELSE 
-                            ROUND(msc.upper_band::numeric, 2)
+                        WHEN prev_months_avg_tr IS NOT NULL AND current_tr IS NOT NULL THEN
+                            ((prev_months_avg_tr * (p_period - 1)) + current_tr) / p_period
+                        WHEN prev_months_avg_tr IS NULL AND p_period = 1 THEN
+                            current_tr
+                        ELSE NULL
+                    END as atr
+                FROM daily_with_atr
+            ),
+            -- Calculate final SuperTrend values
+            supertrend_final AS (
+                SELECT 
+                    ds.candle_key_id,
+                    CASE 
+                        WHEN ds.atr IS NOT NULL THEN
+                            CASE 
+                                -- If close is nearer to lower band, use lower band
+                                WHEN ABS(ds.current_close - (((ds.current_high + ds.current_low) / 2) - (p_multiplier * ds.atr))) 
+                                     <= ABS(ds.current_close - (((ds.current_high + ds.current_low) / 2) + (p_multiplier * ds.atr))) THEN 
+                                    ROUND((((ds.current_high + ds.current_low) / 2) - (p_multiplier * ds.atr))::numeric, 2)
+                                -- Otherwise use upper band
+                                ELSE 
+                                    ROUND((((ds.current_high + ds.current_low) / 2) + (p_multiplier * ds.atr))::numeric, 2)
+                            END
+                        ELSE NULL
                     END as supertrend_value,
                     CASE 
-                        WHEN ABS(msc.close - msc.lower_band) <= ABS(msc.close - msc.upper_band) THEN 1
-                        ELSE 0
+                        WHEN ds.atr IS NOT NULL THEN
+                            CASE 
+                                -- Direction: 1 = bullish (using lower band), 0 = bearish (using upper band)
+                                WHEN ABS(ds.current_close - (((ds.current_high + ds.current_low) / 2) - (p_multiplier * ds.atr))) 
+                                     <= ABS(ds.current_close - (((ds.current_high + ds.current_low) / 2) + (p_multiplier * ds.atr))) THEN 1
+                                ELSE 0
+                            END
+                        ELSE NULL
                     END as direction
-                FROM monthly_supertrend_calc msc
+                FROM daily_supertrend ds
+                WHERE ds.month_sequence_number >= (p_period - 1)  -- Need enough history
             )
-            -- Update all daily candles in the same month with the monthly SuperTrend value
+            -- Update each daily candle with its own SuperTrend value
             UPDATE daily_candles AS target
             SET indicators = COALESCE(target.indicators, '{}'::jsonb) || 
                 jsonb_build_object(
-                    v_indicator_key, mf.supertrend_value,
-                    v_direction_key, mf.direction
+                    v_indicator_key, sf.supertrend_value,
+                    v_direction_key, sf.direction
                 ),
                 updated_at = CURRENT_TIMESTAMP
-            FROM monthly_final mf
-            INNER JOIN daily_candles dc2 ON dc2.candle_key_id = mf.candle_key_id
-            WHERE target.symbol = symbol_rec.symbol
-            AND target.monthly_candle_key_id = dc2.monthly_candle_key_id
+            FROM supertrend_final sf
+            WHERE target.candle_key_id = sf.candle_key_id
+            AND sf.supertrend_value IS NOT NULL
             AND (
                 NOT (target.indicators ? v_indicator_key) OR 
                 (target.indicators->v_indicator_key) IS NULL
@@ -215,7 +308,6 @@ BEGIN
         
         GET DIAGNOSTICS v_batch_count = ROW_COUNT;
         v_updated_rows := v_updated_rows + v_batch_count;
-        v_processed_symbols := v_processed_symbols + 1;
     END LOOP;
     
     RETURN QUERY SELECT 
