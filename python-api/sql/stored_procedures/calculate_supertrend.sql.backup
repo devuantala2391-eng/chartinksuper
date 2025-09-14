@@ -1,0 +1,630 @@
+-- =====================================================
+-- CORRECTED SUPERTREND CALCULATION WITH PROPER ALGORITHM
+-- =====================================================
+-- Based on manual analysis - uses correct band persistence rules
+-- =====================================================
+
+-- Helper function for formatting multiplier values in keys
+CREATE OR REPLACE FUNCTION format_decimal_param(value NUMERIC)
+RETURNS TEXT AS $$
+BEGIN
+    IF value = FLOOR(value) THEN
+        RETURN FLOOR(value)::TEXT;
+    ELSE
+        RETURN REPLACE(value::TEXT, '.', 'dot');
+    END IF;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+-- =====================================================
+-- CORRECTED DAILY SUPERTREND CALCULATION FOR SINGLE SYMBOL
+-- =====================================================
+CREATE OR REPLACE FUNCTION calculate_daily_supertrend_for_symbol(
+    p_symbol TEXT,
+    p_period INTEGER,
+    p_multiplier NUMERIC,
+    p_force_recalculate BOOLEAN DEFAULT FALSE
+)
+RETURNS TABLE(
+    updated_rows INTEGER,
+    execution_time_ms INTEGER,
+    status TEXT,
+    indicator_key TEXT,
+    direction_key TEXT
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_start_time TIMESTAMP := clock_timestamp();
+    v_updated_rows INTEGER := 0;
+    v_indicator_key TEXT;
+    v_direction_key TEXT;
+    v_atr_key TEXT;
+    v_existing_count INTEGER;
+    v_total_count INTEGER;
+    rec RECORD;
+    v_final_upper NUMERIC := NULL;
+    v_final_lower NUMERIC := NULL;
+    v_trend INTEGER := NULL;
+BEGIN
+    -- Generate indicator keys
+    v_indicator_key := 'daily_supertrend_' || p_period || '_' || format_decimal_param(p_multiplier);
+    v_direction_key := v_indicator_key || '_direction';
+    v_atr_key := 'atr_' || p_period;
+
+    RAISE NOTICE 'Processing CORRECTED daily SuperTrend(%, %) for symbol: %', p_period, p_multiplier, p_symbol;
+
+    -- Check if indicator already exists (unless force recalculate)
+    IF NOT p_force_recalculate THEN
+        SELECT COUNT(*) INTO v_total_count
+        FROM daily_candles
+        WHERE symbol = p_symbol;
+
+        SELECT COUNT(*) INTO v_existing_count
+        FROM daily_candles
+        WHERE symbol = p_symbol
+        AND indicators ? v_indicator_key
+        AND (indicators->v_indicator_key) IS NOT NULL
+        AND indicators ? v_direction_key
+        AND (indicators->v_direction_key) IS NOT NULL;
+
+        -- If all rows already have the indicator, skip calculation
+        IF v_existing_count = v_total_count AND v_total_count > 0 THEN
+            RAISE NOTICE 'Indicator % already exists for all % rows of symbol %, skipping calculation',
+                v_indicator_key, v_total_count, p_symbol;
+
+            RETURN QUERY SELECT
+                0,
+                0,
+                'ALREADY_EXISTS'::TEXT,
+                v_indicator_key,
+                v_direction_key;
+            RETURN;
+        END IF;
+    END IF;
+
+    -- Ensure ATR is calculated for this symbol/period
+    IF NOT EXISTS (
+        SELECT 1 FROM daily_candles
+        WHERE symbol = p_symbol
+        AND indicators ? v_atr_key
+        AND (indicators->v_atr_key) IS NOT NULL
+        LIMIT 1
+    ) THEN
+        RAISE NOTICE 'ATR(%) not found for %, calculating ATR first', p_period, p_symbol;
+        PERFORM * FROM calculate_atr(p_period, p_symbol, NULL);
+    END IF;
+
+    -- Process candles sequentially with CORRECTED SuperTrend algorithm
+    FOR rec IN
+        SELECT
+            candle_key_id,
+            candle_sequence_number,
+            high,
+            low,
+            close,
+            (indicators->v_atr_key)::numeric as atr
+        FROM daily_candles
+        WHERE symbol = p_symbol
+        AND indicators ? v_atr_key
+        AND (indicators->v_atr_key) IS NOT NULL
+        ORDER BY candle_sequence_number
+    LOOP
+        DECLARE
+            v_hl2 NUMERIC := (rec.high + rec.low) / 2.0;
+            v_basic_upper NUMERIC := v_hl2 + (p_multiplier * rec.atr);
+            v_basic_lower NUMERIC := v_hl2 - (p_multiplier * rec.atr);
+            v_supertrend NUMERIC;
+            v_direction INTEGER;
+        BEGIN
+            -- CORRECTED BAND PERSISTENCE RULES from manual analysis
+            IF v_final_upper IS NULL THEN
+                -- First candle
+                v_final_upper := v_basic_upper;
+                v_final_lower := v_basic_lower;
+            ELSE
+                -- FIXED BAND PERSISTENCE RULES
+                -- Upper band: only decrease, never increase (to maintain support level)
+                IF v_basic_upper < v_final_upper THEN
+                    v_final_upper := v_basic_upper;
+                END IF;
+
+                -- Lower band: only increase, never decrease (to maintain resistance level)
+                IF v_basic_lower > v_final_lower THEN
+                    v_final_lower := v_basic_lower;
+                END IF;
+            END IF;
+
+            -- CORRECTED TREND DETERMINATION
+            IF v_trend IS NULL THEN
+                -- Initial trend: downtrend if close <= upper band
+                v_direction := CASE WHEN rec.close <= v_final_upper THEN 0 ELSE 1 END;
+            ELSE
+                -- Trend change logic
+                IF v_trend = 1 THEN -- Previous uptrend
+                    IF rec.close <= v_final_lower THEN
+                        v_direction := 0; -- Switch to downtrend
+                    ELSE
+                        v_direction := 1; -- Continue uptrend
+                    END IF;
+                ELSE -- Previous downtrend (v_trend = 0)
+                    IF rec.close >= v_final_upper THEN
+                        v_direction := 1; -- Switch to uptrend
+                    ELSE
+                        v_direction := 0; -- Continue downtrend
+                    END IF;
+                END IF;
+            END IF;
+
+            -- SuperTrend value based on trend direction
+            IF v_direction = 1 THEN
+                v_supertrend := ROUND(v_final_lower, 2); -- Uptrend: use lower band
+            ELSE
+                v_supertrend := ROUND(v_final_upper, 2); -- Downtrend: use upper band
+            END IF;
+
+            -- Update the candle with SuperTrend values
+            UPDATE daily_candles
+            SET indicators = COALESCE(indicators, '{}'::jsonb) ||
+                jsonb_build_object(
+                    v_indicator_key, v_supertrend,
+                    v_direction_key, v_direction
+                ),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE candle_key_id = rec.candle_key_id
+            AND (
+                p_force_recalculate OR
+                NOT (indicators ? v_indicator_key) OR
+                (indicators->v_indicator_key) IS NULL OR
+                NOT (indicators ? v_direction_key) OR
+                (indicators->v_direction_key) IS NULL
+            );
+
+            IF FOUND THEN
+                v_updated_rows := v_updated_rows + 1;
+            END IF;
+
+            -- Store values for next iteration
+            v_trend := v_direction;
+        END;
+    END LOOP;
+
+    RAISE NOTICE 'Completed CORRECTED SuperTrend calculation for %: % rows updated in % ms',
+        p_symbol, v_updated_rows, EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start_time)::INTEGER;
+
+    RETURN QUERY SELECT
+        v_updated_rows,
+        EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start_time)::INTEGER,
+        'SUCCESS'::TEXT,
+        v_indicator_key,
+        v_direction_key;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE NOTICE 'Error in calculate_daily_supertrend_for_symbol: %', SQLERRM;
+        RETURN QUERY SELECT
+            0,
+            EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start_time)::INTEGER,
+            ('ERROR: ' || SQLERRM)::TEXT,
+            v_indicator_key,
+            v_direction_key;
+END;
+$$;
+
+-- =====================================================
+-- CORRECTED WEEKLY SUPERTREND CALCULATION FOR SINGLE SYMBOL
+-- =====================================================
+CREATE OR REPLACE FUNCTION calculate_weekly_supertrend_for_symbol(
+    p_symbol TEXT,
+    p_period INTEGER,
+    p_multiplier NUMERIC,
+    p_force_recalculate BOOLEAN DEFAULT FALSE
+)
+RETURNS TABLE(
+    updated_rows INTEGER,
+    execution_time_ms INTEGER,
+    status TEXT,
+    indicator_key TEXT,
+    direction_key TEXT
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_start_time TIMESTAMP := clock_timestamp();
+    v_updated_rows INTEGER := 0;
+    v_indicator_key TEXT;
+    v_direction_key TEXT;
+    v_atr_key TEXT;
+    v_existing_count INTEGER;
+    v_total_count INTEGER;
+    rec RECORD;
+    v_final_upper NUMERIC := NULL;
+    v_final_lower NUMERIC := NULL;
+    v_trend INTEGER := NULL;
+BEGIN
+    -- Generate indicator keys
+    v_indicator_key := 'weekly_supertrend_' || p_period || '_' || format_decimal_param(p_multiplier);
+    v_direction_key := v_indicator_key || '_direction';
+    v_atr_key := 'weekly_atr_' || p_period;
+
+    RAISE NOTICE 'Processing CORRECTED weekly SuperTrend(%, %) for symbol: %', p_period, p_multiplier, p_symbol;
+
+    -- Check if indicator already exists (unless force recalculate)
+    IF NOT p_force_recalculate THEN
+        SELECT COUNT(*) INTO v_total_count
+        FROM daily_candles
+        WHERE symbol = p_symbol
+        AND weekly_high IS NOT NULL
+        AND weekly_low IS NOT NULL
+        AND weekly_close IS NOT NULL;
+
+        SELECT COUNT(*) INTO v_existing_count
+        FROM daily_candles
+        WHERE symbol = p_symbol
+        AND indicators ? v_indicator_key
+        AND (indicators->v_indicator_key) IS NOT NULL
+        AND indicators ? v_direction_key
+        AND (indicators->v_direction_key) IS NOT NULL
+        AND weekly_high IS NOT NULL
+        AND weekly_low IS NOT NULL
+        AND weekly_close IS NOT NULL;
+
+        -- If all rows already have the indicator, skip calculation
+        IF v_existing_count = v_total_count AND v_total_count > 0 THEN
+            RAISE NOTICE 'Indicator % already exists for all % rows of symbol %, skipping calculation',
+                v_indicator_key, v_total_count, p_symbol;
+
+            RETURN QUERY SELECT
+                0,
+                0,
+                'ALREADY_EXISTS'::TEXT,
+                v_indicator_key,
+                v_direction_key;
+            RETURN;
+        END IF;
+    END IF;
+
+    -- Ensure weekly ATR is calculated for this symbol/period
+    IF NOT EXISTS (
+        SELECT 1 FROM daily_candles
+        WHERE symbol = p_symbol
+        AND indicators ? v_atr_key
+        AND (indicators->v_atr_key) IS NOT NULL
+        LIMIT 1
+    ) THEN
+        RAISE NOTICE 'Weekly ATR(%) not found for %, calculating ATR first', p_period, p_symbol;
+        PERFORM * FROM calculate_weekly_atr(p_period, p_symbol);
+    END IF;
+
+    -- Process candles sequentially for correct SuperTrend calculation using weekly data
+    FOR rec IN
+        SELECT
+            candle_key_id,
+            candle_sequence_number,
+            weekly_high as high,
+            weekly_low as low,
+            weekly_close as close,
+            (indicators->v_atr_key)::numeric as atr
+        FROM daily_candles
+        WHERE symbol = p_symbol
+        AND weekly_high IS NOT NULL
+        AND weekly_low IS NOT NULL
+        AND weekly_close IS NOT NULL
+        AND indicators ? v_atr_key
+        AND (indicators->v_atr_key) IS NOT NULL
+        ORDER BY candle_sequence_number
+    LOOP
+        DECLARE
+            v_hl2 NUMERIC := (rec.high + rec.low) / 2.0;
+            v_basic_upper NUMERIC := v_hl2 + (p_multiplier * rec.atr);
+            v_basic_lower NUMERIC := v_hl2 - (p_multiplier * rec.atr);
+            v_supertrend NUMERIC;
+            v_direction INTEGER;
+        BEGIN
+            -- Same CORRECTED logic as daily
+            IF v_final_upper IS NULL THEN
+                v_final_upper := v_basic_upper;
+                v_final_lower := v_basic_lower;
+            ELSE
+                -- CORRECTED BAND PERSISTENCE: bands only persist during same trend
+                -- Upper band: during downtrend, can only decrease (or reset to basic if higher)
+                IF v_trend = 0 THEN
+                    -- In downtrend: upper can decrease or stay same, never increase
+                    IF v_basic_upper < v_final_upper THEN
+                        v_final_upper := v_basic_upper;
+                    END IF;
+                    -- Lower band can be updated freely during downtrend
+                    v_final_lower := v_basic_lower;
+                ELSIF v_trend = 1 THEN
+                    -- In uptrend: lower can increase or stay same, never decrease
+                    IF v_basic_lower > v_final_lower THEN
+                        v_final_lower := v_basic_lower;
+                    END IF;
+                    -- Upper band can be updated freely during uptrend
+                    v_final_upper := v_basic_upper;
+                ELSE
+                    -- Should not happen as v_trend should be 0 or 1
+                    v_final_upper := v_basic_upper;
+                    v_final_lower := v_basic_lower;
+                END IF;
+            END IF;
+
+            IF v_trend IS NULL THEN
+                v_direction := CASE WHEN rec.close <= v_final_upper THEN 0 ELSE 1 END;
+            ELSE
+                IF v_trend = 1 THEN
+                    IF rec.close <= v_final_lower THEN
+                        v_direction := 0;
+                    ELSE
+                        v_direction := 1;
+                    END IF;
+                ELSE
+                    IF rec.close >= v_final_upper THEN
+                        v_direction := 1;
+                    ELSE
+                        v_direction := 0;
+                    END IF;
+                END IF;
+            END IF;
+
+            IF v_direction = 1 THEN
+                v_supertrend := ROUND(v_final_lower, 2);
+            ELSE
+                v_supertrend := ROUND(v_final_upper, 2);
+            END IF;
+
+            -- Update the candle with SuperTrend values
+            UPDATE daily_candles
+            SET indicators = COALESCE(indicators, '{}'::jsonb) ||
+                jsonb_build_object(
+                    v_indicator_key, v_supertrend,
+                    v_direction_key, v_direction
+                ),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE candle_key_id = rec.candle_key_id
+            AND (
+                p_force_recalculate OR
+                NOT (indicators ? v_indicator_key) OR
+                (indicators->v_indicator_key) IS NULL OR
+                NOT (indicators ? v_direction_key) OR
+                (indicators->v_direction_key) IS NULL
+            );
+
+            IF FOUND THEN
+                v_updated_rows := v_updated_rows + 1;
+            END IF;
+
+            v_trend := v_direction;
+        END;
+    END LOOP;
+
+    RETURN QUERY SELECT
+        v_updated_rows,
+        EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start_time)::INTEGER,
+        'SUCCESS'::TEXT,
+        v_indicator_key,
+        v_direction_key;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE NOTICE 'Error in calculate_weekly_supertrend_for_symbol: %', SQLERRM;
+        RETURN QUERY SELECT
+            0,
+            EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start_time)::INTEGER,
+            ('ERROR: ' || SQLERRM)::TEXT,
+            v_indicator_key,
+            v_direction_key;
+END;
+$$;
+
+-- =====================================================
+-- CORRECTED MONTHLY SUPERTREND CALCULATION FOR SINGLE SYMBOL
+-- =====================================================
+CREATE OR REPLACE FUNCTION calculate_monthly_supertrend_for_symbol(
+    p_symbol TEXT,
+    p_period INTEGER,
+    p_multiplier NUMERIC,
+    p_force_recalculate BOOLEAN DEFAULT FALSE
+)
+RETURNS TABLE(
+    updated_rows INTEGER,
+    execution_time_ms INTEGER,
+    status TEXT,
+    indicator_key TEXT,
+    direction_key TEXT
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_start_time TIMESTAMP := clock_timestamp();
+    v_updated_rows INTEGER := 0;
+    v_indicator_key TEXT;
+    v_direction_key TEXT;
+    v_atr_key TEXT;
+    v_existing_count INTEGER;
+    v_total_count INTEGER;
+    rec RECORD;
+    v_final_upper NUMERIC := NULL;
+    v_final_lower NUMERIC := NULL;
+    v_trend INTEGER := NULL;
+BEGIN
+    -- Generate indicator keys
+    v_indicator_key := 'monthly_supertrend_' || p_period || '_' || format_decimal_param(p_multiplier);
+    v_direction_key := v_indicator_key || '_direction';
+    v_atr_key := 'monthly_atr_' || p_period;
+
+    RAISE NOTICE 'Processing CORRECTED monthly SuperTrend(%, %) for symbol: %', p_period, p_multiplier, p_symbol;
+
+    -- Check if indicator already exists (unless force recalculate)
+    IF NOT p_force_recalculate THEN
+        SELECT COUNT(*) INTO v_total_count
+        FROM daily_candles
+        WHERE symbol = p_symbol
+        AND monthly_high IS NOT NULL
+        AND monthly_low IS NOT NULL
+        AND monthly_close IS NOT NULL;
+
+        SELECT COUNT(*) INTO v_existing_count
+        FROM daily_candles
+        WHERE symbol = p_symbol
+        AND indicators ? v_indicator_key
+        AND (indicators->v_indicator_key) IS NOT NULL
+        AND indicators ? v_direction_key
+        AND (indicators->v_direction_key) IS NOT NULL
+        AND monthly_high IS NOT NULL
+        AND monthly_low IS NOT NULL
+        AND monthly_close IS NOT NULL;
+
+        -- If all rows already have the indicator, skip calculation
+        IF v_existing_count = v_total_count AND v_total_count > 0 THEN
+            RAISE NOTICE 'Indicator % already exists for all % rows of symbol %, skipping calculation',
+                v_indicator_key, v_total_count, p_symbol;
+
+            RETURN QUERY SELECT
+                0,
+                0,
+                'ALREADY_EXISTS'::TEXT,
+                v_indicator_key,
+                v_direction_key;
+            RETURN;
+        END IF;
+    END IF;
+
+    -- Ensure monthly ATR is calculated for this symbol/period
+    IF NOT EXISTS (
+        SELECT 1 FROM daily_candles
+        WHERE symbol = p_symbol
+        AND indicators ? v_atr_key
+        AND (indicators->v_atr_key) IS NOT NULL
+        LIMIT 1
+    ) THEN
+        RAISE NOTICE 'Monthly ATR(%) not found for %, calculating ATR first', p_period, p_symbol;
+        PERFORM * FROM calculate_monthly_atr(p_period, p_symbol);
+    END IF;
+
+    -- Process candles sequentially for correct SuperTrend calculation using monthly data
+    FOR rec IN
+        SELECT
+            candle_key_id,
+            candle_sequence_number,
+            monthly_high as high,
+            monthly_low as low,
+            monthly_close as close,
+            (indicators->v_atr_key)::numeric as atr
+        FROM daily_candles
+        WHERE symbol = p_symbol
+        AND monthly_high IS NOT NULL
+        AND monthly_low IS NOT NULL
+        AND monthly_close IS NOT NULL
+        AND indicators ? v_atr_key
+        AND (indicators->v_atr_key) IS NOT NULL
+        ORDER BY candle_sequence_number
+    LOOP
+        DECLARE
+            v_hl2 NUMERIC := (rec.high + rec.low) / 2.0;
+            v_basic_upper NUMERIC := v_hl2 + (p_multiplier * rec.atr);
+            v_basic_lower NUMERIC := v_hl2 - (p_multiplier * rec.atr);
+            v_supertrend NUMERIC;
+            v_direction INTEGER;
+        BEGIN
+            -- Same CORRECTED logic as daily
+            IF v_final_upper IS NULL THEN
+                v_final_upper := v_basic_upper;
+                v_final_lower := v_basic_lower;
+            ELSE
+                -- CORRECTED BAND PERSISTENCE: bands only persist during same trend
+                -- Upper band: during downtrend, can only decrease (or reset to basic if higher)
+                IF v_trend = 0 THEN
+                    -- In downtrend: upper can decrease or stay same, never increase
+                    IF v_basic_upper < v_final_upper THEN
+                        v_final_upper := v_basic_upper;
+                    END IF;
+                    -- Lower band can be updated freely during downtrend
+                    v_final_lower := v_basic_lower;
+                ELSIF v_trend = 1 THEN
+                    -- In uptrend: lower can increase or stay same, never decrease
+                    IF v_basic_lower > v_final_lower THEN
+                        v_final_lower := v_basic_lower;
+                    END IF;
+                    -- Upper band can be updated freely during uptrend
+                    v_final_upper := v_basic_upper;
+                ELSE
+                    -- Should not happen as v_trend should be 0 or 1
+                    v_final_upper := v_basic_upper;
+                    v_final_lower := v_basic_lower;
+                END IF;
+            END IF;
+
+            IF v_trend IS NULL THEN
+                v_direction := CASE WHEN rec.close <= v_final_upper THEN 0 ELSE 1 END;
+            ELSE
+                IF v_trend = 1 THEN
+                    IF rec.close <= v_final_lower THEN
+                        v_direction := 0;
+                    ELSE
+                        v_direction := 1;
+                    END IF;
+                ELSE
+                    IF rec.close >= v_final_upper THEN
+                        v_direction := 1;
+                    ELSE
+                        v_direction := 0;
+                    END IF;
+                END IF;
+            END IF;
+
+            IF v_direction = 1 THEN
+                v_supertrend := ROUND(v_final_lower, 2);
+            ELSE
+                v_supertrend := ROUND(v_final_upper, 2);
+            END IF;
+
+            -- Update the candle with SuperTrend values
+            UPDATE daily_candles
+            SET indicators = COALESCE(indicators, '{}'::jsonb) ||
+                jsonb_build_object(
+                    v_indicator_key, v_supertrend,
+                    v_direction_key, v_direction
+                ),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE candle_key_id = rec.candle_key_id
+            AND (
+                p_force_recalculate OR
+                NOT (indicators ? v_indicator_key) OR
+                (indicators->v_indicator_key) IS NULL OR
+                NOT (indicators ? v_direction_key) OR
+                (indicators->v_direction_key) IS NULL
+            );
+
+            IF FOUND THEN
+                v_updated_rows := v_updated_rows + 1;
+            END IF;
+
+            v_trend := v_direction;
+        END;
+    END LOOP;
+
+    RETURN QUERY SELECT
+        v_updated_rows,
+        EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start_time)::INTEGER,
+        'SUCCESS'::TEXT,
+        v_indicator_key,
+        v_direction_key;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE NOTICE 'Error in calculate_monthly_supertrend_for_symbol: %', SQLERRM;
+        RETURN QUERY SELECT
+            0,
+            EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start_time)::INTEGER,
+            ('ERROR: ' || SQLERRM)::TEXT,
+            v_indicator_key,
+            v_direction_key;
+END;
+$$;
+
+-- Grant permissions
+GRANT EXECUTE ON FUNCTION format_decimal_param(NUMERIC) TO PUBLIC;
+GRANT EXECUTE ON FUNCTION calculate_daily_supertrend_for_symbol(TEXT, INTEGER, NUMERIC, BOOLEAN) TO PUBLIC;
+GRANT EXECUTE ON FUNCTION calculate_weekly_supertrend_for_symbol(TEXT, INTEGER, NUMERIC, BOOLEAN) TO PUBLIC;
+GRANT EXECUTE ON FUNCTION calculate_monthly_supertrend_for_symbol(TEXT, INTEGER, NUMERIC, BOOLEAN) TO PUBLIC;
