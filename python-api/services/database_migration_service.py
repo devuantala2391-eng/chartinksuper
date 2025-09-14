@@ -130,7 +130,9 @@ class DatabaseMigrationService:
                 "calculate_monthly_percentage_change.sql",  # CORRECT monthly percentage implementation
                 "calculate_percentage_change.sql",  # General percentage (now delegates monthly to correct implementation)
                 "calculate_weekly_percentage_change.sql",  # Weekly percentage functions
-                "calculate_atr.sql"  # ATR calculation with Wilder's smoothing and TradingView matching
+                "calculate_atr.sql",  # ATR calculation with Wilder's smoothing and TradingView matching
+                "calculate_supertrend.sql",  # CORRECTED SuperTrend with proper band persistence
+                "fix_weekly_monthly_supertrend_properly.sql"  # Fixed weekly/monthly SuperTrend
             ]
             
             applied_files = []

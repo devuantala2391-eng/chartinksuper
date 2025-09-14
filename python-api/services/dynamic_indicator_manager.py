@@ -263,33 +263,92 @@ class DatabaseDynamicIndicatorManager:
                     # Ensure parameters are integers/floats
                     period = params.get('period', 10)
                     multiplier = params.get('multiplier', 2.0)
-                    
+
                     # Convert to proper types if needed
                     if isinstance(period, float) and period.is_integer():
                         period = int(period)
                     else:
                         period = int(period)
-                    
-                    # Use the NEW timeframe-aware stored procedures
+
+                    # CRITICAL: Calculate ATR first - SuperTrend depends on it!
+                    print(f"Calculating ATR({period}) as prerequisite for SuperTrend...")
                     if timeframe == 'daily':
-                        # Call daily SuperTrend procedure
+                        atr_result = await conn.fetchrow("""
+                            SELECT * FROM calculate_atr($1, NULL)
+                        """, period)
+                    elif timeframe == 'weekly':
+                        atr_result = await conn.fetchrow("""
+                            SELECT * FROM calculate_weekly_atr($1, NULL)
+                        """, period)
+                    elif timeframe == 'monthly':
+                        atr_result = await conn.fetchrow("""
+                            SELECT * FROM calculate_monthly_atr($1, NULL)
+                        """, period)
+                    else:
+                        atr_result = await conn.fetchrow("""
+                            SELECT * FROM calculate_atr($1, NULL)
+                        """, period)
+
+                    if atr_result:
+                        print(f"ATR calculation result: {dict(atr_result)}")
+
+                    # Now calculate SuperTrend with the CORRECTED stored procedures
+                    # IMPORTANT: Call procedures that process ALL symbols when symbol is NULL
+                    if timeframe == 'daily':
+                        # Call the procedure that processes ALL symbols
                         result = await conn.fetchrow("""
-                            SELECT * FROM calculate_timeframe_supertrend('daily', $1, $2, NULL)
+                            SELECT
+                                COUNT(*) as updated_rows,
+                                0 as execution_time_ms,
+                                'SUCCESS' as status,
+                                'daily_supertrend_' || $1 || '_' || REPLACE($2::text, '.', '') as indicator_key,
+                                'daily_supertrend_' || $1 || '_' || REPLACE($2::text, '.', '') || '_direction' as direction_key
+                            FROM (
+                                SELECT calculate_daily_supertrend_for_symbol(symbol, $1, $2, TRUE)
+                                FROM (SELECT DISTINCT symbol FROM daily_candles) s
+                            ) t
                         """, period, multiplier)
                     elif timeframe == 'weekly':
-                        # Call weekly SuperTrend procedure
+                        # Call the procedure that processes ALL symbols
                         result = await conn.fetchrow("""
-                            SELECT * FROM calculate_weekly_monthly_supertrend('weekly', $1, $2, NULL)
+                            SELECT
+                                COUNT(*) as updated_rows,
+                                0 as execution_time_ms,
+                                'SUCCESS' as status,
+                                'weekly_supertrend_' || $1 || '_' || REPLACE($2::text, '.', '') as indicator_key,
+                                'weekly_supertrend_' || $1 || '_' || REPLACE($2::text, '.', '') || '_direction' as direction_key
+                            FROM (
+                                SELECT calculate_weekly_supertrend_for_symbol(symbol, $1, $2, TRUE)
+                                FROM (SELECT DISTINCT symbol FROM daily_candles) s
+                            ) t
                         """, period, multiplier)
                     elif timeframe == 'monthly':
-                        # Call monthly SuperTrend procedure
+                        # Call the procedure that processes ALL symbols
                         result = await conn.fetchrow("""
-                            SELECT * FROM calculate_weekly_monthly_supertrend('monthly', $1, $2, NULL)
+                            SELECT
+                                COUNT(*) as updated_rows,
+                                0 as execution_time_ms,
+                                'SUCCESS' as status,
+                                'monthly_supertrend_' || $1 || '_' || REPLACE($2::text, '.', '') as indicator_key,
+                                'monthly_supertrend_' || $1 || '_' || REPLACE($2::text, '.', '') || '_direction' as direction_key
+                            FROM (
+                                SELECT calculate_monthly_supertrend_for_symbol(symbol, $1, $2, TRUE)
+                                FROM (SELECT DISTINCT symbol FROM daily_candles) s
+                            ) t
                         """, period, multiplier)
                     else:
                         # Default to daily if unknown timeframe
                         result = await conn.fetchrow("""
-                            SELECT * FROM calculate_timeframe_supertrend('daily', $1, $2, NULL)
+                            SELECT
+                                COUNT(*) as updated_rows,
+                                0 as execution_time_ms,
+                                'SUCCESS' as status,
+                                'daily_supertrend_' || $1 || '_' || REPLACE($2::text, '.', '') as indicator_key,
+                                'daily_supertrend_' || $1 || '_' || REPLACE($2::text, '.', '') || '_direction' as direction_key
+                            FROM (
+                                SELECT calculate_daily_supertrend_for_symbol(symbol, $1, $2, TRUE)
+                                FROM (SELECT DISTINCT symbol FROM daily_candles) s
+                            ) t
                         """, period, multiplier)
                     
                     if result:
