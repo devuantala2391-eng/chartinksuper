@@ -4363,28 +4363,64 @@ async def _clean_high_speed_database():
     """Clean all data from high-speed PostgreSQL database while preserving schema."""
     try:
         logger.info("🧹 Cleaning high-speed PostgreSQL database...")
-        
+
         from services.ultra_fast_database_service import ultra_fast_db as high_speed_db
-        
-        async with high_speed_db.pool.acquire() as conn:
+
+        # Close the connection pool to release all connections
+        if high_speed_db.pool:
+            await high_speed_db.pool.close()
+            logger.info("   Closed existing connection pool")
+
+        # Create a temporary direct connection for cleanup
+        import asyncpg
+        conn = await asyncpg.connect(**high_speed_db.db_config)
+
+        try:
+            # Increase lock timeout for cleaning operations
+            await conn.execute("SET lock_timeout = '60s'")
+            await conn.execute("SET statement_timeout = '120s'")
+
+            # First, terminate any existing connections to prevent locks
+            await conn.execute("""
+                SELECT pg_terminate_backend(pid)
+                FROM pg_stat_activity
+                WHERE datname = current_database()
+                AND pid != pg_backend_pid()
+                AND state != 'idle'
+            """)
+
+            # Wait a moment for connections to terminate
+            import asyncio
+            await asyncio.sleep(2)
+
             # Get all tables in the high-speed database
             tables = await conn.fetch("""
-                SELECT table_name 
-                FROM information_schema.tables 
+                SELECT table_name
+                FROM information_schema.tables
                 WHERE table_schema = 'public'
                 AND table_name NOT IN ('pg_stat_statements')
+                ORDER BY table_name
             """)
-            
-            # Drop all tables (will be recreated by initialization)
+
+            # Use TRUNCATE instead of DROP for faster cleanup (preserves schema)
             for table in tables:
                 table_name = table['table_name']
-                await conn.execute(f"DROP TABLE IF EXISTS {table_name} CASCADE")
-                logger.info(f"   Dropped high-speed table: {table_name}")
-            
+                try:
+                    # Try TRUNCATE first (faster, preserves structure)
+                    await conn.execute(f"TRUNCATE TABLE {table_name} RESTART IDENTITY CASCADE")
+                    logger.info(f"   Truncated table: {table_name}")
+                except Exception as truncate_error:
+                    # If TRUNCATE fails, fall back to DROP
+                    try:
+                        await conn.execute(f"DROP TABLE IF EXISTS {table_name} CASCADE")
+                        logger.info(f"   Dropped table: {table_name}")
+                    except Exception as drop_error:
+                        logger.warning(f"   Failed to clean table {table_name}: {drop_error}")
+
             # Also drop any percentage calculation stored procedures to prevent conflicts
             percentage_functions = [
                 "calculate_daily_percentage_change",
-                "calculate_weekly_percentage_change", 
+                "calculate_weekly_percentage_change",
                 "calculate_monthly_percentage_change",
                 "install_percentage_change_procedures",
                 "batch_calculate_daily_percentage",
@@ -4396,16 +4432,26 @@ async def _clean_high_speed_database():
                 "check_percentage_migration_status",
                 "migrate_percentage_indicators"
             ]
-            
+
             for func_name in percentage_functions:
                 try:
                     await conn.execute(f"DROP FUNCTION IF EXISTS {func_name} CASCADE")
                     logger.debug(f"   Dropped percentage function: {func_name}")
                 except Exception:
                     pass  # Ignore errors if function doesn't exist
-            
+
             logger.info("✅ High-speed PostgreSQL database cleaned successfully")
-            
+
+        finally:
+            # Close the temporary connection
+            await conn.close()
+            logger.info("   Closed cleanup connection")
+
+            # Reinitialize the connection pool
+            high_speed_db.initialized = False
+            await high_speed_db.initialize()
+            logger.info("   Reinitialized connection pool")
+
     except Exception as e:
         logger.error(f"Failed to clean high-speed PostgreSQL database: {e}")
         raise

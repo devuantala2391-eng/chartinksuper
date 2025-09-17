@@ -107,7 +107,7 @@ class DatabaseDynamicIndicatorManager:
                 return f"daily_pctchg_{lookback}" if lookback else "daily_pctchg"
             else:
                 return f"{timeframe}_pctchg"
-        elif name.lower() in ['rsi', 'sma', 'ema']:
+        elif name.lower() in ['rsi', 'sma', 'ema', 'atr']:
             period = params.get('period', 14)
             period_str = format_period_for_key(period)
             # Include timeframe prefix for all indicators
@@ -272,22 +272,23 @@ class DatabaseDynamicIndicatorManager:
 
                     # CRITICAL: Calculate ATR first - SuperTrend depends on it!
                     print(f"Calculating ATR({period}) as prerequisite for SuperTrend...")
+                    # ATR calculation for all timeframes
                     if timeframe == 'daily':
                         atr_result = await conn.fetchrow("""
-                            SELECT * FROM calculate_atr($1, NULL)
-                        """, period)
+                            SELECT * FROM calculate_atr($1, $2, $3)
+                        """, period, None, None)
                     elif timeframe == 'weekly':
                         atr_result = await conn.fetchrow("""
-                            SELECT * FROM calculate_weekly_atr($1, NULL)
-                        """, period)
+                            SELECT * FROM calculate_weekly_atr($1, $2, $3)
+                        """, period, None, None)
                     elif timeframe == 'monthly':
                         atr_result = await conn.fetchrow("""
-                            SELECT * FROM calculate_monthly_atr($1, NULL)
-                        """, period)
+                            SELECT * FROM calculate_monthly_atr($1, $2, $3)
+                        """, period, None, None)
                     else:
                         atr_result = await conn.fetchrow("""
-                            SELECT * FROM calculate_atr($1, NULL)
-                        """, period)
+                            SELECT * FROM calculate_atr($1, $2, $3)
+                        """, period, None, None)
 
                     if atr_result:
                         print(f"ATR calculation result: {dict(atr_result)}")
@@ -499,20 +500,20 @@ class DatabaseDynamicIndicatorManager:
                     else:
                         period = int(period)
                     
-                    # Call the appropriate ATR function based on timeframe
+                    # ATR calculation for all timeframes with proper storage
                     if timeframe == 'weekly':
                         result = await conn.fetchrow("""
-                            SELECT * FROM calculate_weekly_atr($1, NULL)
-                        """, period)
+                            SELECT * FROM calculate_weekly_atr($1, $2, $3)
+                        """, period, None, None)
                     elif timeframe == 'monthly':
                         result = await conn.fetchrow("""
-                            SELECT * FROM calculate_monthly_atr($1, NULL)
-                        """, period)
+                            SELECT * FROM calculate_monthly_atr($1, $2, $3)
+                        """, period, None, None)
                     else:
                         # Default to daily
                         result = await conn.fetchrow("""
-                            SELECT * FROM calculate_atr($1, NULL, NULL)
-                        """, period)
+                            SELECT * FROM calculate_atr($1, $2, $3)
+                        """, period, None, None)
                     
                     if result:
                         print(f"{timeframe.capitalize()} ATR({period}) calculation result: {dict(result)}")

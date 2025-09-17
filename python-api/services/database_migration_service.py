@@ -37,9 +37,9 @@ class DatabaseMigrationService:
             'calculate_percentage_change',  # Added for general percentage
             'calculate_weekly_percentage_change',  # Added for weekly percentage
             'calculate_weekly_percentage_change_for_symbol',  # Added for weekly percentage
-            'calculate_atr',  # Added for ATR calculation
-            'calculate_weekly_atr',  # Added for weekly ATR
-            'calculate_monthly_atr'  # Added for monthly ATR
+            'calculate_atr',  # Added for ATR calculation (daily)
+            'calculate_weekly_atr',  # Added for weekly ATR calculation
+            'calculate_monthly_atr'  # Added for monthly ATR calculation
         ]
     
     async def check_and_apply_migrations(self) -> Dict[str, any]:
