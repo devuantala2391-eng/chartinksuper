@@ -294,9 +294,9 @@ class DatabaseDynamicIndicatorManager:
                         print(f"ATR calculation result: {dict(atr_result)}")
 
                     # Now calculate SuperTrend with the CORRECTED stored procedures
-                    # IMPORTANT: Call procedures that process ALL symbols when symbol is NULL
+                    # Use new improved SuperTrend functions with sliding window approach
                     if timeframe == 'daily':
-                        # Call the procedure that processes ALL symbols
+                        # Call the procedure that processes ALL symbols for daily SuperTrend
                         result = await conn.fetchrow("""
                             SELECT
                                 COUNT(*) as updated_rows,
@@ -310,32 +310,14 @@ class DatabaseDynamicIndicatorManager:
                             ) t
                         """, period, multiplier)
                     elif timeframe == 'weekly':
-                        # Call the procedure that processes ALL symbols
+                        # Use new weekly SuperTrend function with automatic daily updates
                         result = await conn.fetchrow("""
-                            SELECT
-                                COUNT(*) as updated_rows,
-                                0 as execution_time_ms,
-                                'SUCCESS' as status,
-                                'weekly_supertrend_' || $1 || '_' || REPLACE($2::text, '.', '') as indicator_key,
-                                'weekly_supertrend_' || $1 || '_' || REPLACE($2::text, '.', '') || '_direction' as direction_key
-                            FROM (
-                                SELECT calculate_weekly_supertrend_for_symbol(symbol, $1, $2, TRUE)
-                                FROM (SELECT DISTINCT symbol FROM daily_candles) s
-                            ) t
+                            SELECT * FROM calculate_weekly_supertrend($1, $2, NULL)
                         """, period, multiplier)
                     elif timeframe == 'monthly':
-                        # Call the procedure that processes ALL symbols
+                        # Use new monthly SuperTrend function with automatic daily updates
                         result = await conn.fetchrow("""
-                            SELECT
-                                COUNT(*) as updated_rows,
-                                0 as execution_time_ms,
-                                'SUCCESS' as status,
-                                'monthly_supertrend_' || $1 || '_' || REPLACE($2::text, '.', '') as indicator_key,
-                                'monthly_supertrend_' || $1 || '_' || REPLACE($2::text, '.', '') || '_direction' as direction_key
-                            FROM (
-                                SELECT calculate_monthly_supertrend_for_symbol(symbol, $1, $2, TRUE)
-                                FROM (SELECT DISTINCT symbol FROM daily_candles) s
-                            ) t
+                            SELECT * FROM calculate_monthly_supertrend($1, $2, NULL)
                         """, period, multiplier)
                     else:
                         # Default to daily if unknown timeframe

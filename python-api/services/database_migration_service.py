@@ -41,7 +41,11 @@ class DatabaseMigrationService:
             'calculate_weekly_atr',  # Added for weekly ATR calculation
             'calculate_monthly_atr',  # Added for monthly ATR calculation
             'update_daily_weekly_atr',  # Added for updating daily candles with weekly ATR
-            'update_daily_monthly_atr'  # Added for updating daily candles with monthly ATR
+            'update_daily_monthly_atr',  # Added for updating daily candles with monthly ATR
+            'calculate_weekly_supertrend',  # Added for weekly SuperTrend calculation
+            'calculate_monthly_supertrend',  # Added for monthly SuperTrend calculation
+            'update_daily_weekly_supertrend',  # Added for updating daily candles with weekly SuperTrend
+            'update_daily_monthly_supertrend'  # Added for updating daily candles with monthly SuperTrend
         ]
     
     async def check_and_apply_migrations(self) -> Dict[str, any]:
