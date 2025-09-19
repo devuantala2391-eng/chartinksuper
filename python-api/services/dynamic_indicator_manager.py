@@ -356,7 +356,77 @@ class DatabaseDynamicIndicatorManager:
                                                                timeframe)
                         
                         return success
-                    
+
+                elif name and name.lower() == 'rsi':
+                    # Calculate RSI using new stored procedures
+                    period = params.get('period', 14)
+
+                    # Convert to proper type if needed
+                    if isinstance(period, float) and period.is_integer():
+                        period = int(period)
+                    else:
+                        period = int(period)
+
+                    # Calculate RSI for all timeframes
+                    if timeframe == 'daily':
+                        # Call the procedure that processes ALL symbols for daily RSI
+                        result = await conn.fetchrow("""
+                            SELECT
+                                COUNT(*) as updated_rows,
+                                0 as execution_time_ms,
+                                'SUCCESS' as status,
+                                'daily_rsi_' || $1 as indicator_key
+                            FROM (
+                                SELECT calculate_daily_rsi_for_symbol(symbol, $1, TRUE)
+                                FROM (SELECT DISTINCT symbol FROM daily_candles) s
+                            ) t
+                        """, period)
+                    elif timeframe == 'weekly':
+                        # Use new weekly RSI function with automatic daily updates
+                        result = await conn.fetchrow("""
+                            SELECT * FROM calculate_weekly_rsi($1, NULL)
+                        """, period)
+                    elif timeframe == 'monthly':
+                        # Use new monthly RSI function with automatic daily updates
+                        result = await conn.fetchrow("""
+                            SELECT * FROM calculate_monthly_rsi($1, NULL)
+                        """, period)
+                    else:
+                        # Default to daily if unknown timeframe
+                        result = await conn.fetchrow("""
+                            SELECT
+                                COUNT(*) as updated_rows,
+                                0 as execution_time_ms,
+                                'SUCCESS' as status,
+                                'daily_rsi_' || $1 as indicator_key
+                            FROM (
+                                SELECT calculate_daily_rsi_for_symbol(symbol, $1, TRUE)
+                                FROM (SELECT DISTINCT symbol FROM daily_candles) s
+                            ) t
+                        """, period)
+
+                    if result:
+                        print(f"{timeframe.capitalize()} RSI calculation result: {dict(result)}")
+                        # Check if status is SUCCESS
+                        success = result.get('status') == 'SUCCESS'
+
+                        if success:
+                            # Add to active indicators if not already there
+                            indicator_key = self.generate_indicator_key({
+                                'name': 'RSI',
+                                'timeframe': timeframe,
+                                'params': {'period': period}
+                            })
+
+                            if indicator_key not in self._active_indicators:
+                                self._active_indicators.append(indicator_key)
+                                # Also add the indicator configuration
+                                await self.add_custom_indicator('RSI',
+                                                               {'period': period},
+                                                               timeframe)
+
+                        return success
+
                 elif name and (name.lower() == 'percentagechange' or name.lower() == 'pctchg'):
                     # Calculate percentage change using correct stored procedure based on timeframe
                     if timeframe == 'monthly':

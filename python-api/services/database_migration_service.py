@@ -45,7 +45,12 @@ class DatabaseMigrationService:
             'calculate_weekly_supertrend',  # Added for weekly SuperTrend calculation
             'calculate_monthly_supertrend',  # Added for monthly SuperTrend calculation
             'update_daily_weekly_supertrend',  # Added for updating daily candles with weekly SuperTrend
-            'update_daily_monthly_supertrend'  # Added for updating daily candles with monthly SuperTrend
+            'update_daily_monthly_supertrend',  # Added for updating daily candles with monthly SuperTrend
+            'calculate_daily_rsi_for_symbol',  # Added for daily RSI calculation
+            'calculate_weekly_rsi',  # Added for weekly RSI calculation
+            'calculate_monthly_rsi',  # Added for monthly RSI calculation
+            'update_daily_weekly_rsi',  # Added for updating daily candles with weekly RSI
+            'update_daily_monthly_rsi'  # Added for updating daily candles with monthly RSI
         ]
     
     async def check_and_apply_migrations(self) -> Dict[str, any]:
@@ -138,6 +143,7 @@ class DatabaseMigrationService:
                 "calculate_weekly_percentage_change.sql",  # Weekly percentage functions
                 "calculate_atr.sql",  # ATR calculation with Wilder's smoothing and TradingView matching
                 "calculate_supertrend.sql",  # CORRECTED SuperTrend with fixed sliding window logic
+                "calculate_rsi.sql",  # RSI calculation with Wilder's smoothing and sliding window approach
                 "fix_weekly_monthly_supertrend_properly.sql"  # Fixed weekly/monthly SuperTrend
             ]
             
