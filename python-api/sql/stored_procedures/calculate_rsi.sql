@@ -91,26 +91,7 @@ BEGIN
                 v_loss := GREATEST(-v_change, 0);
             END IF;
 
-            -- Apply Wilder's smoothing
-            IF v_avg_gain IS NULL THEN
-                -- First period: simple average (will be NULL until we have enough data)
-                v_rsi := NULL;
-            ELSE
-                -- Wilder's smoothing: new_avg = (old_avg * (period-1) + new_value) / period
-                -- Which is equivalent to: new_avg = old_avg + alpha * (new_value - old_avg)
-                v_avg_gain := v_avg_gain + v_alpha * (v_gain - v_avg_gain);
-                v_avg_loss := v_avg_loss + v_alpha * (v_loss - v_avg_loss);
-
-                -- Calculate RSI
-                IF v_avg_loss = 0 THEN
-                    v_rsi := 100;
-                ELSE
-                    v_rs := v_avg_gain / v_avg_loss;
-                    v_rsi := 100 - (100 / (1 + v_rs));
-                END IF;
-            END IF;
-
-            -- Initialize averages for the first period
+            -- Initialize averages for the first period (FIXED ORDER)
             IF v_avg_gain IS NULL AND rec.candle_sequence_number >= p_period THEN
                 -- Calculate initial averages using CTE to avoid window function in aggregate
                 WITH price_changes AS (
@@ -135,6 +116,22 @@ BEGIN
                     v_rs := v_avg_gain / v_avg_loss;
                     v_rsi := 100 - (100 / (1 + v_rs));
                 END IF;
+            ELSIF v_avg_gain IS NOT NULL THEN
+                -- Apply Wilder's smoothing for subsequent periods
+                -- Wilder's smoothing: new_avg = old_avg + alpha * (new_value - old_avg)
+                v_avg_gain := v_avg_gain + v_alpha * (v_gain - v_avg_gain);
+                v_avg_loss := v_avg_loss + v_alpha * (v_loss - v_avg_loss);
+
+                -- Calculate RSI
+                IF v_avg_loss = 0 THEN
+                    v_rsi := 100;
+                ELSE
+                    v_rs := v_avg_gain / v_avg_loss;
+                    v_rsi := 100 - (100 / (1 + v_rs));
+                END IF;
+            ELSE
+                -- Not enough data yet
+                v_rsi := NULL;
             END IF;
 
             -- Update the candle with RSI value
@@ -246,25 +243,7 @@ BEGIN
                     v_loss := GREATEST(-v_change, 0);
                 END IF;
 
-                -- Apply Wilder's smoothing
-                IF v_avg_gain IS NULL THEN
-                    -- First period: simple average (will be NULL until we have enough data)
-                    v_rsi := NULL;
-                ELSE
-                    -- Wilder's smoothing
-                    v_avg_gain := v_avg_gain + v_alpha * (v_gain - v_avg_gain);
-                    v_avg_loss := v_avg_loss + v_alpha * (v_loss - v_avg_loss);
-
-                    -- Calculate RSI
-                    IF v_avg_loss = 0 THEN
-                        v_rsi := 100;
-                    ELSE
-                        v_rs := v_avg_gain / v_avg_loss;
-                        v_rsi := 100 - (100 / (1 + v_rs));
-                    END IF;
-                END IF;
-
-                -- Initialize averages for the first period
+                -- Initialize averages for the first period (FIXED ORDER)
                 IF v_avg_gain IS NULL AND candle_rec.week_sequence_number >= p_period THEN
                     -- Calculate initial averages using CTE to avoid window function in aggregate
                     WITH price_changes AS (
@@ -289,15 +268,30 @@ BEGIN
                         v_rs := v_avg_gain / v_avg_loss;
                         v_rsi := 100 - (100 / (1 + v_rs));
                     END IF;
+                ELSIF v_avg_gain IS NOT NULL THEN
+                    -- Apply Wilder's smoothing for subsequent periods
+                    v_avg_gain := v_avg_gain + v_alpha * (v_gain - v_avg_gain);
+                    v_avg_loss := v_avg_loss + v_alpha * (v_loss - v_avg_loss);
+
+                    -- Calculate RSI
+                    IF v_avg_loss = 0 THEN
+                        v_rsi := 100;
+                    ELSE
+                        v_rs := v_avg_gain / v_avg_loss;
+                        v_rsi := 100 - (100 / (1 + v_rs));
+                    END IF;
+                ELSE
+                    -- Not enough data yet
+                    v_rsi := NULL;
                 END IF;
 
-                -- Store in weekly_candles (RSI value + internal states for sliding window)
+                -- Store in weekly_candles (RSI value + internal states for sliding window performance)
                 UPDATE weekly_candles
                 SET indicators = COALESCE(indicators, '{}')::jsonb ||
                     jsonb_build_object(
                         v_indicator_key, ROUND(v_rsi, 2),
-                        '_' || v_indicator_key || '_avg_gain', v_avg_gain,
-                        '_' || v_indicator_key || '_avg_loss', v_avg_loss
+                        '_' || v_indicator_key || '_avg_gain', ROUND(v_avg_gain, 4),
+                        '_' || v_indicator_key || '_avg_loss', ROUND(v_avg_loss, 4)
                     ),
                     updated_at = CURRENT_TIMESTAMP
                 WHERE weekly_candle_key_id = candle_rec.weekly_candle_key_id;
@@ -398,25 +392,7 @@ BEGIN
                     v_loss := GREATEST(-v_change, 0);
                 END IF;
 
-                -- Apply Wilder's smoothing
-                IF v_avg_gain IS NULL THEN
-                    -- First period: simple average (will be NULL until we have enough data)
-                    v_rsi := NULL;
-                ELSE
-                    -- Wilder's smoothing
-                    v_avg_gain := v_avg_gain + v_alpha * (v_gain - v_avg_gain);
-                    v_avg_loss := v_avg_loss + v_alpha * (v_loss - v_avg_loss);
-
-                    -- Calculate RSI
-                    IF v_avg_loss = 0 THEN
-                        v_rsi := 100;
-                    ELSE
-                        v_rs := v_avg_gain / v_avg_loss;
-                        v_rsi := 100 - (100 / (1 + v_rs));
-                    END IF;
-                END IF;
-
-                -- Initialize averages for the first period
+                -- Initialize averages for the first period (FIXED ORDER)
                 IF v_avg_gain IS NULL AND candle_rec.month_sequence_number >= p_period THEN
                     -- Calculate initial averages using CTE to avoid window function in aggregate
                     WITH price_changes AS (
@@ -441,15 +417,30 @@ BEGIN
                         v_rs := v_avg_gain / v_avg_loss;
                         v_rsi := 100 - (100 / (1 + v_rs));
                     END IF;
+                ELSIF v_avg_gain IS NOT NULL THEN
+                    -- Apply Wilder's smoothing for subsequent periods
+                    v_avg_gain := v_avg_gain + v_alpha * (v_gain - v_avg_gain);
+                    v_avg_loss := v_avg_loss + v_alpha * (v_loss - v_avg_loss);
+
+                    -- Calculate RSI
+                    IF v_avg_loss = 0 THEN
+                        v_rsi := 100;
+                    ELSE
+                        v_rs := v_avg_gain / v_avg_loss;
+                        v_rsi := 100 - (100 / (1 + v_rs));
+                    END IF;
+                ELSE
+                    -- Not enough data yet
+                    v_rsi := NULL;
                 END IF;
 
-                -- Store in monthly_candles (RSI value + internal states for sliding window)
+                -- Store in monthly_candles (RSI value + internal states for sliding window performance)
                 UPDATE monthly_candles
                 SET indicators = COALESCE(indicators, '{}')::jsonb ||
                     jsonb_build_object(
                         v_indicator_key, ROUND(v_rsi, 2),
-                        '_' || v_indicator_key || '_avg_gain', v_avg_gain,
-                        '_' || v_indicator_key || '_avg_loss', v_avg_loss
+                        '_' || v_indicator_key || '_avg_gain', ROUND(v_avg_gain, 4),
+                        '_' || v_indicator_key || '_avg_loss', ROUND(v_avg_loss, 4)
                     ),
                     updated_at = CURRENT_TIMESTAMP
                 WHERE monthly_candle_key_id = candle_rec.monthly_candle_key_id;
