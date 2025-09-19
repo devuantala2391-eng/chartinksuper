@@ -57,6 +57,23 @@ class UltraFastDatabaseService:
             'command_timeout': 30
         }
 
+    def _extract_bollinger_bands_fields(self, indicators: dict) -> dict:
+        """Extract individual Bollinger Bands fields from JSON structure"""
+        extracted = {}
+
+        # Look for Bollinger Bands indicators in the format: daily_bb_20_2, weekly_bb_20_2, etc.
+        for key, value in indicators.items():
+            if isinstance(value, dict) and ('upper' in value and 'middle' in value and 'lower' in value):
+                # This is a Bollinger Bands indicator - extract individual fields
+                extracted[f"{key}_upper"] = value.get('upper')
+                extracted[f"{key}_middle"] = value.get('middle')
+                extracted[f"{key}_lower"] = value.get('lower')
+            else:
+                # Regular indicator - keep as is
+                extracted[key] = value
+
+        return extracted
+
     async def initialize(self):
         """Initialize ultra-fast database with optimized settings"""
         if self.initialized:
@@ -854,6 +871,8 @@ class UltraFastDatabaseService:
                     # Parse indicators from JSONB
                     if result.get('indicators'):
                         indicators = json.loads(result['indicators']) if isinstance(result['indicators'], str) else result['indicators']
+                        # Extract Bollinger Bands fields
+                        indicators = self._extract_bollinger_bands_fields(indicators)
                         result.update(indicators)
                     return result
                 
@@ -905,6 +924,8 @@ class UltraFastDatabaseService:
                     # Parse indicators from JSONB
                     if result.get('indicators'):
                         indicators = json.loads(result['indicators']) if isinstance(result['indicators'], str) else result['indicators']
+                        # Extract Bollinger Bands fields
+                        indicators = self._extract_bollinger_bands_fields(indicators)
                         result.update(indicators)
                     results.append(result)
                 
@@ -1037,6 +1058,8 @@ class UltraFastDatabaseService:
                     # Parse indicators from JSONB
                     if result.get('indicators'):
                         indicators = json.loads(result['indicators']) if isinstance(result['indicators'], str) else result['indicators']
+                        # Extract Bollinger Bands fields
+                        indicators = self._extract_bollinger_bands_fields(indicators)
                         result.update(indicators)
                     results.append(result)
                 

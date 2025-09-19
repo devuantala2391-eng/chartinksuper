@@ -50,7 +50,12 @@ class DatabaseMigrationService:
             'calculate_weekly_rsi',  # Added for weekly RSI calculation
             'calculate_monthly_rsi',  # Added for monthly RSI calculation
             'update_daily_weekly_rsi',  # Added for updating daily candles with weekly RSI
-            'update_daily_monthly_rsi'  # Added for updating daily candles with monthly RSI
+            'update_daily_monthly_rsi',  # Added for updating daily candles with monthly RSI
+            'calculate_daily_bollinger_bands_for_symbol',  # Added for daily Bollinger Bands calculation
+            'calculate_weekly_bollinger_bands',  # Added for weekly Bollinger Bands calculation
+            'calculate_monthly_bollinger_bands',  # Added for monthly Bollinger Bands calculation
+            'update_daily_weekly_bollinger_bands',  # Added for updating daily candles with weekly Bollinger Bands
+            'update_daily_monthly_bollinger_bands'  # Added for updating daily candles with monthly Bollinger Bands
         ]
     
     async def check_and_apply_migrations(self) -> Dict[str, any]:
@@ -144,6 +149,7 @@ class DatabaseMigrationService:
                 "calculate_atr.sql",  # ATR calculation with Wilder's smoothing and TradingView matching
                 "calculate_supertrend.sql",  # CORRECTED SuperTrend with fixed sliding window logic
                 "calculate_rsi.sql",  # RSI calculation with Wilder's smoothing and sliding window approach
+                "calculate_bollinger_bands.sql",  # Bollinger Bands calculation for all timeframes
                 "fix_weekly_monthly_supertrend_properly.sql"  # Fixed weekly/monthly SuperTrend
             ]
             

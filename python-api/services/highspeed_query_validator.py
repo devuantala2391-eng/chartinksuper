@@ -434,11 +434,45 @@ class HighSpeedQueryValidator:
         # Handle daily volume (though it's usually just "volume")
         elif field_name == 'volume':
             return {
-                "name": "Volume", 
+                "name": "Volume",
                 "timeframe": "daily",
                 "params": {}
             }
-        
+
+        # Handle Bollinger Bands with timeframe prefix and band type suffix
+        # Examples: daily_bb_20_2_upper, weekly_bb_20_2_middle, monthly_bb_20_2_lower
+        elif 'bb_' in field_name and ('_upper' in field_name or '_middle' in field_name or '_lower' in field_name):
+            # Remove the band type suffix to get the base indicator name
+            if field_name.endswith('_upper'):
+                base_field = field_name[:-6]  # Remove '_upper'
+            elif field_name.endswith('_middle'):
+                base_field = field_name[:-7]  # Remove '_middle'
+            elif field_name.endswith('_lower'):
+                base_field = field_name[:-6]  # Remove '_lower'
+            else:
+                return None
+
+            parts = base_field.split('_')
+            # Expected format: timeframe_bb_period_multiplier (e.g., daily_bb_20_2)
+            if len(parts) >= 4 and parts[1] == 'bb':
+                try:
+                    timeframe = parts[0]  # daily, weekly, monthly
+                    period = int(parts[2])  # e.g., 20
+                    multiplier_str = parts[3].replace('dot', '.')  # Handle decimal like 2dot5 -> 2.5
+                    multiplier = float(multiplier_str)  # e.g., 2.0
+
+                    if timeframe in ['daily', 'weekly', 'monthly']:
+                        return {
+                            "name": "BollingerBands",
+                            "timeframe": timeframe,
+                            "params": {
+                                "period": period,
+                                "multiplier": multiplier
+                            }
+                        }
+                except ValueError:
+                    logger.error(f"Invalid Bollinger Bands parameters in {field_name}")
+
         return None
 
 # Global instance

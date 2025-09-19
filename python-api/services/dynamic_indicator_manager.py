@@ -427,6 +427,79 @@ class DatabaseDynamicIndicatorManager:
 
                         return success
 
+                elif name and (name.lower() == 'bollingerbands' or name.lower() == 'bb'):
+                    # Calculate Bollinger Bands using new stored procedures
+                    period = params.get('period', 20)
+                    multiplier = params.get('multiplier', 2.0)
+
+                    # Convert to proper types if needed
+                    if isinstance(period, float) and period.is_integer():
+                        period = int(period)
+                    else:
+                        period = int(period)
+
+                    multiplier = float(multiplier)
+
+                    # Calculate Bollinger Bands for all timeframes
+                    if timeframe == 'daily':
+                        # Call the procedure that processes ALL symbols for daily Bollinger Bands
+                        result = await conn.fetchrow("""
+                            SELECT
+                                COUNT(*) as updated_rows,
+                                0 as execution_time_ms,
+                                'SUCCESS' as status,
+                                'daily_bb_' || $1 || '_' || REPLACE($2::TEXT, '.', 'dot') as indicator_key
+                            FROM (
+                                SELECT calculate_daily_bollinger_bands_for_symbol(symbol, $1, $2, TRUE)
+                                FROM (SELECT DISTINCT symbol FROM daily_candles) s
+                            ) t
+                        """, period, multiplier)
+                    elif timeframe == 'weekly':
+                        # Use new weekly Bollinger Bands function with automatic daily updates
+                        result = await conn.fetchrow("""
+                            SELECT * FROM calculate_weekly_bollinger_bands($1, $2, NULL)
+                        """, period, multiplier)
+                    elif timeframe == 'monthly':
+                        # Use new monthly Bollinger Bands function with automatic daily updates
+                        result = await conn.fetchrow("""
+                            SELECT * FROM calculate_monthly_bollinger_bands($1, $2, NULL)
+                        """, period, multiplier)
+                    else:
+                        # Default to daily if unknown timeframe
+                        result = await conn.fetchrow("""
+                            SELECT
+                                COUNT(*) as updated_rows,
+                                0 as execution_time_ms,
+                                'SUCCESS' as status,
+                                'daily_bb_' || $1 || '_' || REPLACE($2::TEXT, '.', 'dot') as indicator_key
+                            FROM (
+                                SELECT calculate_daily_bollinger_bands_for_symbol(symbol, $1, $2, TRUE)
+                                FROM (SELECT DISTINCT symbol FROM daily_candles) s
+                            ) t
+                        """, period, multiplier)
+
+                    if result:
+                        print(f"{timeframe.capitalize()} Bollinger Bands calculation result: {dict(result)}")
+                        # Check if status is SUCCESS
+                        success = result.get('status') == 'SUCCESS'
+
+                        if success:
+                            # Add to active indicators if not already there
+                            indicator_key = self.generate_indicator_key({
+                                'name': 'BollingerBands',
+                                'timeframe': timeframe,
+                                'params': {'period': period, 'multiplier': multiplier}
+                            })
+
+                            if indicator_key not in self._active_indicators:
+                                self._active_indicators.append(indicator_key)
+                                # Also add the indicator configuration
+                                await self.add_custom_indicator('BollingerBands',
+                                                               {'period': period, 'multiplier': multiplier},
+                                                               timeframe)
+
+                        return success
+
                 elif name and (name.lower() == 'percentagechange' or name.lower() == 'pctchg'):
                     # Calculate percentage change using correct stored procedure based on timeframe
                     if timeframe == 'monthly':
