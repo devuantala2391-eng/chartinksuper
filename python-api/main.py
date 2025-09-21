@@ -74,7 +74,6 @@ from services.dynamic_indicator_manager import dynamic_indicator_manager
 from services.database_health_manager import database_health_manager
 from services.postgres_indicator_service import postgres_indicator_service
 from middleware.api_health_middleware import ensure_query_ready, ensure_latest_ready, ensure_basic_ready
-import asyncio
 
 # Simple logging setup
 logging.basicConfig(
@@ -4390,7 +4389,6 @@ async def _clean_high_speed_database():
             """)
 
             # Wait a moment for connections to terminate
-            import asyncio
             await asyncio.sleep(2)
 
             # Get all tables in the high-speed database
@@ -4625,6 +4623,28 @@ async def _update_symbol_latest_keys_after_generation(high_speed_db):
         logger.error(f"Failed to update symbol_latest_keys: {e}")
         raise
 
+async def _verify_database_data(high_speed_db, db_service):
+    """Verify that daily candles were properly inserted into the database"""
+    async with high_speed_db.pool.acquire() as conn:
+        daily_count = await conn.fetchval("SELECT COUNT(*) FROM daily_candles")
+
+        if daily_count == 0:
+            logger.error("❌ CRITICAL: No daily candles found in database after fetch!")
+            logger.error("❌ Weekly candle generation will fail. Attempting to re-initialize...")
+
+            # Re-initialize database connections
+            await db_service.initialize()
+            await high_speed_db.initialize()
+
+            # Check again
+            daily_count = await conn.fetchval("SELECT COUNT(*) FROM daily_candles")
+            logger.info(f"After re-init: {daily_count} daily candles in database")
+
+            if daily_count == 0:
+                raise Exception("CRITICAL: Still no daily candles after re-initialization. Hard refresh cannot continue.")
+
+        return daily_count
+
 @app.post("/api/hard-refresh")
 async def hard_refresh_database():
     """
@@ -4721,13 +4741,39 @@ async def hard_refresh_database():
                 payload = [[str(datetime.now().timestamp()), symbol] for symbol in symbols]
                 
                 # Process with chartink service using full candle count
-                logger.info(f"Fetching data for {len(symbols)} symbols with {candle_count} candles each")
-                results = await chartink_service.process_payload(
-                    payload,
-                    concurrent_limit=None,
-                    progress_callback=progress_callback,
-                    size=candle_count  # Use full candle count from env
-                )
+                logger.info(f"🌐 Starting data fetch for {len(symbols)} symbols with {candle_count} candles each")
+                logger.info(f"⏱️  Data fetch timeout: 20 minutes | Overall hard refresh timeout: 30 minutes")
+
+                try:
+                    # Add timeout for data fetching (20 minutes max)
+                    results = await asyncio.wait_for(
+                        chartink_service.process_payload(
+                            payload,
+                            concurrent_limit=None,
+                            progress_callback=progress_callback,
+                            size=candle_count  # Use full candle count from env
+                        ),
+                        timeout=1200  # 20 minutes
+                    )
+                    logger.info(f"✅ Data fetch completed successfully for {len(results)} symbols")
+                except asyncio.TimeoutError:
+                    logger.error("Data fetching timed out after 20 minutes")
+                    update_progress({
+                        "isRunning": False,
+                        "phase": "error",
+                        "message": "Data fetching timed out after 20 minutes. The external API may be slow or unreachable.",
+                        "status": "fetch_timeout"
+                    })
+                    return
+                except Exception as e:
+                    logger.error(f"Data fetching failed: {e}")
+                    update_progress({
+                        "isRunning": False,
+                        "phase": "error",
+                        "message": f"Data fetching failed: {str(e)}",
+                        "status": "fetch_error"
+                    })
+                    return
                 
                 # After data fetch, verify data is actually in database before proceeding
                 logger.info("Data fetch complete. Verifying daily candles were inserted...")
@@ -4741,27 +4787,33 @@ async def hard_refresh_database():
                 })
                 
                 # Wait for database writes to complete and verify data exists
-                import asyncio
                 await asyncio.sleep(2)  # Give time for async writes to complete
-                
-                async with high_speed_db.pool.acquire() as conn:
-                    daily_count = await conn.fetchval("SELECT COUNT(*) FROM daily_candles")
+
+                try:
+                    # Add timeout for database verification (2 minutes)
+                    daily_count = await asyncio.wait_for(
+                        _verify_database_data(high_speed_db, db_service),
+                        timeout=120
+                    )
                     logger.info(f"✅ Verified {daily_count} daily candles were inserted into database")
-                    
-                    if daily_count == 0:
-                        logger.error("❌ CRITICAL: No daily candles found in database after fetch!")
-                        logger.error("❌ Weekly candle generation will fail. Attempting to re-initialize...")
-                        
-                        # Re-initialize database connections
-                        await db_service.initialize()
-                        await high_speed_db.initialize()
-                        
-                        # Check again
-                        daily_count = await conn.fetchval("SELECT COUNT(*) FROM daily_candles")
-                        logger.info(f"After re-init: {daily_count} daily candles in database")
-                        
-                        if daily_count == 0:
-                            raise Exception("CRITICAL: Still no daily candles after re-initialization. Hard refresh cannot continue.")
+                except asyncio.TimeoutError:
+                    logger.error("Database verification timed out after 2 minutes")
+                    update_progress({
+                        "isRunning": False,
+                        "phase": "error",
+                        "message": "Database verification timed out. Database may be unresponsive.",
+                        "status": "db_timeout"
+                    })
+                    return
+                except Exception as e:
+                    logger.error(f"Database verification failed: {e}")
+                    update_progress({
+                        "isRunning": False,
+                        "phase": "error",
+                        "message": f"Database verification failed: {str(e)}",
+                        "status": "db_error"
+                    })
+                    return
                 
                 population_stats = {
                     'daily_inserted': daily_count, 
@@ -4943,8 +4995,28 @@ async def hard_refresh_database():
                     "status": "error"
                 })
         
-        # Start background task
-        asyncio.create_task(hard_refresh_background())
+        # Start background task with timeout (30 minutes max)
+        async def hard_refresh_with_timeout():
+            try:
+                await asyncio.wait_for(hard_refresh_background(), timeout=1800)  # 30 minutes
+            except asyncio.TimeoutError:
+                logger.error("Hard refresh timed out after 30 minutes")
+                update_progress({
+                    "isRunning": False,
+                    "phase": "error",
+                    "message": "Hard refresh timed out after 30 minutes. Please try again or check system resources.",
+                    "status": "timeout"
+                })
+            except Exception as e:
+                logger.error(f"Hard refresh wrapper error: {e}")
+                update_progress({
+                    "isRunning": False,
+                    "phase": "error",
+                    "message": f"Hard refresh failed: {str(e)}",
+                    "status": "error"
+                })
+
+        asyncio.create_task(hard_refresh_with_timeout())
         
         return {
             "success": True,
@@ -4986,8 +5058,6 @@ async def start_periodic_updates(
             }
         
         # Start periodic updates as a background task in the same event loop
-        import asyncio
-        
         # Start the periodic updates as a background task (using parallel pipeline)
         task = asyncio.create_task(
             parallel_pipeline_updater.start_periodic_updates(interval_minutes, force_run)
@@ -5051,7 +5121,6 @@ async def start_sequential_updates(
             }
         
         # Start the sequential updates as a background task
-        import asyncio
         task = asyncio.create_task(
             latest_candle_updater.start_periodic_updates(interval_minutes, force_run)
         )
