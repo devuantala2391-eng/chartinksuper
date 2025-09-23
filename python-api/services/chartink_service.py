@@ -162,9 +162,14 @@ class ChartinkService:
                 
                 # Process and map the data
                 mapped_data = self._map_response_data(response_data)
-                
-                # Save to database only
-                success = await db_service.save_candles(symbol, mapped_data)
+
+                # Choose the right save method based on whether this is latest candle update (size=1) or bulk loading
+                if attempt_size == 1 and len(mapped_data) == 1:
+                    # This is a latest candle update - use the update method
+                    success = await db_service.update_latest_candle(symbol, mapped_data[0])
+                else:
+                    # This is bulk loading - use the traditional method
+                    success = await db_service.save_candles(symbol, mapped_data)
                 
                 if not success:
                     logger.error(f"Failed to save {symbol} to database")

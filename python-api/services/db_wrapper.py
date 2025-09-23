@@ -82,7 +82,39 @@ class DatabaseWrapper:
             True if successful, False otherwise
         """
         return await self.save_candles(symbol, candles)
-    
+
+    async def update_latest_candle(self, symbol: str, candle: Dict[str, Any],
+                                 timeframe: str = 'daily') -> bool:
+        """
+        Update or insert today's latest candle for a symbol.
+        This is specifically for latest candle updates from cronjob.
+
+        Args:
+            symbol: Stock symbol
+            candle: Single candle data dict
+            timeframe: daily, weekly, or monthly
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not candle:
+            return True
+
+        if self._use_unified and self.db_service.initialized:
+            try:
+                success = await self.db_service.update_latest_candle(symbol, candle, timeframe)
+                if success:
+                    logger.debug(f"✅ Updated latest candle for {symbol}")
+                    return True
+                logger.error(f"❌ Latest candle update failed for {symbol}")
+                return False
+            except Exception as e:
+                logger.error(f"❌ Latest candle update error for {symbol}: {e}")
+                return False
+
+        logger.error(f"❌ Cannot update latest candle for {symbol}: Ultra-fast database not initialized")
+        return False
+
     async def load_candles(self, symbol: str, limit: Optional[int] = None) -> Optional[List[Dict[str, Any]]]:
         """
         Load candles from PostgreSQL only.

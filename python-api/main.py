@@ -19,7 +19,7 @@ if hasattr(sys.stderr, 'buffer') and sys.stderr.encoding != 'utf-8':
     except:
         pass  # Already wrapped or unavailable
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Response
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Response, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.encoders import jsonable_encoder
@@ -142,18 +142,6 @@ app = FastAPI(
     description="FastAPI backend for stock screening and analysis",
     version="1.0.0"
 )
-# Initialize database-based indicator manager
-@app.on_event("startup")
-async def startup_event():
-    from services.dynamic_indicator_manager import dynamic_indicator_manager
-    await dynamic_indicator_manager.initialize()
-    
-@app.on_event("shutdown") 
-async def shutdown_event():
-    from services.dynamic_indicator_manager import dynamic_indicator_manager
-    await dynamic_indicator_manager.close()
-
-
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
@@ -167,6 +155,11 @@ app.add_middleware(
 async def startup_event():
     """Initialize app state on startup."""
     print("FastAPI server started")
+
+    # Initialize database-based indicator manager
+    from services.dynamic_indicator_manager import dynamic_indicator_manager
+    await dynamic_indicator_manager.initialize()
+
     # Initialize database connection
     try:
         logger.info("Starting database initialization...")
@@ -179,6 +172,13 @@ async def startup_event():
         
         if db_service.initialized:
             logger.info("Database service initialized successfully")
+
+            # Start background timer thread for cronjob
+            print("[STARTUP] Starting background timer thread...")
+            timer_thread = threading.Thread(target=background_timer_thread, daemon=True)
+            timer_thread.start()
+            print("[OK] Background timer thread started")
+
         else:
             logger.error("Database service initialization failed - service not marked as initialized")
             logger.error("This usually means PostgreSQL is not running or connection failed")
@@ -205,6 +205,11 @@ async def startup_event():
 async def shutdown_event():
     """Clean up on shutdown."""
     print("FastAPI server shutdown")
+
+    # Close dynamic indicator manager
+    from services.dynamic_indicator_manager import dynamic_indicator_manager
+    await dynamic_indicator_manager.close()
+
     # Close database connections
     await db_service.close()
 
@@ -895,156 +900,11 @@ def update_progress(updates: Dict[str, Any], clear_queue: bool = False):
 async def root():
     return {"message": "ChartinkSuper FastAPI Backend"}
 
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy"}
-
-@app.post("/api/query/export-csv")
-async def export_query_results_csv(request: QueryRequest):
-    """Export query results as CSV for debugging."""
-    import csv
-    from io import StringIO
-    from datetime import datetime
-    
-    try:
-        # Process the query to get results
-        query = request.query
-        stocks = request.stocks
-        
-        if not query:
-            raise HTTPException(status_code=400, detail="Query is required")
-        
-        # Parse and process query (similar to /query/latest)
-        parsed_query = parse_query(query)
-        stock_list = stocks or STOCK_SYMBOLS
-        all_matches = []
-        
-        # Quick scan to get stock symbols only
-        for stock in stock_list:
-            try:
-                precalculated_file = Path(f"precalculatedStorage/{stock}_piped.json")
-                if precalculated_file.exists():
-                    with open(precalculated_file, 'r') as f:
-                        mapped_data = json.load(f)
-                    candles = mapped_data.get("data", [])
-                    
-                    if candles:
-                        # Check latest candle with all historical data for context
-                        if is_historical_query(parsed_query):
-                            matches = find_matching_candles(candles, parsed_query, stock)
-                            # Filter to only latest day
-                            latest_timestamp = candles[-1].get("timestamp")
-                            matches = [m for m in matches if m.get("date") == latest_timestamp]
-                        else:
-                            latest_candle = candles[-1]
-                            matches = find_matching_candles([latest_candle], parsed_query, stock)
-                        
-                        if matches:
-                            all_matches.append({
-                                "stock": stock,
-                                "monthly_close": candles[-1].get("monthly_close", "N/A"),
-                                # Convert timestamp to IST for correct date display
-                                # Timestamps are stored at 18:30 UTC which is 00:00 IST next day
-                                "date": (datetime.fromtimestamp(candles[-1].get("timestamp", 0) / 1000, tz=timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
-                            })
-            except:
-                continue
-        
-        # Deduplicate
-        seen_stocks = set()
-        unique_matches = []
-        for match in all_matches:
-            if match["stock"] not in seen_stocks:
-                seen_stocks.add(match["stock"])
-                unique_matches.append(match)
-        
-        # Create CSV
-        output = StringIO()
-        writer = csv.writer(output)
-        
-        # Write header
-        writer.writerow(["Sr.", "Stock Symbol", "Monthly Close", "Date", "Query"])
-        
-        # Write data
-        for idx, match in enumerate(unique_matches, 1):
-            writer.writerow([
-                idx,
-                match["stock"],
-                match["monthly_close"],
-                match["date"],
-                query
-            ])
-        
-        # Add summary row
-        writer.writerow([])
-        writer.writerow(["Total Matches:", len(unique_matches)])
-        writer.writerow(["Generated:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
-        
-        # Return as CSV file
-        output.seek(0)
-        return Response(
-            content=output.getvalue(),
-            media_type="text/csv",
-            headers={
-                "Content-Disposition": f"attachment; filename=query_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-            }
-        )
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"CSV export failed: {str(e)}")
-
-@app.get("/test")
-async def test_endpoint():
-    """Test endpoint to verify API is working."""
-    return {
-        "message": "Test endpoint working",
-        "timestamp": datetime.utcnow().isoformat()
-    }
-
-@app.post("/chartink-api")
-async def chartink_api(request: ChartinkApiRequest):
-    """Process Chartink API requests to fetch and save stock data."""
-    try:
-        payload = request.payload
-        size = request.size or get_default_size()  # Use provided size or default from env
-        
-        if not payload or not isinstance(payload, list) or len(payload) == 0:
-            raise HTTPException(status_code=400, detail="Invalid or missing payload")
-        
-        # Process the payload using the chartink service with configurable size
-        results = await chartink_service.process_payload(payload, size=size)
-        
-        return {"success": True, "results": results, "size": size}
-        
-    except Exception as error:
-        logger.error(f"Chartink API error: {error}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(error)}")
 
 
-@app.post("/api/query/test")
-async def test_query_parsing(request: QueryRequest):
-    """Test query parsing and validation without heavy processing."""
-    try:
-        query = request.query
-        if not query:
-            raise HTTPException(status_code=400, detail="Query is required")
-        
-        # Parse the query
-        parsed_query = parse_query(query)
-        
-        # Validate query fields
-        validation_result = await validate_query_fields(parsed_query)
-        
-        return {
-            "success": True,
-            "query": query,
-            "parsed_query": parsed_query,
-            "validation_result": validation_result,
-            "message": "Query parsing and validation completed successfully"
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Query test failed: {str(e)}")
+
+
+
 
 @app.post("/api/query")
 @ensure_query_ready
@@ -1127,7 +987,7 @@ async def process_query(request: QueryRequest):
                     "total": 100
                 })
                 
-                logger.info("🚀 Bootstrap scenario detected: No precalculated data exists. Auto-calculating all required indicators from query.")
+                logger.info("[INIT] Bootstrap scenario detected: No precalculated data exists. Auto-calculating all required indicators from query.")
                 
                 # Extract all indicators from the query for bootstrap calculation
                 indicators_data = extract_indicators_from_query(parsed_query)
@@ -1177,7 +1037,7 @@ async def process_query(request: QueryRequest):
                             }
                         )
                     
-                    logger.info("✅ System successfully bootstrapped with required indicators")
+                    logger.info("[OK] System successfully bootstrapped with required indicators")
                 else:
                     # Query contains only basic fields, no indicators needed
                     logger.info("Query contains only basic price/volume fields, no indicators needed for bootstrap")
@@ -1550,7 +1410,7 @@ async def process_latest_query(request: QueryRequest):
                     "total": 100
                 })
                 
-                logger.info("🚀 Bootstrap scenario detected: No precalculated data exists. Auto-calculating all required indicators from query.")
+                logger.info("[INIT] Bootstrap scenario detected: No precalculated data exists. Auto-calculating all required indicators from query.")
                 
                 # Extract all indicators from the query for bootstrap calculation
                 indicators_data = extract_indicators_from_query(parsed_query)
@@ -1600,7 +1460,7 @@ async def process_latest_query(request: QueryRequest):
                             }
                         )
                     
-                    logger.info("✅ System successfully bootstrapped with required indicators")
+                    logger.info("[OK] System successfully bootstrapped with required indicators")
                 else:
                     # Query contains only basic fields, no indicators needed
                     logger.info("Query contains only basic price/volume fields, no indicators needed for bootstrap")
@@ -1982,16 +1842,6 @@ async def process_latest_query(request: QueryRequest):
         except:
             pass  # Lock may not be held in some error cases
 
-@app.get("/api/query/examples")
-async def get_query_examples_endpoint():
-    """Get example queries for the user."""
-    try:
-        from services.query_service import get_query_examples as get_examples
-        examples = get_examples()
-        return {"success": True, "examples": examples}
-    except Exception as error:
-        logger.error(f"Query examples error: {error}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(error)}")
 
 @app.post("/api/precalculate-indicators")
 async def precalculate_indicators(request: PrecalculateRequest):
@@ -3171,7 +3021,7 @@ async def add_missing_indicators_and_calculate(missing_fields: List[str]) -> boo
             logger.info("All missing fields are basic price/volume fields, no indicators needed")
             return True
         
-        logger.info(f"🚀 Auto-calculating missing indicators: {indicator_fields}")
+        logger.info(f"[INIT] Auto-calculating missing indicators: {indicator_fields}")
         
         # Use dynamic indicator manager to auto-calculate missing indicators
         success_count = 0
@@ -3187,7 +3037,7 @@ async def add_missing_indicators_and_calculate(missing_fields: List[str]) -> boo
                 
                 if success:
                     success_count += 1
-                    logger.info(f"✅ Successfully added indicator for field: {field}")
+                    logger.info(f"[OK] Successfully added indicator for field: {field}")
                 else:
                     logger.error(f"❌ Failed to add indicator for field: {field}")
                     
@@ -3639,58 +3489,6 @@ async def get_precalculated_indicators():
         logger.error(f"Get precalculated indicators error: {error}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(error)}")
 
-@app.get("/api/progress-stream")
-async def progress_stream():
-    """Server-sent events for real-time progress updates."""
-    async def generate():
-        # Send initial connection message
-        yield f"data: {json.dumps({'connected': True})}\n\n"
-        
-        # Send current progress immediately
-        yield f"data: {json.dumps(current_progress)}\n\n"
-        
-        # Keep connection alive and send updates
-        last_heartbeat = time.time()
-        
-        while True:
-            try:
-                # Check for progress updates (non-blocking)
-                try:
-                    # Get update from queue with short timeout
-                    update = await asyncio.get_event_loop().run_in_executor(
-                        None, progress_queue.get, True, 0.1
-                    )
-                    if update:
-                        yield f"data: {json.dumps(update)}\n\n"
-                except queue.Empty:
-                    pass
-                except Exception as e:
-                    logger.error(f"Error getting from queue: {e}")
-                
-                # Send heartbeat every 10 seconds to keep connection alive
-                current_time = time.time()
-                if current_time - last_heartbeat > 10:
-                    yield f"data: {json.dumps({'heartbeat': True})}\n\n"
-                    last_heartbeat = current_time
-                
-                # Small delay to prevent busy waiting
-                await asyncio.sleep(0.1)
-                
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"SSE stream error: {e}")
-                break
-    
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"  # Disable Nginx buffering
-        }
-    )
 
 @app.post("/refreshdb")
 async def refresh_database(request: RefreshDbRequest):
@@ -3804,7 +3602,7 @@ async def process_refresh_in_background(symbols: List[str], request_time: dateti
             if show_progress:
                 avg_time = elapsed / processed if processed > 0 else 0
                 eta = avg_time * (total - processed) if processed > 0 else 0
-                status_emoji = "✅" if success else "❌"
+                status_emoji = "[OK]" if success else "❌"
                 print(f"{status_emoji} [{current_time.strftime('%H:%M:%S.%f')[:-3]}] {symbol} - "
                       f"Progress: {processed}/{total} ({int((processed/total)*100)}%) - "
                       f"Success: {successful}, Failed: {failed} - "
@@ -3875,65 +3673,6 @@ async def process_refresh_in_background(symbols: List[str], request_time: dateti
             "status": "error"
         })
 
-@app.get("/refreshdb-progress")
-async def get_refresh_progress():
-    """Get database refresh progress."""
-    return current_progress
-
-@app.get("/refreshdb-progress-stream")
-async def refreshdb_progress_stream():
-    """Server-sent events for real-time refreshdb progress updates."""
-    async def generate():
-        # Send initial connection message
-        yield f"data: {json.dumps({'connected': True, 'endpoint': 'refreshdb-progress-stream'})}\n\n"
-        
-        # Send current progress immediately
-        yield f"data: {json.dumps(current_progress)}\n\n"
-        
-        # Keep connection alive and send updates
-        last_heartbeat = time.time()
-        
-        while True:
-            try:
-                # Check for progress updates (non-blocking)
-                try:
-                    # Get update from queue with short timeout
-                    update = await asyncio.get_event_loop().run_in_executor(
-                        None, progress_queue.get, True, 0.1
-                    )
-                    if update:
-                        yield f"data: {json.dumps(update)}\n\n"
-                        logger.info(f"SSE refreshdb update sent: {update.get('phase', 'unknown')} - {update.get('processed', 0)}/{update.get('total', 0)}")
-                except queue.Empty:
-                    pass
-                except Exception as e:
-                    logger.error(f"Error getting from refreshdb progress queue: {e}")
-                
-                # Send heartbeat every 10 seconds to keep connection alive
-                current_time = time.time()
-                if current_time - last_heartbeat > 10:
-                    yield f"data: {json.dumps({'heartbeat': True, 'timestamp': current_time})}\n\n"
-                    last_heartbeat = current_time
-                
-                # Small delay to prevent busy waiting
-                await asyncio.sleep(0.1)
-                
-            except asyncio.CancelledError:
-                logger.info("RefreshDB SSE connection cancelled")
-                break
-            except Exception as e:
-                logger.error(f"RefreshDB SSE stream error: {e}")
-                break
-    
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"  # Disable Nginx buffering
-        }
-    )
 
 @app.post("/upload-csv")
 async def upload_csv(csvFile: UploadFile = File(...)):
@@ -4106,7 +3845,7 @@ async def process_csv_symbols_in_background(extracted_symbols: List[str], size: 
             
             # Print progress for monitoring
             if processed % 10 == 0 or processed == total:
-                status_emoji = "✅" if success else "❌"
+                status_emoji = "[OK]" if success else "❌"
                 print(f"   {status_emoji} Progress: {processed}/{total} ({progress_percent}%) - Success: {successful}, Failed: {failed}")
         
         print(f"\n3. Fetching stock data from Chartink API")
@@ -4211,112 +3950,6 @@ async def process_csv_symbols_in_background(extracted_symbols: List[str], size: 
             "percentage": 0
         })
 
-@app.get("/test-debug")
-async def test_debug():
-    """Test endpoint for debugging"""
-    return {"message": "Debug endpoint works!", "timestamp": datetime.now().isoformat()}
-
-@app.get("/test-sse")
-async def test_sse():
-    """Test SSE by triggering progress updates"""
-    print("[TEST-SSE] Triggering test progress updates")
-    
-    # Reset progress
-    update_progress({
-        "isRunning": True,
-        "phase": "testing",
-        "message": "Starting SSE test...",
-        "processed": 0,
-        "total": 100,
-        "status": "processing"
-    })
-    
-    # Create background task to simulate progress
-    async def simulate_progress():
-        for i in range(0, 101, 10):
-            await asyncio.sleep(1)
-            update_progress({
-                "isRunning": True,
-                "phase": "testing",
-                "message": f"Testing SSE: {i}% complete",
-                "processed": i,
-                "total": 100,
-                "status": "processing"
-            })
-        
-        update_progress({
-            "isRunning": False,
-            "phase": "completed",
-            "message": "SSE test completed",
-            "processed": 100,
-            "total": 100,
-            "status": "completed"
-        })
-    
-    asyncio.create_task(simulate_progress())
-    
-    return {"message": "SSE test started. Connect to /api/progress-stream to see updates."}
-
-@app.get("/csv-upload-progress")  
-async def get_csv_upload_progress():
-    """Get CSV upload progress."""
-    return current_progress
-
-@app.get("/csv-upload-progress-stream")
-async def csv_upload_progress_stream():
-    """SSE endpoint for CSV upload progress updates."""
-    async def generate():
-        # Send initial connection message
-        yield f"data: {json.dumps({'connected': True, 'endpoint': 'csv-upload-progress-stream'})}\n\n"
-        
-        while True:
-            try:
-                if not progress_queue.empty():
-                    # Get update from queue with short timeout
-                    update = await asyncio.get_event_loop().run_in_executor(
-                        None, progress_queue.get, True, 0.1
-                    )
-                    if update:
-                        # Format SSE message
-                        yield f"data: {json.dumps(update)}\n\n"
-                else:
-                    # Send heartbeat to keep connection alive
-                    yield f": heartbeat\n\n"
-                
-                # Small delay to prevent CPU spinning
-                await asyncio.sleep(0.1)
-                
-            except queue.Empty:
-                # Send heartbeat to keep connection alive
-                yield f": heartbeat\n\n"
-                await asyncio.sleep(0.5)
-            except Exception as e:
-                logger.error(f"SSE CSV upload stream error: {e}")
-                yield f"data: {json.dumps({'error': str(e)})}\n\n"
-                break
-    
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
-    )
-
-@app.post("/update-symbols-and-refresh")
-async def update_symbols_and_refresh():
-    """Update symbols list and refresh database."""
-    try:
-        # This would implement the logic to update symbols and refresh
-        return {"success": True, "message": "Symbols updated and database refreshed"}
-        
-    except Exception as error:
-        logger.error(f"Update symbols error: {error}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(error)}")
-
-# Latest Candle Update Endpoints
 @app.post("/api/update-latest-candles")
 async def update_latest_candles(symbols: Optional[List[str]] = None):
     """Update latest candles for specified symbols or all symbols."""
@@ -4355,7 +3988,7 @@ async def update_latest_candles(symbols: Optional[List[str]] = None):
 async def _clean_postgresql_database():
     """NSE Database removed - this function is no longer needed."""
     # NSE DATABASE REMOVED - Only using ultra-fast database now
-    logger.info("✅ PostgreSQL database cleaned successfully")
+    logger.info("[OK] PostgreSQL database cleaned successfully")
     return  # Skip NSE database cleaning - we only use ultra-fast database
 
 async def _clean_high_speed_database():
@@ -4438,7 +4071,7 @@ async def _clean_high_speed_database():
                 except Exception:
                     pass  # Ignore errors if function doesn't exist
 
-            logger.info("✅ High-speed PostgreSQL database cleaned successfully")
+            logger.info("[OK] High-speed PostgreSQL database cleaned successfully")
 
         finally:
             # Close the temporary connection
@@ -4470,7 +4103,7 @@ async def _create_indicator_management_tables(high_speed_db):
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            logger.info("   ✅ Created indicator_registry table")
+            logger.info("   [OK] Created indicator_registry table")
             
             # Create calculated_indicators table (used by indicator_metadata_service)  
             await conn.execute("""
@@ -4488,7 +4121,7 @@ async def _create_indicator_management_tables(high_speed_db):
                     description TEXT
                 )
             """)
-            logger.info("   ✅ Created calculated_indicators table")
+            logger.info("   [OK] Created calculated_indicators table")
             
             # Create performance indexes
             await conn.execute("""
@@ -4505,9 +4138,9 @@ async def _create_indicator_management_tables(high_speed_db):
                 CREATE INDEX IF NOT EXISTS idx_calculated_indicators_status 
                 ON calculated_indicators(status)
             """)
-            logger.info("   ✅ Created performance indexes for indicator tables")
+            logger.info("   [OK] Created performance indexes for indicator tables")
             
-        logger.info("🚀 Indicator management tables created successfully")
+        logger.info("[INIT] Indicator management tables created successfully")
         
     except Exception as e:
         logger.error(f"Failed to create indicator management tables: {e}")
@@ -4562,9 +4195,9 @@ async def _initialize_symbol_latest_keys(high_speed_db):
                      daily_count, weekly_count, monthly_count,
                      timestamp_range['first_ts'], timestamp_range['latest_ts'])
                 
-                logger.info(f"   ✅ {symbol}: Daily({daily_max_seq}/{daily_count}), Weekly({weekly_max_seq}/{weekly_count}), Monthly({monthly_max_seq}/{monthly_count})")
+                logger.info(f"   [OK] {symbol}: Daily({daily_max_seq}/{daily_count}), Weekly({weekly_max_seq}/{weekly_count}), Monthly({monthly_max_seq}/{monthly_count})")
         
-        logger.info("🚀 Symbol latest keys initialized successfully")
+        logger.info("[INIT] Symbol latest keys initialized successfully")
         
     except Exception as e:
         logger.error(f"Failed to initialize symbol_latest_keys: {e}")
@@ -4615,9 +4248,9 @@ async def _update_symbol_latest_keys_after_generation(high_speed_db):
                      daily_count, weekly_count, monthly_count,
                      timestamp_range['first_ts'], timestamp_range['latest_ts'])
                 
-                logger.info(f"   ✅ Updated {symbol}: Daily({daily_max_seq}/{daily_count}), Weekly({weekly_max_seq}/{weekly_count}), Monthly({monthly_max_seq}/{monthly_count})")
+                logger.info(f"   [OK] Updated {symbol}: Daily({daily_max_seq}/{daily_count}), Weekly({weekly_max_seq}/{weekly_count}), Monthly({monthly_max_seq}/{monthly_count})")
         
-        logger.info("🚀 Symbol latest keys updated successfully")
+        logger.info("[INIT] Symbol latest keys updated successfully")
         
     except Exception as e:
         logger.error(f"Failed to update symbol_latest_keys: {e}")
@@ -4655,7 +4288,7 @@ async def hard_refresh_database():
     # NSE database service removed - using only ultra-fast database
     
     try:
-        logger.info("🔄 Starting POSTGRESQL HARD REFRESH - cleaning database and refetching all data")
+        logger.info("[REFRESH] Starting POSTGRESQL HARD REFRESH - cleaning database and refetching all data")
         
         # Initialize database connections
         await db_service.initialize()
@@ -4663,7 +4296,7 @@ async def hard_refresh_database():
         # Initialize high-speed database service
         from services.ultra_fast_database_service import ultra_fast_db as high_speed_db
         await high_speed_db.initialize()
-        logger.info("🚀 High-speed database initialized")
+        logger.info("[INIT] High-speed database initialized")
         
         # Clean up existing PostgreSQL data from both databases
         await _clean_postgresql_database()
@@ -4672,7 +4305,7 @@ async def hard_refresh_database():
         # Recreate high-speed database tables after cleaning
         await high_speed_db._create_optimized_tables()
         await high_speed_db._create_speed_indexes()
-        logger.info("🚀 High-speed database tables recreated")
+        logger.info("[INIT] High-speed database tables recreated")
         
         # Create additional required tables for indicator management
         await _create_indicator_management_tables(high_speed_db)
@@ -4685,9 +4318,9 @@ async def hard_refresh_database():
         migration_result = await database_migration_service.check_and_apply_migrations()
         if migration_result['success']:
             if migration_result['applied']:
-                logger.info(f"✅ Database migrations applied: {migration_result['message']}")
+                logger.info(f"[OK] Database migrations applied: {migration_result['message']}")
             else:
-                logger.info(f"✅ Database migrations already up to date: {migration_result['message']}")
+                logger.info(f"[OK] Database migrations already up to date: {migration_result['message']}")
         else:
             logger.error(f"❌ Database migration failed: {migration_result['message']}")
             # Continue with hard refresh even if migration fails (tables are already created)
@@ -4742,7 +4375,7 @@ async def hard_refresh_database():
                 
                 # Process with chartink service using full candle count
                 logger.info(f"🌐 Starting data fetch for {len(symbols)} symbols with {candle_count} candles each")
-                logger.info(f"⏱️  Data fetch timeout: 20 minutes | Overall hard refresh timeout: 30 minutes")
+                logger.info(f"[TIMEOUT] Data fetch timeout: 20 minutes | Overall hard refresh timeout: 30 minutes")
 
                 try:
                     # Add timeout for data fetching (20 minutes max)
@@ -4755,7 +4388,7 @@ async def hard_refresh_database():
                         ),
                         timeout=1200  # 20 minutes
                     )
-                    logger.info(f"✅ Data fetch completed successfully for {len(results)} symbols")
+                    logger.info(f"[OK] Data fetch completed successfully for {len(results)} symbols")
                 except asyncio.TimeoutError:
                     logger.error("Data fetching timed out after 20 minutes")
                     update_progress({
@@ -4795,7 +4428,7 @@ async def hard_refresh_database():
                         _verify_database_data(high_speed_db, db_service),
                         timeout=120
                     )
-                    logger.info(f"✅ Verified {daily_count} daily candles were inserted into database")
+                    logger.info(f"[OK] Verified {daily_count} daily candles were inserted into database")
                 except asyncio.TimeoutError:
                     logger.error("Database verification timed out after 2 minutes")
                     update_progress({
@@ -4856,7 +4489,7 @@ async def hard_refresh_database():
                         logger.warning(f"Could not load indicators config: {e}")
                 
                 # Execute comprehensive database calculations (weekly candles + all indicators)
-                logger.info("🗓️ Executing comprehensive database calculations...")
+                logger.info("[CALC] Executing comprehensive database calculations...")
                 update_progress({
                     "isRunning": True,
                     "phase": "database_calculations",
@@ -4917,7 +4550,7 @@ async def hard_refresh_database():
                         assignment_count += 1
                 
                 assignment_time = time.time() - assignment_start
-                logger.info(f"✅ Monthly_candle_key_id assignment completed in {assignment_time:.2f}s for {assignment_count} symbols")
+                logger.info(f"[OK] Monthly_candle_key_id assignment completed in {assignment_time:.2f}s for {assignment_count} symbols")
                 
                 # Calculate OHLCV for all symbols after candle generation
                 logger.info("📊 Calculating weekly and monthly OHLCV for all symbols...")
@@ -4959,7 +4592,7 @@ async def hard_refresh_database():
                             })
                 
                 ohlcv_time = time.time() - ohlcv_start
-                logger.info(f"✅ OHLCV calculation completed in {ohlcv_time:.2f}s for {ohlcv_success_count}/{assignment_count} symbols")
+                logger.info(f"[OK] OHLCV calculation completed in {ohlcv_time:.2f}s for {ohlcv_success_count}/{assignment_count} symbols")
                 
                 logger.info("🎯 Hard refresh completed - OHLCV data + Weekly + Monthly candles + OHLCV calculated")
                 
@@ -5016,7 +4649,57 @@ async def hard_refresh_database():
                     "status": "error"
                 })
 
-        asyncio.create_task(hard_refresh_with_timeout())
+        # Start the hard refresh in a background thread with its own event loop
+        import threading
+        def run_hard_refresh():
+            """Run hard refresh in a new event loop in a separate thread"""
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                # Re-initialize database connections in the new event loop
+                async def init_and_refresh():
+                    # Reset database initialization states
+                    from services.db_wrapper import db_wrapper as db_service
+                    from services.ultra_fast_database_service import ultra_fast_db as high_speed_db
+
+                    # Reset initialization flags
+                    db_service._init_attempted = False
+                    high_speed_db.initialized = False
+
+                    # Close existing pools if they exist (they're in a different loop)
+                    if high_speed_db.pool:
+                        try:
+                            # Don't try to close pools from different event loop
+                            high_speed_db.pool = None
+                        except:
+                            pass
+
+                    # Re-initialize databases in this thread's event loop
+                    await db_service.initialize()
+                    await high_speed_db.initialize()
+
+                    # Now run the hard refresh
+                    await hard_refresh_with_timeout()
+
+                loop.run_until_complete(init_and_refresh())
+            except Exception as e:
+                logger.error(f"Hard refresh thread error: {e}")
+                update_progress({
+                    "isRunning": False,
+                    "phase": "error",
+                    "message": f"Hard refresh failed: {str(e)}",
+                    "status": "error"
+                })
+            finally:
+                try:
+                    loop.close()
+                except:
+                    pass  # Ignore errors when closing
+
+        # Start background thread for hard refresh
+        refresh_thread = threading.Thread(target=run_hard_refresh, daemon=True)
+        refresh_thread.start()
         
         return {
             "success": True,
@@ -5036,395 +4719,129 @@ async def hard_refresh_database():
         })
         raise HTTPException(status_code=500, detail=f"Hard refresh failed: {str(error)}")
 
-@app.post("/api/start-periodic-updates")
-async def start_periodic_updates(
-    interval_minutes: int = 2,
-    force_run: bool = True,
-    request_body: Optional[PeriodicUpdateRequest] = None
-):
-    """Start periodic latest candle updates every N minutes."""
-    try:
-        # Use values from JSON body if provided, otherwise use query parameters
-        if request_body:
-            if request_body.interval_minutes is not None:
-                interval_minutes = request_body.interval_minutes
-            if request_body.force_run is not None:
-                force_run = request_body.force_run
-        
-        if latest_candle_updater.is_running:
-            return {
-                "success": False,
-                "message": "Periodic updates are already running"
-            }
-        
-        # Start periodic updates as a background task in the same event loop
-        # Start the periodic updates as a background task (using parallel pipeline)
-        task = asyncio.create_task(
-            parallel_pipeline_updater.start_periodic_updates(interval_minutes, force_run)
-        )
-        
-        logger.info(f"Started PARALLEL PIPELINE periodic updates every {interval_minutes} minutes (force_run={force_run})")
-        
-        return {
-            "success": True,
-            "message": f"Parallel pipeline updates started (every {interval_minutes} minutes)",
-            "interval_minutes": interval_minutes,
-            "method": "parallel_pipeline",
-            "features": [
-                "Stream processing (no waiting for all fetches)",
-                "Maximum CPU/RAM utilization", 
-                "Real-time progress tracking",
-                "100 concurrent API calls",
-                "12 parallel processing threads"
-            ]
-        }
-        
-    except Exception as error:
-        logger.error(f"Failed to start periodic updates: {error}")
-        raise HTTPException(status_code=500, detail=f"Failed to start periodic updates: {str(error)}")
 
-@app.post("/api/stop-periodic-updates")
-async def stop_periodic_updates():
-    """Stop periodic latest candle updates."""
-    try:
-        # Stop both updaters
-        latest_candle_updater.stop_periodic_updates()
-        parallel_pipeline_updater.stop_periodic_updates()
-        
-        return {
-            "success": True,
-            "message": "Periodic updates stopped"
-        }
-        
-    except Exception as error:
-        logger.error(f"Failed to stop periodic updates: {error}")
-        raise HTTPException(status_code=500, detail=f"Failed to stop periodic updates: {str(error)}")
-
-@app.post("/api/start-sequential-updates")
-async def start_sequential_updates(
-    interval_minutes: int = 2,
-    force_run: bool = True,
-    request_body: Optional[PeriodicUpdateRequest] = None
-):
-    """Start sequential periodic latest candle updates (legacy method)."""
-    try:
-        if request_body:
-            if request_body.interval_minutes is not None:
-                interval_minutes = request_body.interval_minutes
-            if request_body.force_run is not None:
-                force_run = request_body.force_run
-        
-        if latest_candle_updater.is_running:
-            return {
-                "success": False,
-                "message": "Sequential updates are already running"
-            }
-        
-        # Start the sequential updates as a background task
-        task = asyncio.create_task(
-            latest_candle_updater.start_periodic_updates(interval_minutes, force_run)
-        )
-        
-        logger.info(f"Started SEQUENTIAL periodic updates every {interval_minutes} minutes (force_run={force_run})")
-        
-        return {
-            "success": True,
-            "message": f"Sequential updates started (every {interval_minutes} minutes)",
-            "interval_minutes": interval_minutes,
-            "method": "sequential"
-        }
-        
-    except Exception as error:
-        logger.error(f"Failed to start sequential updates: {error}")
-        raise HTTPException(status_code=500, detail=f"Failed to start sequential updates: {str(error)}")
-
-# Periodic updates status endpoint removed - no longer needed
-
-# SSE endpoint for real-time scheduler updates
-# Scheduler updates stream endpoint removed - using simple status checks now
-
-# Dynamic Indicator Management APIs
-@app.get("/api/indicators/active")
-async def get_active_indicators():
-    """Get list of all active indicators managed by the dynamic system."""
-    try:
-        indicators = await dynamic_indicator_manager.get_active_indicators_list()
-        return {
-            "success": True,
-            "indicators": indicators,
-            "count": len(indicators),
-            "message": f"Retrieved {len(indicators)} active indicators"
-        }
-    except Exception as e:
-        logger.error(f"Failed to get active indicators: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get active indicators: {str(e)}")
-
-@app.post("/api/indicators/add")
-async def add_custom_indicator(
-    name: str,
-    period: Optional[int] = None,
-    multiplier: Optional[float] = None,
-    std_dev: Optional[float] = None,
-    timeframe: str = "daily"
-):
-    """Manually add a custom indicator to the system."""
-    try:
-        # Build parameters based on inputs
-        params = {}
-        if period is not None:
-            params["period"] = period
-        if multiplier is not None:
-            params["multiplier"] = multiplier
-        if std_dev is not None:
-            params["std_dev"] = std_dev
-        
-        if not params:
-            raise HTTPException(
-                status_code=400, 
-                detail="At least one parameter (period, multiplier, std_dev) must be provided"
-            )
-        
-        success = await dynamic_indicator_manager.add_custom_indicator(name, params, timeframe)
-        
-        if success:
-            return {
-                "success": True,
-                "message": f"Successfully added {name} indicator with parameters {params}",
-                "indicator": {
-                    "name": name,
-                    "params": params,
-                    "timeframe": timeframe
-                }
-            }
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to add custom indicator"
-            )
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to add custom indicator: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to add custom indicator: {str(e)}")
-
-@app.post("/api/indicators/auto-calculate")
-async def trigger_auto_calculation(error_detail: str):
-    """Manually trigger auto-calculation for a missing indicator."""
-    try:
-        success = await dynamic_indicator_manager.auto_calculate_missing_indicator(error_detail)
-        
-        if success:
-            return {
-                "success": True,
-                "message": "Successfully auto-calculated missing indicator",
-                "error_detail": error_detail
-            }
-        else:
-            return {
-                "success": False,
-                "message": "Failed to auto-calculate missing indicator",
-                "error_detail": error_detail
-            }
-            
-    except Exception as e:
-        logger.error(f"Failed to trigger auto-calculation: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to trigger auto-calculation: {str(e)}")
-
-@app.get("/api/indicators/config")
-async def get_indicator_config():
-    """Get the complete indicator configuration."""
-    try:
-        return {
-            "success": True,
-            "active_indicators": list(dynamic_indicator_manager.active_indicators),
-            "indicator_definitions": dynamic_indicator_manager.indicator_definitions,
-            "total_count": len(dynamic_indicator_manager.active_indicators)
-        }
-    except Exception as e:
-        logger.error(f"Failed to get indicator config: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get indicator config: {str(e)}")
-
-# Query Processing with Auto-Calculation Wrapper
-@app.post("/api/query/smart")
-async def smart_query_with_auto_calculation(request: QueryRequest):
-    """
-    Smart query processor that automatically handles missing indicators.
-    
-    If indicators are missing, it will:
-    1. Auto-detect the missing indicators
-    2. Calculate them for all stocks
-    3. Permanently add them to the system
-    4. Execute the query
-    """
-    try:
-        # First, try the normal query
-        try:
-            return await process_query(request)
-        except HTTPException as e:
-            # Check if it's a validation error we can handle
-            if e.status_code == 400 and "Field validation failed" in str(e.detail):
-                error_detail = e.detail.get("details", "") if isinstance(e.detail, dict) else str(e.detail)
-                
-                logger.info(f"🔍 Query failed with validation error, attempting auto-calculation: {error_detail}")
-                
-                # Try to auto-calculate missing indicators
-                success, message = await dynamic_indicator_manager.handle_query_validation_error(e.detail)
-                
-                if success:
-                    logger.info(f"✅ Auto-calculation successful: {message}")
-                    # Retry the query
-                    return await process_query(request)
-                else:
-                    logger.error(f"❌ Auto-calculation failed: {message}")
-                    # Return enhanced error with auto-calculation attempt info
-                    raise HTTPException(
-                        status_code=400,
-                        detail={
-                            "error": "Query failed and auto-calculation was unsuccessful",
-                            "original_error": e.detail,
-                            "auto_calculation_result": message,
-                            "hint": "The query contains indicators that could not be automatically calculated"
-                        }
-                    )
-            else:
-                # Re-raise non-validation errors
-                raise
-                
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Smart query processing failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Smart query processing failed: {str(e)}")
-
-@app.get("/api/indicators/calculated")
-async def get_calculated_indicators():
-    """Get all calculated indicators with their metadata"""
-    try:
-        indicators = await indicator_metadata_service.get_all_calculated_indicators()
-        stats = await indicator_metadata_service.get_indicator_stats()
-        
-        return {
-            "success": True,
-            "indicators": indicators,
-            "stats": stats,
-            "message": f"Found {len(indicators)} calculated indicators"
-        }
-    except Exception as e:
-        logger.error(f"Error getting calculated indicators: {e}")
-        raise HTTPException(status_code=500, detail=f"Error retrieving indicators: {str(e)}")
-
-@app.get("/api/indicators/stats")
-async def get_indicator_statistics():
-    """Get statistics about calculated indicators"""
-    try:
-        stats = await indicator_metadata_service.get_indicator_stats()
-        return {
-            "success": True,
-            "stats": stats,
-            "message": "Indicator statistics retrieved successfully"
-        }
-    except Exception as e:
-        logger.error(f"Error getting indicator statistics: {e}")
-        raise HTTPException(status_code=500, detail=f"Error retrieving statistics: {str(e)}")
-
-@app.post("/api/indicators/check-query")
-async def check_query_indicators(request: QueryRequest):
-    """Analyze a query to identify required indicators without executing it"""
-    try:
-        from services.query_service import parse_query
-        from services.highspeed_query_validator import highspeed_query_validator
-        
-        query = request.query
-        if not query:
-            raise HTTPException(status_code=400, detail="Query is required")
-        
-        # Parse the query
-        parsed_query = parse_query(query)
-        
-        # Use the validator to identify required fields and missing indicators
-        validation_result = await highspeed_query_validator.validate_and_prepare_indicators(parsed_query)
-        
-        # Check which indicators exist in metadata
-        required_fields = validation_result.get("required_fields", [])
-        existing_indicators = []
-        missing_indicators = []
-        
-        for field in required_fields:
-            exists = await indicator_metadata_service.check_indicator_exists(field)
-            if exists:
-                existing_indicators.append(field)
-            else:
-                missing_indicators.append(field)
-        
-        return {
-            "success": True,
-            "query": query,
-            "parsed_query": parsed_query,
-            "required_fields": required_fields,
-            "existing_indicators": existing_indicators,
-            "missing_indicators": missing_indicators,
-            "validation_result": validation_result,
-            "message": f"Query analysis complete: {len(existing_indicators)} existing, {len(missing_indicators)} missing"
-        }
-        
-    except Exception as e:
-        logger.error(f"Error analyzing query: {e}")
-        raise HTTPException(status_code=500, detail=f"Error analyzing query: {str(e)}")
-
-# Background timer that logs to console periodically
 import threading
 import time as time_module
+import sys
 from datetime import datetime, time as datetime_time
 
 def background_timer_thread():
-    """Background thread to display periodic timer updates."""
-    last_log_time = 0
-    auto_start_attempted = False
+    """Background thread to display periodic timer updates and start cron jobs."""
+    last_detailed_log_time = 0
+    last_debug_log_time = 0
+    cron_started = False
     last_update_time = None
-    
+
     while True:
         try:
             current_time = time_module.time()
-            
-            # Log timer status every 10 seconds for better visibility
-            if current_time - last_log_time >= 10:
+
+            # Start latest candle cron job once (if enabled)
+            if not cron_started:
+                print("[TIMER] Background timer: Starting background services...")
+                sys.stdout.flush()
+                logger.info("[TIMER] Starting background services...")
+                latest_candle_updater.start_background_cron()
+                cron_started = True
+                print("[OK] Background timer: Cron job initialization completed")
+                sys.stdout.flush()
+
+            # DEBUG: Live timer every 5 seconds for debugging (if enabled)
+            if current_time - last_debug_log_time >= 10:
+                # Import debug timer setting
+                from services.latest_candle_updater import get_latest_candle_debug_timer
+
+                if get_latest_candle_debug_timer():
+                    now = datetime.now()
+
+                    # Check market hours
+                    current_time_obj = now.time()
+                    is_market_hours = (
+                        now.weekday() < 5 and  # Monday-Friday
+                        datetime_time(9, 15) <= current_time_obj <= datetime_time(15, 30)
+                    )
+
+                    # Get cron job status
+                    cron_status = latest_candle_updater.get_cron_status()
+
+                    if cron_status["enabled"]:
+                        interval = cron_status["interval_minutes"]
+                        last_update = cron_status["minutes_since_last_update"]
+                        cron_running = cron_status["running"]
+
+                        # Create countdown display
+                        if last_update is not None:
+                            time_to_next = interval - last_update
+                            if time_to_next > 0:
+                                countdown_mins = int(time_to_next)
+                                countdown_secs = int((time_to_next - countdown_mins) * 60)
+                                countdown_str = f"{countdown_mins:02d}:{countdown_secs:02d}"
+
+                                # Simple text progress instead of fancy bars
+                                progress = (interval - time_to_next) / interval * 100
+                                progress_str = f"Progress: {progress:.0f}%"
+                            else:
+                                countdown_str = "DUE NOW"
+                                progress_str = "Progress: 100%"
+                        else:
+                            countdown_str = "STARTING"
+                            progress_str = "Progress: 0%"
+
+                        # Status indicators
+                        market_indicator = "[OPEN]" if is_market_hours else "[CLOSED]"
+                        cron_indicator = "[RUNNING]" if cron_running else "[STOPPED]"
+
+                        # Print live debug timer to console
+                        print(f"[CRON] LIVE DEBUG | {now.strftime('%H:%M:%S')} | {market_indicator} | {cron_indicator} | Next: {countdown_str} | {progress_str}")
+                        sys.stdout.flush()
+                    else:
+                        print(f"[CRON] LIVE DEBUG | {now.strftime('%H:%M:%S')} | [DISABLED] CRON DISABLED")
+                        sys.stdout.flush()
+
+                last_debug_log_time = current_time
+
+            # Detailed log status every 30 seconds for better visibility in logs
+            if current_time - last_detailed_log_time >= 30:
                 now = datetime.now()
-                
+
                 # Check market hours
                 current_time_obj = now.time()
                 is_market_hours = (
                     now.weekday() < 5 and  # Monday-Friday
                     datetime_time(9, 15) <= current_time_obj <= datetime_time(15, 30)
                 )
-                
-                # Auto-start scheduler during market hours (once per session)
-                if is_market_hours and not latest_candle_updater.is_running and not auto_start_attempted:
-                    logger.info("🚀 MARKET IS OPEN - Auto-starting periodic candle updates...")
-                    logger.info("💡 Use: POST http://127.0.0.1:8001/api/start-periodic-updates")
-                    auto_start_attempted = True
-                
-                # Calculate next update time (every 2 minutes)
-                seconds_since_start = int(now.timestamp()) % 120  # 2 minutes = 120 seconds
-                seconds_to_next = 120 - seconds_since_start
-                minutes = seconds_to_next // 60
-                seconds = seconds_to_next % 60
-                
-                # Create progress bar
-                progress = (seconds_since_start / 120) * 100
-                bar_length = 15
-                filled = int(bar_length * progress / 100)
-                bar = "█" * filled + "░" * (bar_length - filled)
-                
+
+                # Get cron job status
+                cron_status = latest_candle_updater.get_cron_status()
+
                 # Status display
-                market_status = "🟢 OPEN" if is_market_hours else "🔴 CLOSED"
-                scheduler_status = "🔄 ACTIVE" if latest_candle_updater.is_running else "⏸️ STOPPED"
-                
-                logger.info(f"📊 LATEST CANDLE TIMER | {now.strftime('%H:%M:%S')} | Market: {market_status} | Scheduler: {scheduler_status}")
-                logger.info(f"⏳ Next Update: {minutes:02d}:{seconds:02d} | Progress: [{bar}] {int(progress)}%")
-                
-                last_log_time = current_time
-            
+                market_status = "[OPEN]" if is_market_hours else "[CLOSED]"
+                cron_status_display = "[RUNNING]" if cron_status["running"] else ("[DISABLED]" if not cron_status["enabled"] else "[STOPPED]")
+
+                # Log main status (add newline to separate from debug timer)
+                print()  # New line to separate from debug timer
+                logger.info(f"📊 BACKGROUND SERVICES | {now.strftime('%H:%M:%S')} | Market: {market_status}")
+
+                # Log cron job details if enabled
+                if cron_status["enabled"]:
+                    interval = cron_status["interval_minutes"]
+                    last_update = cron_status["minutes_since_last_update"]
+                    last_update_str = f"{last_update:.1f}m ago" if last_update else "Never"
+
+                    logger.info(f"[CRON] Latest Candle Cron: {cron_status_display} | Interval: {interval}m | Last: {last_update_str}")
+
+                    # Show next run countdown if running and we have a last update time
+                    if cron_status["running"] and last_update is not None:
+                        time_to_next = interval - last_update
+                        if time_to_next > 0:
+                            logger.info(f"⏳ Next candle update in: {time_to_next:.1f} minutes")
+                        else:
+                            logger.info(f"⏰ Candle update due now (overdue by {abs(time_to_next):.1f}m)")
+                else:
+                    logger.info("[CRON] Latest Candle Cron: DISABLED (set LATEST_CANDLE_CRON_ENABLED=true to enable)")
+
+                last_detailed_log_time = current_time
+
             time_module.sleep(1)
             
         except Exception as e:
@@ -5442,18 +4859,45 @@ if __name__ == "__main__":
     print(f"SSE Progress: GET http://127.0.0.1:8001/refreshdb-progress-stream")
     print(f"Latest Candle Updates: POST http://127.0.0.1:8001/api/start-periodic-updates")
     print("="*80)
-    print("LATEST CANDLE UPDATE SERVICE:")
-    print("   - Updates every 2 minutes during market hours (9:15 AM - 3:30 PM)")
-    print("   - Fetches only today's latest candle (size=1) for efficiency")
-    print("   - Timer status will appear in logs every 30 seconds")
+    print("LATEST CANDLE CRON JOB SERVICE:")
+
+    # Import the configuration functions to show current settings
+    from services.latest_candle_updater import (
+        get_latest_candle_cron_enabled,
+        get_latest_candle_cron_interval,
+        get_latest_candle_market_hours_only,
+        get_latest_candle_debug_timer
+    )
+
+    cron_enabled = get_latest_candle_cron_enabled()
+    cron_interval = get_latest_candle_cron_interval()
+    market_hours_only = get_latest_candle_market_hours_only()
+    debug_timer = get_latest_candle_debug_timer()
+
+    print(f"   - ENABLED: {cron_enabled}")
+    print(f"   - INTERVAL: {cron_interval} minutes")
+    print(f"   - MARKET HOURS ONLY: {market_hours_only}")
+    print(f"   - DEBUG TIMER: {debug_timer}")
+    print(f"   - FETCHES: Only today's latest candle (size=1) for efficiency")
+
+    if cron_enabled:
+        print("   [OK] Cron job will start automatically in background")
+        if debug_timer:
+            print("   [TIMER] Debug timer will show in console every 10 seconds")
+    else:
+        print("   [DISABLED] Cron job is DISABLED (set LATEST_CANDLE_CRON_ENABLED=true)")
+
     print("="*80)
-    print("Starting server... Timer logs will appear below:")
+    print("Starting server... Background services will start below:")
     print("="*80)
     sys.stdout.flush()
-    
+
     # Start background timer thread
+    print("[STARTUP] Starting background timer thread...")
     timer_thread = threading.Thread(target=background_timer_thread, daemon=True)
     timer_thread.start()
+    print("[OK] Background timer thread started")
+    sys.stdout.flush()
     
     # Simple uvicorn run without complex logging
     import uvicorn

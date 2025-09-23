@@ -577,20 +577,150 @@ class UltraFastDatabaseService:
             timeframe_count_col = f'total_{timeframe}_candles'
             
             # Atomic increment to get next key batch
+            # When inserting new row, start from batch_size - 1 (so first key is 0)
+            # When updating, add batch_size to existing value
             result = await conn.fetchrow(f"""
                 INSERT INTO symbol_latest_keys (symbol, {timeframe_key_col}, {timeframe_count_col})
-                VALUES ($1, $2, $2)
-                ON CONFLICT (symbol) 
+                VALUES ($1, $2 - 1, $2)
+                ON CONFLICT (symbol)
                 DO UPDATE SET
                     {timeframe_key_col} = symbol_latest_keys.{timeframe_key_col} + $2,
                     {timeframe_count_col} = symbol_latest_keys.{timeframe_count_col} + $2,
                     last_updated = CURRENT_TIMESTAMP
-                RETURNING {timeframe_key_col} - $2 as start_key
+                RETURNING
+                    CASE
+                        WHEN symbol_latest_keys.{timeframe_key_col} IS NULL OR symbol_latest_keys.{timeframe_key_col} = -1
+                        THEN 0
+                        ELSE symbol_latest_keys.{timeframe_key_col} - $2 + 1
+                    END as start_key
             """, symbol, batch_size)
             
             return result['start_key']
 
-    async def store_chunk_with_indicators(self, symbol: str, chunk_data: List[Dict], 
+    async def update_latest_candle(self, symbol: str, candle_data: Dict,
+                                 timeframe: str = 'daily') -> bool:
+        """
+        Update or insert today's latest candle for a symbol.
+        This is specifically for latest candle updates, not bulk data loading.
+
+        Args:
+            symbol: Stock symbol
+            candle_data: Single candle data dict
+            timeframe: Timeframe (daily, weekly, monthly)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not candle_data or not isinstance(candle_data, dict):
+            return False
+
+        try:
+            # Filter and validate OHLCV data
+            enhanced_data = self._filter_valid_ohlcv_data([candle_data], symbol)
+            if not enhanced_data:
+                logger.warning(f"No valid OHLCV data for latest candle update: {symbol}")
+                return False
+
+            candle = enhanced_data[0]
+            candle_timestamp = candle.get('timestamp', 0)
+            candle_datetime = datetime.fromtimestamp(candle_timestamp / 1000)
+            today_date = candle_datetime.date()
+
+            async with self.pool.acquire() as conn:
+                # Check if today's candle already exists for this symbol
+                existing_candle = await conn.fetchrow("""
+                    SELECT candle_key_id, candle_sequence_number
+                    FROM daily_candles
+                    WHERE symbol = $1 AND DATE(datetime) = $2
+                    ORDER BY candle_sequence_number DESC
+                    LIMIT 1
+                """, symbol, today_date)
+
+                if existing_candle:
+                    # Today's candle exists - UPDATE it
+                    candle_key_id = existing_candle['candle_key_id']
+                    sequence_number = existing_candle['candle_sequence_number']
+
+                    logger.debug(f"🔄 Updating existing candle for {symbol} on {today_date} (key: {candle_key_id})")
+
+                    await conn.execute("""
+                        UPDATE daily_candles SET
+                            timestamp = $1,
+                            datetime = $2,
+                            open = $3,
+                            high = $4,
+                            low = $5,
+                            close = $6,
+                            volume = $7,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE candle_key_id = $8
+                    """,
+                    candle_timestamp,
+                    candle_datetime,
+                    float(candle.get('open', 0)),
+                    float(candle.get('high', 0)),
+                    float(candle.get('low', 0)),
+                    float(candle.get('close', 0)),
+                    int(candle.get('volume', 0)),
+                    candle_key_id
+                    )
+
+                    logger.debug(f"✅ Updated existing candle for {symbol}: {candle_key_id}")
+
+                else:
+                    # Today's candle doesn't exist - CREATE it
+                    start_key = await self.get_next_key_batch(symbol, 1, timeframe)
+                    sequence_number = start_key
+                    candle_key_id = f"{symbol}_{sequence_number}"
+
+                    logger.debug(f"🆕 Creating new candle for {symbol} on {today_date} (key: {candle_key_id})")
+
+                    # Calculate day of week and assign monthly candle key
+                    day_of_week = (sequence_number % 5) + 1
+
+                    # Find monthly assignment
+                    monthly_assignments = await self._find_monthly_assignments_for_daily_candles_bulk(
+                        conn, [(symbol, candle_datetime)]
+                    )
+                    _, monthly_candle_key_id = monthly_assignments.get(
+                        (symbol, candle_datetime), (None, None)
+                    )
+
+                    await conn.execute("""
+                        INSERT INTO daily_candles
+                        (candle_key_id, symbol, candle_sequence_number, timestamp, datetime,
+                         open, high, low, close, volume, day_of_week, weekly_candle_key_id,
+                         indicators, monthly_candle_key_id)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                    """,
+                    candle_key_id,
+                    symbol,
+                    sequence_number,
+                    candle_timestamp,
+                    candle_datetime,
+                    float(candle.get('open', 0)),
+                    float(candle.get('high', 0)),
+                    float(candle.get('low', 0)),
+                    float(candle.get('close', 0)),
+                    int(candle.get('volume', 0)),
+                    day_of_week,
+                    None,  # weekly_candle_key_id
+                    '{}',  # empty indicators
+                    monthly_candle_key_id
+                    )
+
+                    logger.debug(f"✅ Created new candle for {symbol}: {candle_key_id}")
+
+                # Calculate OHLCV for the updated/inserted data
+                await self._calculate_ohlcv_for_symbol(conn, symbol)
+
+                return True
+
+        except Exception as e:
+            logger.error(f"❌ Failed to update latest candle for {symbol}: {e}")
+            return False
+
+    async def store_chunk_with_indicators(self, symbol: str, chunk_data: List[Dict],
                                         timeframe: str = 'daily') -> bool:
         """
         Store a chunk of processed data with indicators using new composite key structure.
