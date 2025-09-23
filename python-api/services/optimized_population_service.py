@@ -35,7 +35,7 @@ class OptimizedPopulationService:
                 port=self.high_speed_db.db_config['port'],
                 user=self.high_speed_db.db_config['user'],
                 password=self.high_speed_db.db_config['password'],
-                database='nse',
+                database='nse_highspeed',
                 min_size=2,
                 max_size=10
             )

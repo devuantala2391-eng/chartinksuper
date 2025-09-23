@@ -15,6 +15,7 @@ from typing import List, Dict, Any, Optional
 from .chartink_service import ChartinkService
 from .db_wrapper import db_wrapper as db_service
 from .ultra_fast_database_service import ultra_fast_db
+from .cron_indicator_calculator import cron_indicator_calculator
 # Removed STOCK_SYMBOLS import - now dynamically gets symbols from database
 
 logger = logging.getLogger(__name__)
@@ -411,8 +412,11 @@ class LatestCandleUpdater:
                         if monthly_result:
                             monthly_updated += 1
 
+                        # Update indicators for this symbol using cron stored procedures
+                        await self._update_indicators_for_symbol(symbol)
+
                     except Exception as e:
-                        logger.error(f"[ERROR] Failed to update weekly/monthly candles for {symbol}: {e}")
+                        logger.error(f"[ERROR] Failed to update weekly/monthly candles or indicators for {symbol}: {e}")
 
             end_time = datetime.now()
             duration = (end_time - start_time).total_seconds()
@@ -501,6 +505,41 @@ class LatestCandleUpdater:
             logger.error(f"[ERROR] Monthly candle update error for {symbol}: {e}")
             return False
 
+    async def _update_indicators_for_symbol(self, symbol: str) -> bool:
+        """
+        Update indicators for a specific symbol using cron stored procedures.
+        Calculates all indicators for all timeframes using incremental calculation.
+        """
+        try:
+            async with ultra_fast_db.get_connection() as conn:
+                # Calculate indicators for all timeframes
+                timeframes = ['daily', 'weekly', 'monthly']
+
+                for timeframe in timeframes:
+                    # Call the cron indicator calculation stored procedure
+                    results = await conn.fetch(
+                        "SELECT * FROM cron_calculate_all_indicators_for_symbol($1, $2)",
+                        symbol, timeframe
+                    )
+
+                    # Log indicator calculation results
+                    for result in results:
+                        if result['status'] in ['SUCCESS', 'FALLBACK']:
+                            logger.debug(f"[OK] {symbol} {timeframe} {result['indicator_name']}: {result['indicator_value']} ({result['execution_time_ms']}ms)")
+                        elif result['status'] == 'ERROR':
+                            logger.warning(f"[ERROR] {symbol} {timeframe} {result['indicator_name']}: {result['warning_message']}")
+
+                        # Log fallback warnings
+                        if result['status'] == 'FALLBACK' and result['warning_message']:
+                            logger.warning(f"[FALLBACK] {symbol} {timeframe} {result['indicator_name']}: {result['warning_message']}")
+
+                logger.debug(f"[OK] Indicators updated for {symbol} across all timeframes")
+                return True
+
+        except Exception as e:
+            logger.error(f"[ERROR] Indicator update error for {symbol}: {e}")
+            return False
+
     async def update_latest_candle_single_symbol(self, symbol: str) -> Dict[str, Any]:
         """
         Update latest candle for a single symbol.
@@ -533,6 +572,9 @@ class LatestCandleUpdater:
                 weekly_updated = await self._update_weekly_candles_for_symbol(symbol)
                 monthly_updated = await self._update_monthly_candles_for_symbol(symbol)
 
+                # Update indicators
+                indicators_updated = await self._update_indicators_for_symbol(symbol)
+
                 return {
                     "success": True,
                     "symbol": symbol,
@@ -540,6 +582,7 @@ class LatestCandleUpdater:
                     "daily_updated": True,
                     "weekly_updated": weekly_updated,
                     "monthly_updated": monthly_updated,
+                    "indicators_updated": indicators_updated,
                     "raw_result": results[symbol]
                 }
             else:

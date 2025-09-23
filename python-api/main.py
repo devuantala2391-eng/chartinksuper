@@ -4105,38 +4105,12 @@ async def _create_indicator_management_tables(high_speed_db):
             """)
             logger.info("   [OK] Created indicator_registry table")
             
-            # Create calculated_indicators table (used by indicator_metadata_service)  
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS calculated_indicators (
-                    id SERIAL PRIMARY KEY,
-                    indicator_key VARCHAR(100) UNIQUE NOT NULL,
-                    indicator_name VARCHAR(50) NOT NULL,
-                    timeframe VARCHAR(20) NOT NULL DEFAULT 'daily',
-                    parameters JSONB NOT NULL,
-                    calculation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    stocks_calculated INTEGER DEFAULT 0,
-                    total_candles_calculated INTEGER DEFAULT 0,
-                    status VARCHAR(20) DEFAULT 'active',
-                    description TEXT
-                )
-            """)
-            logger.info("   [OK] Created calculated_indicators table")
+            # calculated_indicators table removed - using indicator_registry as single source of truth
             
-            # Create performance indexes
+            # Create performance indexes for indicator_registry
             await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_calculated_indicators_key 
-                ON calculated_indicators(indicator_key)
-            """)
-            
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_calculated_indicators_name_timeframe 
-                ON calculated_indicators(indicator_name, timeframe)
-            """)
-            
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_calculated_indicators_status 
-                ON calculated_indicators(status)
+                CREATE INDEX IF NOT EXISTS idx_indicator_registry_config_key
+                ON indicator_registry(config_key)
             """)
             logger.info("   [OK] Created performance indexes for indicator tables")
             
@@ -4573,7 +4547,7 @@ async def hard_refresh_database():
                         
                         try:
                             # Calculate OHLCV for this symbol
-                            await high_speed_db._calculate_ohlcv_for_symbol(conn, symbol)
+                            await high_speed_db._calculate_ohlcv_for_symbol(symbol)
                             ohlcv_success_count += 1
                         except Exception as e:
                             logger.warning(f"OHLCV calculation failed for {symbol}: {e}")

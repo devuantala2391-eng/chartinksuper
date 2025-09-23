@@ -32,7 +32,7 @@ class UltraFastDatabaseService:
         self.db_config = {
             'host': os.getenv('POSTGRES_HOST', 'localhost'),
             'port': int(os.getenv('POSTGRES_PORT', '5432')),
-            'database': 'nse_highspeed',  # Use existing database with new structure
+            'database': os.getenv('POSTGRES_DB', 'nse_highspeed'),  # Use database from environment
             'user': os.getenv('POSTGRES_USER', 'postgres'),
             'password': os.getenv('POSTGRES_PASSWORD', '123'),
         }
@@ -712,7 +712,7 @@ class UltraFastDatabaseService:
                     logger.debug(f"✅ Created new candle for {symbol}: {candle_key_id}")
 
                 # Calculate OHLCV for the updated/inserted data
-                await self._calculate_ohlcv_for_symbol(conn, symbol)
+                await self._calculate_ohlcv_for_symbol(symbol)
 
                 return True
 
@@ -846,7 +846,7 @@ class UltraFastDatabaseService:
             logger.debug(f"✅ Stored chunk of {len(chunk_data)} candles for {symbol} (keys {start_key}-{start_key + len(chunk_data) - 1})")
             
             # Calculate OHLCV for the inserted data
-            await self._calculate_ohlcv_for_symbol(conn, symbol)
+            await self._calculate_ohlcv_for_symbol(symbol)
             
             return True
             
@@ -1830,11 +1830,12 @@ class UltraFastDatabaseService:
             logger.error(f"❌ OHLCV columns migration failed: {e}")
             # Don't raise - allow system to continue
 
-    async def _calculate_ohlcv_for_symbol(self, conn, symbol: str):
+    async def _calculate_ohlcv_for_symbol(self, symbol: str):
         """Calculate weekly and monthly OHLCV for a specific symbol using Python-native dynamic sliding window - replaces all stored procedures"""
-        try:
-            # Get all daily candles for this symbol with their weekly/monthly assignments
-            daily_candles = await conn.fetch("""
+        async with self.pool.acquire() as conn:
+            try:
+                # Get all daily candles for this symbol with their weekly/monthly assignments
+                daily_candles = await conn.fetch("""
                 SELECT 
                     candle_key_id, symbol, datetime, open, high, low, close, volume,
                     weekly_candle_key_id, monthly_candle_key_id
@@ -1842,102 +1843,102 @@ class UltraFastDatabaseService:
                 WHERE symbol = $1
                   AND (weekly_candle_key_id IS NOT NULL OR monthly_candle_key_id IS NOT NULL)
                 ORDER BY datetime
-            """, symbol)
-            
-            if not daily_candles:
-                logger.debug(f"No daily candles found for {symbol} with timeframe assignments")
-                return
-            
-            # Group by weekly periods and calculate OHLCV using dynamic sliding window
-            weekly_groups = {}
-            for candle in daily_candles:
-                if candle['weekly_candle_key_id']:
-                    key = candle['weekly_candle_key_id']
-                    if key not in weekly_groups:
-                        weekly_groups[key] = []
-                    weekly_groups[key].append(candle)
-            
-            # Group by monthly periods
-            monthly_groups = {}
-            for candle in daily_candles:
-                if candle['monthly_candle_key_id']:
-                    key = candle['monthly_candle_key_id']
-                    if key not in monthly_groups:
-                        monthly_groups[key] = []
-                    monthly_groups[key].append(candle)
-            
-            weekly_updates = 0
-            monthly_updates = 0
-            
-            # Calculate weekly OHLCV with dynamic sliding window
-            for weekly_key, group_candles in weekly_groups.items():
-                # Sort by datetime to ensure proper sliding window calculation
-                group_candles.sort(key=lambda x: x['datetime'])
-                
-                for i, current_candle in enumerate(group_candles):
-                    # Dynamic sliding window: use all candles from start of week up to current day
-                    window_candles = group_candles[:i+1]
-                    
-                    # Calculate OHLCV for current day's sliding window
-                    weekly_open = window_candles[0]['open']  # First day's open
-                    weekly_high = max(c['high'] for c in window_candles)  # Max high up to current day
-                    weekly_low = min(c['low'] for c in window_candles)   # Min low up to current day
-                    weekly_close = current_candle['close']  # Current day's close
-                    weekly_volume = sum(c['volume'] for c in window_candles)  # Cumulative volume
-                    
-                    # Update the current candle with weekly OHLCV
-                    await conn.execute("""
-                        UPDATE daily_candles 
-                        SET 
-                            weekly_open = $1,
-                            weekly_high = $2,
-                            weekly_low = $3,
-                            weekly_close = $4,
-                            weekly_volume = $5,
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE candle_key_id = $6
-                    """, weekly_open, weekly_high, weekly_low, weekly_close, 
-                        weekly_volume, current_candle['candle_key_id'])
-                    weekly_updates += 1
-            
-            # Calculate monthly OHLCV with dynamic sliding window
-            for monthly_key, group_candles in monthly_groups.items():
-                # Sort by datetime to ensure proper sliding window calculation
-                group_candles.sort(key=lambda x: x['datetime'])
-                
-                for i, current_candle in enumerate(group_candles):
-                    # Dynamic sliding window: use all candles from start of month up to current day
-                    window_candles = group_candles[:i+1]
-                    
-                    # Calculate OHLCV for current day's sliding window
-                    monthly_open = window_candles[0]['open']  # First day's open
-                    monthly_high = max(c['high'] for c in window_candles)  # Max high up to current day
-                    monthly_low = min(c['low'] for c in window_candles)   # Min low up to current day
-                    monthly_close = current_candle['close']  # Current day's close
-                    monthly_volume = sum(c['volume'] for c in window_candles)  # Cumulative volume
-                    
-                    # Update the current candle with monthly OHLCV
-                    await conn.execute("""
-                        UPDATE daily_candles 
-                        SET 
-                            monthly_open = $1,
-                            monthly_high = $2,
-                            monthly_low = $3,
-                            monthly_close = $4,
-                            monthly_volume = $5,
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE candle_key_id = $6
-                    """, monthly_open, monthly_high, monthly_low, monthly_close, 
-                        monthly_volume, current_candle['candle_key_id'])
-                    monthly_updates += 1
-            
-            if weekly_updates > 0 or monthly_updates > 0:
-                logger.debug(f"[SUCCESS] Python-native OHLCV: Updated {weekly_updates} weekly + {monthly_updates} monthly rows for {symbol}")
-                
-        except Exception as e:
-            # Log error but don't fail the entire data insertion
-            logger.warning(f"[WARNING] Python-native OHLCV calculation failed for {symbol}: {e}")
-            pass
+                """, symbol)
+
+                if not daily_candles:
+                    logger.debug(f"No daily candles found for {symbol} with timeframe assignments")
+                    return
+
+                # Group by weekly periods and calculate OHLCV using dynamic sliding window
+                weekly_groups = {}
+                for candle in daily_candles:
+                    if candle['weekly_candle_key_id']:
+                        key = candle['weekly_candle_key_id']
+                        if key not in weekly_groups:
+                            weekly_groups[key] = []
+                        weekly_groups[key].append(candle)
+
+                # Group by monthly periods
+                monthly_groups = {}
+                for candle in daily_candles:
+                    if candle['monthly_candle_key_id']:
+                        key = candle['monthly_candle_key_id']
+                        if key not in monthly_groups:
+                            monthly_groups[key] = []
+                        monthly_groups[key].append(candle)
+
+                weekly_updates = 0
+                monthly_updates = 0
+
+                # Calculate weekly OHLCV with dynamic sliding window
+                for weekly_key, group_candles in weekly_groups.items():
+                    # Sort by datetime to ensure proper sliding window calculation
+                    group_candles.sort(key=lambda x: x['datetime'])
+
+                    for i, current_candle in enumerate(group_candles):
+                        # Dynamic sliding window: use all candles from start of week up to current day
+                        window_candles = group_candles[:i+1]
+
+                        # Calculate OHLCV for current day's sliding window
+                        weekly_open = window_candles[0]['open']  # First day's open
+                        weekly_high = max(c['high'] for c in window_candles)  # Max high up to current day
+                        weekly_low = min(c['low'] for c in window_candles)   # Min low up to current day
+                        weekly_close = current_candle['close']  # Current day's close
+                        weekly_volume = sum(c['volume'] for c in window_candles)  # Cumulative volume
+
+                        # Update the current candle with weekly OHLCV
+                        await conn.execute("""
+                            UPDATE daily_candles
+                            SET
+                                weekly_open = $1,
+                                weekly_high = $2,
+                                weekly_low = $3,
+                                weekly_close = $4,
+                                weekly_volume = $5,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE candle_key_id = $6
+                        """, weekly_open, weekly_high, weekly_low, weekly_close,
+                            weekly_volume, current_candle['candle_key_id'])
+                        weekly_updates += 1
+
+                # Calculate monthly OHLCV with dynamic sliding window
+                for monthly_key, group_candles in monthly_groups.items():
+                    # Sort by datetime to ensure proper sliding window calculation
+                    group_candles.sort(key=lambda x: x['datetime'])
+
+                    for i, current_candle in enumerate(group_candles):
+                        # Dynamic sliding window: use all candles from start of month up to current day
+                        window_candles = group_candles[:i+1]
+
+                        # Calculate OHLCV for current day's sliding window
+                        monthly_open = window_candles[0]['open']  # First day's open
+                        monthly_high = max(c['high'] for c in window_candles)  # Max high up to current day
+                        monthly_low = min(c['low'] for c in window_candles)   # Min low up to current day
+                        monthly_close = current_candle['close']  # Current day's close
+                        monthly_volume = sum(c['volume'] for c in window_candles)  # Cumulative volume
+
+                        # Update the current candle with monthly OHLCV
+                        await conn.execute("""
+                            UPDATE daily_candles
+                            SET
+                                monthly_open = $1,
+                                monthly_high = $2,
+                                monthly_low = $3,
+                                monthly_close = $4,
+                                monthly_volume = $5,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE candle_key_id = $6
+                        """, monthly_open, monthly_high, monthly_low, monthly_close,
+                            monthly_volume, current_candle['candle_key_id'])
+                        monthly_updates += 1
+
+                if weekly_updates > 0 or monthly_updates > 0:
+                    logger.debug(f"[SUCCESS] Python-native OHLCV: Updated {weekly_updates} weekly + {monthly_updates} monthly rows for {symbol}")
+
+            except Exception as e:
+                # Log error but don't fail the entire data insertion
+                logger.warning(f"[WARNING] Python-native OHLCV calculation failed for {symbol}: {e}")
+                pass
 
     async def _check_and_apply_migrations(self):
         """Check and apply database migrations (stored procedures)"""

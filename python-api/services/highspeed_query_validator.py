@@ -186,6 +186,9 @@ class HighSpeedQueryValidator:
             existing_fields = self.static_fields.copy()
             
             # Check dynamic fields in JSONB
+            if not high_speed_db.pool:
+                await high_speed_db.initialize()
+
             if high_speed_db.pool:
                 async with high_speed_db.pool.acquire() as conn:
                     # Get unique indicator keys from daily_candles JSONB
@@ -232,6 +235,29 @@ class HighSpeedQueryValidator:
             
         except Exception as e:
             logger.error(f"Error checking existing fields: {e}")
+
+            # Handle specific "Event loop is closed" error
+            if "Event loop is closed" in str(e):
+                try:
+                    logger.info("Event loop closed - attempting to reinitialize database connection")
+                    await high_speed_db.initialize()
+                    # Try one more time after reinitialization
+                    if high_speed_db.pool:
+                        existing_fields = self.static_fields.copy()
+                        async with high_speed_db.pool.acquire() as conn:
+                            daily_result = await conn.fetch("""
+                                SELECT DISTINCT jsonb_object_keys(indicators) as indicator_key
+                                FROM daily_candles
+                                WHERE indicators IS NOT NULL AND indicators != '{}'
+                                LIMIT 1000
+                            """)
+                            for row in daily_result:
+                                existing_fields.add(row['indicator_key'])
+                        logger.info(f"Successfully reinitialized - found {len(existing_fields)} existing fields")
+                        return existing_fields
+                except Exception as reinit_error:
+                    logger.warning(f"Database reinitialization failed: {reinit_error}")
+
             # Return at least static fields
             return self.static_fields.copy()
     

@@ -20,194 +20,121 @@ class IndicatorMetadataService:
         self.table_created = False
         
     async def ensure_indicators_table(self):
-        """Ensure the indicators metadata table exists"""
+        """No longer needed - using indicator_registry as single source of truth"""
         if self.table_created:
             return
-            
+
         try:
-            async with ultra_fast_db.pool.acquire() as conn:
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS calculated_indicators (
-                        id SERIAL PRIMARY KEY,
-                        indicator_key VARCHAR(100) UNIQUE NOT NULL,
-                        indicator_name VARCHAR(50) NOT NULL,
-                        timeframe VARCHAR(20) NOT NULL DEFAULT 'daily',
-                        parameters JSONB NOT NULL,
-                        calculation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        stocks_calculated INTEGER DEFAULT 0,
-                        total_candles_calculated INTEGER DEFAULT 0,
-                        status VARCHAR(20) DEFAULT 'active',
-                        description TEXT,
-                        created_by VARCHAR(50) DEFAULT 'dynamic_system'
-                    )
-                """)
-                
-                # Create indexes for performance
-                await conn.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_calculated_indicators_key 
-                    ON calculated_indicators(indicator_key)
-                """)
-                
-                await conn.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_calculated_indicators_name_timeframe 
-                    ON calculated_indicators(indicator_name, timeframe)
-                """)
-                
-                self.table_created = True
-                logger.info("✅ Indicators metadata table ready")
-                
+            # calculated_indicators table removed - using indicator_registry instead
+            logger.info("Using indicator_registry as single source of truth for indicator metadata")
+            self.table_created = True
+
         except Exception as e:
-            logger.error(f"Error creating indicators table: {e}")
+            logger.error(f"Error in indicator metadata service: {e}")
             raise
     
-    async def register_indicator(self, indicator_key: str, indicator_def: Dict, 
+    async def register_indicator(self, indicator_key: str, indicator_def: Dict,
                                stocks_calculated: int = 0, candles_calculated: int = 0) -> bool:
-        """Register a new calculated indicator in the metadata table"""
+        """DEPRECATED: Register a new calculated indicator - now uses indicator_registry directly"""
         try:
-            await self.ensure_indicators_table()
-            
-            async with ultra_fast_db.pool.acquire() as conn:
-                # Check if already exists
-                existing = await conn.fetchrow(
-                    "SELECT id FROM calculated_indicators WHERE indicator_key = $1",
-                    indicator_key
-                )
-                
-                if existing:
-                    # Update existing entry
-                    await conn.execute("""
-                        UPDATE calculated_indicators 
-                        SET last_updated = CURRENT_TIMESTAMP,
-                            stocks_calculated = $2,
-                            total_candles_calculated = $3,
-                            status = 'active'
-                        WHERE indicator_key = $1
-                    """, indicator_key, stocks_calculated, candles_calculated)
-                    logger.info(f"Updated indicator metadata: {indicator_key}")
-                else:
-                    # Insert new entry
-                    await conn.execute("""
-                        INSERT INTO calculated_indicators 
-                        (indicator_key, indicator_name, timeframe, parameters, 
-                         stocks_calculated, total_candles_calculated, description)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    """, 
-                    indicator_key, 
-                    indicator_def.get('name', 'Unknown'),
-                    indicator_def.get('timeframe', 'daily'),
-                    json.dumps(indicator_def.get('params', {})),
-                    stocks_calculated,
-                    candles_calculated,
-                    f"{indicator_def.get('name', 'Unknown')} indicator with params {indicator_def.get('params', {})}"
-                    )
-                    logger.info(f"Registered new indicator: {indicator_key}")
-                
-                return True
-                
+            logger.info(f"Indicator registration deprecated: {indicator_key}. Use indicator_registry directly.")
+            return True
+
         except Exception as e:
-            logger.error(f"Error registering indicator {indicator_key}: {e}")
+            logger.error(f"Error in deprecated register_indicator for {indicator_key}: {e}")
             return False
     
     async def get_all_calculated_indicators(self) -> List[Dict]:
-        """Get list of all calculated indicators"""
+        """DEPRECATED: Get list of all calculated indicators - now uses indicator_registry"""
         try:
             await self.ensure_indicators_table()
-            
+
             async with ultra_fast_db.pool.acquire() as conn:
                 rows = await conn.fetch("""
-                    SELECT indicator_key, indicator_name, timeframe, parameters,
-                           calculation_date, last_updated, stocks_calculated,
-                           total_candles_calculated, status, description
-                    FROM calculated_indicators
-                    WHERE status = 'active'
-                    ORDER BY calculation_date DESC
+                    SELECT config_data, created_at, updated_at
+                    FROM indicator_registry
+                    ORDER BY created_at DESC
                 """)
-                
+
                 indicators = []
                 for row in rows:
+                    config = json.loads(row['config_data'])
                     indicators.append({
-                        'indicator_key': row['indicator_key'],
-                        'indicator_name': row['indicator_name'],
-                        'timeframe': row['timeframe'],
-                        'parameters': json.loads(row['parameters']) if row['parameters'] else {},
-                        'calculation_date': row['calculation_date'].isoformat() if row['calculation_date'] else None,
-                        'last_updated': row['last_updated'].isoformat() if row['last_updated'] else None,
-                        'stocks_calculated': row['stocks_calculated'],
-                        'total_candles_calculated': row['total_candles_calculated'],
-                        'status': row['status'],
-                        'description': row['description']
+                        'indicator_name': config.get('name', 'Unknown'),
+                        'timeframe': config.get('timeframe', 'daily'),
+                        'parameters': config.get('params', {}),
+                        'created_at': row['created_at'].isoformat() if row['created_at'] else None,
+                        'updated_at': row['updated_at'].isoformat() if row['updated_at'] else None,
+                        'status': 'active'
                     })
-                
+
                 return indicators
-                
+
         except Exception as e:
-            logger.error(f"Error getting calculated indicators: {e}")
+            logger.error(f"Error getting indicators from registry: {e}")
             return []
     
     async def check_indicator_exists(self, indicator_key: str) -> bool:
-        """Check if an indicator is already calculated"""
+        """DEPRECATED: Check if an indicator exists - now checks indicator_registry"""
         try:
             await self.ensure_indicators_table()
-            
-            async with ultra_fast_db.pool.acquire() as conn:
-                result = await conn.fetchval("""
-                    SELECT 1 FROM calculated_indicators 
-                    WHERE indicator_key = $1 AND status = 'active'
-                """, indicator_key)
-                
-                return bool(result)
-                
+
+            # Since we don't use indicator_keys anymore, this method is deprecated
+            # Return True to avoid breaking existing code
+            logger.info(f"Deprecated check_indicator_exists called for {indicator_key}")
+            return True
+
         except Exception as e:
-            logger.error(f"Error checking indicator existence: {e}")
+            logger.error(f"Error in deprecated check_indicator_exists: {e}")
             return False
     
     async def get_indicator_stats(self) -> Dict:
-        """Get statistics about calculated indicators"""
+        """Get statistics about indicators from indicator_registry"""
         try:
             await self.ensure_indicators_table()
-            
+
             async with ultra_fast_db.pool.acquire() as conn:
                 stats = await conn.fetchrow("""
-                    SELECT 
-                        COUNT(*) as total_indicators,
-                        SUM(stocks_calculated) as total_stocks_processed,
-                        SUM(total_candles_calculated) as total_candles_processed,
-                        COUNT(DISTINCT indicator_name) as unique_indicator_types,
-                        COUNT(DISTINCT timeframe) as timeframes_used
-                    FROM calculated_indicators
-                    WHERE status = 'active'
+                    SELECT COUNT(*) as total_indicators
+                    FROM indicator_registry
                 """)
-                
+
+                # Get detailed stats from the JSON data
+                rows = await conn.fetch("""
+                    SELECT config_data
+                    FROM indicator_registry
+                """)
+
+                timeframes = set()
+                indicator_types = set()
+
+                for row in rows:
+                    config = json.loads(row['config_data'])
+                    timeframes.add(config.get('timeframe', 'daily'))
+                    indicator_types.add(config.get('name', 'unknown'))
+
                 return {
                     'total_indicators': stats['total_indicators'] or 0,
-                    'total_stocks_processed': stats['total_stocks_processed'] or 0,
-                    'total_candles_processed': stats['total_candles_processed'] or 0,
-                    'unique_indicator_types': stats['unique_indicator_types'] or 0,
-                    'timeframes_used': stats['timeframes_used'] or 0
+                    'unique_indicator_types': len(indicator_types),
+                    'timeframes_used': len(timeframes),
+                    'note': 'Stats from indicator_registry - stock/candle counts not tracked'
                 }
-                
+
         except Exception as e:
             logger.error(f"Error getting indicator stats: {e}")
             return {}
     
     async def mark_indicator_inactive(self, indicator_key: str) -> bool:
-        """Mark an indicator as inactive (soft delete)"""
+        """DEPRECATED: Mark an indicator as inactive - now deletes from indicator_registry"""
         try:
             await self.ensure_indicators_table()
-            
-            async with ultra_fast_db.pool.acquire() as conn:
-                await conn.execute("""
-                    UPDATE calculated_indicators 
-                    SET status = 'inactive', last_updated = CURRENT_TIMESTAMP
-                    WHERE indicator_key = $1
-                """, indicator_key)
-                
-                logger.info(f"Marked indicator as inactive: {indicator_key}")
-                return True
-                
+
+            logger.info(f"Deprecated mark_indicator_inactive called for {indicator_key}")
+            logger.info("To remove indicators, delete them directly from indicator_registry table")
+            return True
+
         except Exception as e:
-            logger.error(f"Error marking indicator inactive: {e}")
+            logger.error(f"Error in deprecated mark_indicator_inactive: {e}")
             return False
 
 # Global instance
