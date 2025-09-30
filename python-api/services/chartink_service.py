@@ -33,23 +33,25 @@ logger = logging.getLogger(__name__)
 
 class ChartinkService:
     def __init__(self):
-        self.timeout = 5.0  # Reduced timeout for speed
-        self.max_retries = 1  # Minimal retries for speed
-        
+        self.timeout = 10.0  # Balanced timeout
+        self.max_retries = 1  # Reduce retries for speed
+
         # Create a shared SSL context to avoid repeated SSL setup
         self.ssl_context = ssl.create_default_context()
         self.ssl_context.check_hostname = True
         self.ssl_context.verify_mode = ssl.CERT_REQUIRED
-        
-        # Create optimized client limits
+
+        # Create optimized client limits for ultra-fast processing
         self.client_limits = httpx.Limits(
-            max_keepalive_connections=20,  # Sufficient for concurrent requests
-            max_connections=100,  # Higher limit for concurrent requests
+            max_keepalive_connections=25,  # Per client limit
+            max_connections=30,  # Per client limit
             keepalive_expiry=300.0  # Longer keepalive
         )
-        
-        # Use a single shared client instead of pool
-        self.shared_client = None
+
+        # Use multiple client pools for better parallelism
+        self.num_clients = 5  # 5 clients x 25 connections = 125 total
+        self.client_pool = []
+        self.client_index = 0
         self.client_lock = asyncio.Lock()  # Async lock for client access
         self.base_headers = {
             'accept': 'application/json, text/plain, */*',
@@ -71,26 +73,36 @@ class ChartinkService:
         }
     
     async def get_client(self):
-        """Get the shared client, creating it if necessary."""
+        """Get a client from the pool, creating if necessary."""
+        # Initialize pool if empty
+        if not self.client_pool:
+            async with self.client_lock:
+                if not self.client_pool:  # Double-check
+                    for _ in range(self.num_clients):
+                        client = httpx.AsyncClient(
+                            timeout=self.timeout,
+                            limits=self.client_limits,
+                            headers=self.base_headers,
+                            verify=self.ssl_context  # Use shared SSL context
+                        )
+                        self.client_pool.append(client)
+
+        # Round-robin client selection for load balancing
         async with self.client_lock:
-            if self.shared_client is None:
-                self.shared_client = httpx.AsyncClient(
-                    timeout=self.timeout,
-                    limits=self.client_limits,
-                    headers=self.base_headers,
-                    verify=self.ssl_context  # Use shared SSL context
-                )
-            return self.shared_client
+            client = self.client_pool[self.client_index]
+            self.client_index = (self.client_index + 1) % self.num_clients
+            return client
     
     async def close_client(self):
-        """Close the shared client."""
+        """Close all clients in the pool."""
         async with self.client_lock:
-            if self.shared_client:
-                await self.shared_client.aclose()
-                self.shared_client = None
-    
+            for client in self.client_pool:
+                await client.aclose()
+            self.client_pool = []
+            self.client_index = 0
+
     async def close_all_clients(self):
-        """Close all clients (alias for close_client since we use a single shared client)."""
+        """Close all clients in the pool."""
         await self.close_client()
 
     async def fetch_stock_data(self, symbol: str, size: int = None) -> Dict[str, Any]:
@@ -98,8 +110,8 @@ class ChartinkService:
         if size is None:
             size = get_default_candle_count()
         
-        # Log the API request for debugging
-        print(f"[API REQUEST] Fetching {symbol} with size={size}")
+        # Log the API request for debugging (only in verbose mode)
+        # print(f"[API REQUEST] Fetching {symbol} with size={size}")
         
         query_string = "select high, low, open, close, volume"
         
@@ -137,14 +149,14 @@ class ChartinkService:
                         # Don't log client errors (like invalid symbols) as they're expected
                         pass
                     else:
-                        print(f"[ERROR] Failed to fetch {symbol} after {self.max_retries} attempts: {error}")
+                        logger.debug(f"Failed to fetch {symbol} after {self.max_retries} attempts: {error}")
                     raise
                 
                 # Don't retry client errors, but do retry server errors
                 if is_client_error:
                     raise
 
-    async def process_single_symbol(self, symbol: str, size: int = None, progress_callback=None) -> Dict[str, str]:
+    async def process_single_symbol(self, symbol: str, size: int = None, progress_callback=None, return_data: bool = False) -> Dict[str, Any]:
         """Process a single symbol and save stock data."""
         if size is None:
             size = get_default_candle_count()
@@ -163,6 +175,19 @@ class ChartinkService:
                 # Process and map the data
                 mapped_data = self._map_response_data(response_data)
 
+                # If return_data is True, return the data instead of saving
+                if return_data:
+                    # Return the actual candle data for bulk processing
+                    if mapped_data:
+                        # Call progress callback if provided
+                        if progress_callback:
+                            await progress_callback(symbol, True)
+                        return {symbol: mapped_data[0] if len(mapped_data) == 1 else mapped_data}
+                    else:
+                        if progress_callback:
+                            await progress_callback(symbol, False)
+                        return {symbol: None}
+
                 # Choose the right save method based on whether this is latest candle update (size=1) or bulk loading
                 if attempt_size == 1 and len(mapped_data) == 1:
                     # This is a latest candle update - use the update method
@@ -170,19 +195,19 @@ class ChartinkService:
                 else:
                     # This is bulk loading - use the traditional method
                     success = await db_service.save_candles(symbol, mapped_data)
-                
+
                 if not success:
                     logger.error(f"Failed to save {symbol} to database")
                     return {symbol: f"Database save failed for {len(mapped_data)} records"}
-                
+
                 # Log if we had to use a smaller size
                 if attempt_size < size:
                     print(f"[INFO] {symbol}: Fetched {len(mapped_data)} records with reduced size {attempt_size} (original: {size})")
-                
+
                 # Call progress callback if provided
                 if progress_callback:
                     await progress_callback(symbol, True)
-                
+
                 return {symbol: f"Success: {len(mapped_data)} records (size: {attempt_size})"}
                 
             except Exception as error:
@@ -213,7 +238,7 @@ class ChartinkService:
                     
                     return {symbol: error_msg}
 
-    async def process_payload(self, payload: List[List[str]], concurrent_limit: int = None, progress_callback=None, size: int = None) -> Dict[str, str]:
+    async def process_payload(self, payload: List[List[str]], concurrent_limit: int = None, progress_callback=None, size: int = None, return_data: bool = False) -> Dict[str, Any]:
         """Process symbols with controlled concurrency using semaphore."""
         from datetime import datetime
         size = size or get_default_size()  # Use provided size or default from env
@@ -232,7 +257,9 @@ class ChartinkService:
         print(f"\n[CHARTINK] Starting concurrent processing of {len(symbols)} symbols...")
         
         # Use semaphore to limit concurrent requests
-        semaphore = asyncio.Semaphore(20)  # Reasonable concurrency limit
+        # Use provided concurrent_limit or default to high value for maximum speed
+        concurrent_limit = concurrent_limit or 100  # High concurrency for ultra-fast processing
+        semaphore = asyncio.Semaphore(concurrent_limit)
         results = {}
         
         processed_count = 0
@@ -241,7 +268,7 @@ class ChartinkService:
             nonlocal processed_count
             async with semaphore:
                 try:
-                    result = await self.process_single_symbol(symbol, size, progress_callback)
+                    result = await self.process_single_symbol(symbol, size, progress_callback, return_data)
                     results.update(result)
                     processed_count += 1
                     if processed_count % 50 == 0:

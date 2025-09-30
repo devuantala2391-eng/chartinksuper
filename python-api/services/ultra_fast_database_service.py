@@ -74,41 +74,56 @@ class UltraFastDatabaseService:
 
         return extracted
 
-    async def initialize(self):
+    async def initialize(self, min_connections=None, max_connections=None, command_timeout=None):
         """Initialize ultra-fast database with optimized settings"""
+        logger.debug(f"ultra_fast_db.initialize() called, current initialized flag: {self.initialized}")
+
         if self.initialized:
-            return
-        
+            logger.debug("Already initialized, returning True")
+            return True
+
         async with self._init_lock:
             if self.initialized:
-                return
-                
+                logger.debug("Already initialized (after lock), returning True")
+                return True
+
             try:
+                logger.debug("Starting initialization process...")
                 # Create database if not exists
                 await self._create_database_if_not_exists()
-                
+
+                # Override pool config if provided (for ultra-fast cron)
+                pool_config = self.pool_config.copy()
+                if min_connections:
+                    pool_config['min_size'] = min_connections
+                if max_connections:
+                    pool_config['max_size'] = max_connections
+                if command_timeout:
+                    pool_config['command_timeout'] = command_timeout
+
                 # Create optimized connection pool
                 self.pool = await asyncpg.create_pool(
                     **self.db_config,
-                    **self.pool_config,
+                    **pool_config,
                     setup=self._setup_connection,
                     server_settings={
                         'application_name': 'ultra_fast_stocks_service',
                         'jit': 'off'
                     }
                 )
-                
+
                 # Create unified table structure
                 await self._create_unified_tables()
-                
+
                 # IMPORTANT: Do NOT apply migrations during normal initialization
                 # Migrations should ONLY be applied during hard-refresh
                 # This prevents unwanted table modifications when queries trigger indicator calculations
                 # await self._check_and_apply_migrations()  # DISABLED - only run during hard refresh
-                
+
                 self.initialized = True
                 logger.info(f"🚀 Ultra-fast database initialized with {self.max_connections} max connections")
-                
+                return True
+
             except Exception as e:
                 logger.error(f"Failed to initialize ultra-fast database: {e}")
                 raise
@@ -719,6 +734,146 @@ class UltraFastDatabaseService:
         except Exception as e:
             logger.error(f"❌ Failed to update latest candle for {symbol}: {e}")
             return False
+
+    async def bulk_update_latest_candles(self, candles_batch: List[Tuple[str, Dict]],
+                                        timeframe: str = 'daily') -> Dict[str, bool]:
+        """
+        Bulk update latest candles for multiple symbols in a single database transaction.
+        Optimized for cron job performance with batch processing.
+
+        Args:
+            candles_batch: List of (symbol, candle_data) tuples
+            timeframe: Timeframe (daily, weekly, monthly)
+
+        Returns:
+            Dict mapping symbol to success status
+        """
+        if not candles_batch:
+            return {}
+
+        results = {}
+
+        try:
+            async with self.pool.acquire() as conn:
+                # Start a transaction for atomic batch processing
+                async with conn.transaction():
+                    # Prepare batch data
+                    updates = []
+                    inserts = []
+
+                    for symbol, candle_data in candles_batch:
+                        if not candle_data or not isinstance(candle_data, dict):
+                            results[symbol] = False
+                            continue
+
+                        # Filter and validate OHLCV data
+                        enhanced_data = self._filter_valid_ohlcv_data([candle_data], symbol)
+                        if not enhanced_data:
+                            logger.warning(f"No valid OHLCV data for {symbol}")
+                            results[symbol] = False
+                            continue
+
+                        candle = enhanced_data[0]
+                        candle_timestamp = candle.get('timestamp', 0)
+                        candle_datetime = datetime.fromtimestamp(candle_timestamp / 1000)
+                        today_date = candle_datetime.date()
+
+                        # Check if today's candle exists (batch check)
+                        existing_candle = await conn.fetchrow("""
+                            SELECT candle_key_id, candle_sequence_number
+                            FROM daily_candles
+                            WHERE symbol = $1 AND DATE(datetime) = $2
+                            ORDER BY candle_sequence_number DESC
+                            LIMIT 1
+                        """, symbol, today_date)
+
+                        if existing_candle:
+                            # Prepare UPDATE
+                            updates.append((
+                                candle_timestamp,
+                                candle_datetime,
+                                float(candle.get('open', 0)),
+                                float(candle.get('high', 0)),
+                                float(candle.get('low', 0)),
+                                float(candle.get('close', 0)),
+                                int(candle.get('volume', 0)),
+                                existing_candle['candle_key_id']
+                            ))
+                        else:
+                            # Prepare INSERT
+                            start_key = await self.get_next_key_batch(symbol, 1, timeframe)
+                            sequence_number = start_key
+                            candle_key_id = f"{symbol}_{sequence_number}"
+                            day_of_week = (sequence_number % 5) + 1
+
+                            # Find monthly assignment
+                            monthly_assignments = await self._find_monthly_assignments_for_daily_candles_bulk(
+                                conn, [(symbol, candle_datetime)]
+                            )
+                            _, monthly_candle_key_id = monthly_assignments.get(
+                                (symbol, candle_datetime), (None, None)
+                            )
+
+                            inserts.append((
+                                candle_key_id,
+                                symbol,
+                                sequence_number,
+                                candle_timestamp,
+                                candle_datetime,
+                                float(candle.get('open', 0)),
+                                float(candle.get('high', 0)),
+                                float(candle.get('low', 0)),
+                                float(candle.get('close', 0)),
+                                int(candle.get('volume', 0)),
+                                day_of_week,
+                                None,  # weekly_candle_key_id
+                                '{}',  # empty indicators
+                                monthly_candle_key_id
+                            ))
+
+                    # Execute bulk UPDATE
+                    if updates:
+                        await conn.executemany("""
+                            UPDATE daily_candles SET
+                                timestamp = $1,
+                                datetime = $2,
+                                open = $3,
+                                high = $4,
+                                low = $5,
+                                close = $6,
+                                volume = $7,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE candle_key_id = $8
+                        """, updates)
+                        logger.info(f"✅ Bulk updated {len(updates)} existing candles")
+
+                    # Execute bulk INSERT
+                    if inserts:
+                        await conn.executemany("""
+                            INSERT INTO daily_candles
+                            (candle_key_id, symbol, candle_sequence_number, timestamp, datetime,
+                             open, high, low, close, volume, day_of_week, weekly_candle_key_id,
+                             indicators, monthly_candle_key_id)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                        """, inserts)
+                        logger.info(f"✅ Bulk inserted {len(inserts)} new candles")
+
+                    # Mark all as successful
+                    for symbol, _ in candles_batch:
+                        if symbol not in results:
+                            results[symbol] = True
+
+                    # Calculate OHLCV for all updated symbols in batch
+                    unique_symbols = list(set([symbol for symbol, _ in candles_batch]))
+                    for symbol in unique_symbols:
+                        await self._calculate_ohlcv_for_symbol(symbol)
+
+            return results
+
+        except Exception as e:
+            logger.error(f"❌ Failed bulk update of latest candles: {e}")
+            # Mark all as failed on error
+            return {symbol: False for symbol, _ in candles_batch}
 
     async def store_chunk_with_indicators(self, symbol: str, chunk_data: List[Dict],
                                         timeframe: str = 'daily') -> bool:

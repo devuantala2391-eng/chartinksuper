@@ -23,20 +23,29 @@ class DatabaseWrapper:
     async def initialize(self):
         """Initialize ultra-fast unified database connection."""
         if self._init_attempted:
+            logger.debug(f"Already attempted initialization, returning: {self.db_service.initialized}")
             return self.db_service.initialized
-            
+
         self._init_attempted = True
-        
+
         try:
-            await self.db_service.initialize()
-            if self.db_service.initialized:
+            logger.debug("Calling ultra_fast_db.initialize()...")
+            result = await self.db_service.initialize()
+            logger.debug(f"ultra_fast_db.initialize() returned: {result}")
+            logger.debug(f"ultra_fast_db.initialized flag: {self.db_service.initialized}")
+
+            if result and self.db_service.initialized:
                 logger.info("✅ Using ultra-fast unified database (nse_highspeed) with composite keys")
                 self._use_unified = True
                 return True
+            else:
+                logger.warning(f"ultra_fast_db.initialize() returned {result} but initialized flag is {self.db_service.initialized}")
         except Exception as e:
             logger.error(f"Ultra-fast database initialization failed: {e}")
+            self._init_attempted = False  # Reset so retry is possible
             raise Exception(f"Ultra-fast database is required but initialization failed: {e}")
-        
+
+        logger.warning("Returning False from db_wrapper.initialize()")
         return False
     
     async def save_candles(self, symbol: str, candles: List[Dict[str, Any]], 

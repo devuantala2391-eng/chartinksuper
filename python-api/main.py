@@ -66,7 +66,7 @@ from services.data_utils import get_next_day_timestamp, get_day_of_week_name
 from utils.constants import STOCK_SYMBOLS, TOTAL_SYMBOLS
 from services.chartink_service import ChartinkService
 # postgres_integration removed - using only ultra-fast database
-from services.latest_candle_updater import latest_candle_updater
+from services.ultra_fast_cron_v2 import ultra_fast_cron_v2 as ultra_fast_cron_service
 from services.parallel_pipeline_updater import parallel_pipeline_updater
 from services.db_wrapper import db_wrapper as db_service
 from services.indicator_metadata_service import indicator_metadata_service
@@ -3958,17 +3958,24 @@ async def update_latest_candles(symbols: Optional[List[str]] = None):
         
         if symbols:
             # Update specific symbols
-            results = await latest_candle_updater.update_all_symbols(symbols)
+            results = await ultra_fast_cron_service.process_symbols(symbols)
             logger.info(f"Updated latest candles for {len(symbols)} symbols")
         else:
             # Update all symbols
-            results = await latest_candle_updater.update_all_symbols()
+            results = await ultra_fast_cron_service.process_all_symbols_ultra_fast()
             logger.info("Updated latest candles for all symbols")
         
-        # Count statistics
-        updated_count = sum(1 for msg in results.values() if "Updated successfully" in msg)
-        unchanged_count = sum(1 for msg in results.values() if "No update needed" in msg)
-        error_count = sum(1 for msg in results.values() if "Error:" in msg or "Failed" in msg)
+        # Count statistics - handle both old string format and new metrics format
+        if isinstance(results, dict) and results.get("success") is not None:
+            # New UltraFastCronService returns performance metrics
+            updated_count = results.get("successful", 0)
+            error_count = results.get("failed", 0)
+            unchanged_count = 0  # Ultra fast service doesn't track unchanged
+        else:
+            # Old format with string messages
+            updated_count = sum(1 for msg in results.values() if "Updated successfully" in msg)
+            unchanged_count = sum(1 for msg in results.values() if "No update needed" in msg)
+            error_count = sum(1 for msg in results.values() if "Error:" in msg or "Failed" in msg)
         
         return {
             "success": True,
@@ -4703,6 +4710,7 @@ def background_timer_thread():
     """Background thread to display periodic timer updates and start cron jobs."""
     last_detailed_log_time = 0
     last_debug_log_time = 0
+    last_countdown_log_time = 0  # For countdown timer
     cron_started = False
     last_update_time = None
 
@@ -4715,17 +4723,48 @@ def background_timer_thread():
                 print("[TIMER] Background timer: Starting background services...")
                 sys.stdout.flush()
                 logger.info("[TIMER] Starting background services...")
-                latest_candle_updater.start_background_cron()
+                ultra_fast_cron_service.start_background_cron()
                 cron_started = True
                 print("[OK] Background timer: Cron job initialization completed")
                 sys.stdout.flush()
 
+            # COUNTDOWN: Show next cron timer every 5 seconds
+            if current_time - last_countdown_log_time >= 5:
+                cron_status = ultra_fast_cron_service.get_cron_status()
+
+                if cron_status["enabled"] and cron_status["running"]:
+                    interval_minutes = cron_status["interval_minutes"]
+                    minutes_since_last = cron_status["minutes_since_last_update"]  # Fixed key name
+
+                    if minutes_since_last is not None:
+                        time_to_next = interval_minutes - minutes_since_last
+                        if time_to_next > 0:
+                            # Convert to minutes and seconds for better display
+                            minutes = int(time_to_next)
+                            seconds = int((time_to_next - minutes) * 60)
+                            time_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
+                            print(f"[COUNTDOWN] Next cron execution in: {time_str}")
+                            sys.stdout.flush()
+                        else:
+                            overdue = abs(time_to_next)
+                            minutes = int(overdue)
+                            seconds = int((overdue - minutes) * 60)
+                            time_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
+                            print(f"[COUNTDOWN] Cron is overdue by: {time_str} - should execute now")
+                            sys.stdout.flush()
+                    else:
+                        # This should never happen now since we always provide minutes_since_last_update
+                        print("[COUNTDOWN] Initializing countdown timer...")
+                        sys.stdout.flush()
+
+                last_countdown_log_time = current_time
+
             # DEBUG: Live timer every 5 seconds for debugging (if enabled)
             if current_time - last_debug_log_time >= 10:
                 # Import debug timer setting
-                from services.latest_candle_updater import get_latest_candle_debug_timer
+                from services.ultra_fast_cron_v2 import get_ultra_fast_cron_debug_timer
 
-                if get_latest_candle_debug_timer():
+                if get_ultra_fast_cron_debug_timer():
                     now = datetime.now()
 
                     # Check market hours
@@ -4736,7 +4775,7 @@ def background_timer_thread():
                     )
 
                     # Get cron job status
-                    cron_status = latest_candle_updater.get_cron_status()
+                    cron_status = ultra_fast_cron_service.get_cron_status()
 
                     if cron_status["enabled"]:
                         interval = cron_status["interval_minutes"]
@@ -4786,7 +4825,7 @@ def background_timer_thread():
                 )
 
                 # Get cron job status
-                cron_status = latest_candle_updater.get_cron_status()
+                cron_status = ultra_fast_cron_service.get_cron_status()
 
                 # Status display
                 market_status = "[OPEN]" if is_market_hours else "[CLOSED]"
@@ -4836,7 +4875,7 @@ if __name__ == "__main__":
     print("LATEST CANDLE CRON JOB SERVICE:")
 
     # Import the configuration functions to show current settings
-    from services.latest_candle_updater import (
+    from services.ultra_fast_cron_v2 import (
         get_latest_candle_cron_enabled,
         get_latest_candle_cron_interval,
         get_latest_candle_market_hours_only,
@@ -4862,17 +4901,13 @@ if __name__ == "__main__":
         print("   [DISABLED] Cron job is DISABLED (set LATEST_CANDLE_CRON_ENABLED=true)")
 
     print("="*80)
-    print("Starting server... Background services will start below:")
+    print("Starting server... Background services will start after database initialization:")
     print("="*80)
     sys.stdout.flush()
 
-    # Start background timer thread
-    print("[STARTUP] Starting background timer thread...")
-    timer_thread = threading.Thread(target=background_timer_thread, daemon=True)
-    timer_thread.start()
-    print("[OK] Background timer thread started")
-    sys.stdout.flush()
-    
+    # Timer thread will be started in startup_event after database init
+    # (removed duplicate start from here)
+
     # Simple uvicorn run without complex logging
     import uvicorn
     uvicorn.run(
